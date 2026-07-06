@@ -16,6 +16,7 @@ services:
     volumes:
       - mysql:/var/lib/mysql/
       - ../../sql/mysql/ruoyi-vue-pro.sql:/docker-entrypoint-initdb.d/ruoyi-vue-pro.sql:ro
+      - ../../sql/mysql/skit-saas.sql:/docker-entrypoint-initdb.d/skit-saas.sql:ro
 
   redis:
     container_name: yudao-redis
