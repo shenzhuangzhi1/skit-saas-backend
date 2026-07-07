@@ -51,7 +51,23 @@ jobs:
           cp sql/mysql/ruoyi-vue-pro.sql .deploy/ruoyi-vue-pro.sql
           cp sql/mysql/skit-saas.sql .deploy/skit-saas.sql
 
+      - name: Detect deployment secrets
+        id: deploy_config
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+        run: |
+          if [ -n "${SERVER_HOST}" ] && [ -n "${SERVER_USER}" ] && [ -n "${SERVER_SSH_KEY}" ] && [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::Deployment skipped because SERVER_HOST, SERVER_USER, SERVER_SSH_KEY, or MYSQL_ROOT_PASSWORD is not configured."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Prepare SSH
+        if: steps.deploy_config.outputs.enabled == 'true'
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_PORT: ${{ secrets.SERVER_PORT }}
@@ -67,6 +83,7 @@ jobs:
           ssh-keyscan -p "${SERVER_PORT}" "${SERVER_HOST}" >> ~/.ssh/known_hosts
 
       - name: Upload release bundle
+        if: steps.deploy_config.outputs.enabled == 'true'
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -92,6 +109,7 @@ jobs:
             "${SSH_TARGET}:${DEPLOY_PATH}/mysql/init/"
 
       - name: Activate backend on server
+        if: steps.deploy_config.outputs.enabled == 'true'
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
