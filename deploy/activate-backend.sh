@@ -7,27 +7,27 @@ set -euo pipefail
 
 cd "${DEPLOY_PATH}"
 
-if [ ! -f server.env ]; then
-  echo "server.env is missing"
-  exit 1
-fi
-
 set -a
-# shellcheck disable=SC1091
-. ./server.env
+if [ -f .env ]; then
+  # shellcheck disable=SC1091
+  . ./.env
+fi
+if [ -f server.env ]; then
+  # shellcheck disable=SC1091
+  . ./server.env
+fi
 set +a
-
-: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
 
 upsert_env() {
   key="$1"
   value="$2"
-  touch .env
-  if grep -q "^${key}=" .env; then
-    sed -i "s|^${key}=.*|${key}=${value}|" .env
-  else
-    printf '%s=%s\n' "${key}" "${value}" >> .env
+  temp_file="$(mktemp)"
+  if [ -f .env ]; then
+    grep -v "^${key}=" .env > "${temp_file}" || true
   fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${temp_file}"
+  mv "${temp_file}" .env
+  chmod 600 .env
 }
 
 compose() {
@@ -44,6 +44,14 @@ if [ -f "${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" ]; then
 fi
 
 gzip -dc "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" | docker load
+
+if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
+  if command -v openssl >/dev/null 2>&1; then
+    MYSQL_ROOT_PASSWORD="$(openssl rand -hex 24)"
+  else
+    MYSQL_ROOT_PASSWORD="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+fi
 
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"

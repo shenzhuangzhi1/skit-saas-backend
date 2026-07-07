@@ -57,12 +57,11 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
         run: |
-          if [ -n "${SERVER_HOST}" ] && [ -n "${SERVER_USER}" ] && [ -n "${SERVER_SSH_KEY}" ] && [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+          if [ -n "${SERVER_HOST}" ] && [ -n "${SERVER_USER}" ] && [ -n "${SERVER_SSH_KEY}" ]; then
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
           else
-            echo "::notice::Deployment skipped because SERVER_HOST, SERVER_USER, SERVER_SSH_KEY, or MYSQL_ROOT_PASSWORD is not configured."
+            echo "::notice::Deployment skipped because SERVER_HOST, SERVER_USER, or SERVER_SSH_KEY is not configured."
             echo "enabled=false" >> "${GITHUB_OUTPUT}"
           fi
 
@@ -123,18 +122,19 @@ jobs:
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
         run: |
           set -euo pipefail
-          : "${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/skit-saas}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
-          cat > .deploy/server.env <<EOF
-          MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-          MYSQL_DATABASE=${MYSQL_DATABASE:-skit_saas}
-          MYSQL_PORT=${MYSQL_PORT:-3306}
-          REDIS_PORT=${REDIS_PORT:-6379}
-          BACKEND_PORT=${BACKEND_PORT:-48080}
-          FRONTEND_PORT=${FRONTEND_PORT:-80}
-          EOF
+          {
+            if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+              printf 'MYSQL_ROOT_PASSWORD=%q\n' "${MYSQL_ROOT_PASSWORD}"
+            fi
+            printf 'MYSQL_DATABASE=%q\n' "${MYSQL_DATABASE:-skit_saas}"
+            printf 'MYSQL_PORT=%q\n' "${MYSQL_PORT:-3306}"
+            printf 'REDIS_PORT=%q\n' "${REDIS_PORT:-6379}"
+            printf 'BACKEND_PORT=%q\n' "${BACKEND_PORT:-48080}"
+            printf 'FRONTEND_PORT=%q\n' "${FRONTEND_PORT:-80}"
+          } > .deploy/server.env
           scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
             ".deploy/server.env" \
             "${SSH_TARGET}:${DEPLOY_PATH}/server.env"
