@@ -35,16 +35,14 @@ jobs:
       - name: Build server jar
         run: mvn -B -pl yudao-server -am -DskipTests package
 
-      - name: Build Docker image archive
+      - name: Prepare backend release bundle
         run: |
           set -euo pipefail
-          mkdir -p .deploy
-          docker build \
-            --label app=skit-saas-backend \
-            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
-            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
-            yudao-server
-          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | gzip > ".deploy/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz"
+          mkdir -p .deploy/backend-build/target
+          cp yudao-server/target/yudao-server.jar .deploy/backend-build/target/yudao-server.jar
+          cp yudao-server/Dockerfile .deploy/backend-build/Dockerfile
+          tar -C .deploy -czf ".deploy/${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz" backend-build
+          ls -lh ".deploy/${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz"
           cp deploy/docker-compose.prod.yml .deploy/docker-compose.prod.yml
           cp deploy/activate-backend.sh .deploy/activate-backend.sh
           cp sql/mysql/ruoyi-vue-pro.sql .deploy/ruoyi-vue-pro.sql
@@ -145,9 +143,9 @@ jobs:
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
           chmod +x .deploy/activate-backend.sh
           .deploy/ssh "${SSH_TARGET}" \
-            "mkdir -p '${DEPLOY_PATH}/images' '${DEPLOY_PATH}/mysql/init'"
+            "mkdir -p '${DEPLOY_PATH}/builds' '${DEPLOY_PATH}/images' '${DEPLOY_PATH}/mysql/init'"
           .deploy/scp \
-            ".deploy/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" \
+            ".deploy/${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz" \
             ".deploy/docker-compose.prod.yml" \
             ".deploy/activate-backend.sh" \
             "${SSH_TARGET}:${DEPLOY_PATH}/"

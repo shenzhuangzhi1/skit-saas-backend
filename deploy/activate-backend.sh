@@ -38,12 +38,32 @@ compose() {
   fi
 }
 
-mkdir -p images
+mkdir -p builds images
+build_package="${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz"
 if [ -f "${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" ]; then
   mv "${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz"
 fi
 
-gzip -dc "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" | docker load
+if [ -f "${build_package}" ]; then
+  mv "${build_package}" "builds/${build_package}"
+fi
+
+if [ -f "builds/${build_package}" ]; then
+  build_dir="builds/${IMAGE_NAME}-${IMAGE_TAG}"
+  rm -rf "${build_dir}"
+  mkdir -p "${build_dir}"
+  tar -xzf "builds/${build_package}" -C "${build_dir}"
+  docker build \
+    --label app=skit-saas-backend \
+    --label "org.opencontainers.image.revision=${IMAGE_TAG}" \
+    -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+    "${build_dir}/backend-build"
+elif [ -f "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" ]; then
+  gzip -dc "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" | docker load
+else
+  echo "Missing backend release package for ${IMAGE_NAME}:${IMAGE_TAG}"
+  exit 1
+fi
 
 if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
   if command -v openssl >/dev/null 2>&1; then
