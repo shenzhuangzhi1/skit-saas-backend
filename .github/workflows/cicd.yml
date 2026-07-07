@@ -56,11 +56,12 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          if [ -n "${SERVER_HOST}" ] && [ -n "${SERVER_USER}" ] && [ -n "${SERVER_SSH_KEY}" ]; then
+          if [ -n "${SERVER_HOST}" ] && [ -n "${SERVER_USER}" ] && { [ -n "${SERVER_SSH_KEY}" ] || [ -n "${SERVER_PASSWORD}" ]; }; then
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
           else
-            echo "::notice::Deployment skipped because SERVER_HOST, SERVER_USER, or SERVER_SSH_KEY is not configured."
+            echo "::notice::Deployment skipped because SERVER_HOST, SERVER_USER, and one of SERVER_SSH_KEY or SERVER_PASSWORD are not configured."
             echo "enabled=false" >> "${GITHUB_OUTPUT}"
           fi
 
@@ -70,26 +71,63 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_PORT: ${{ secrets.SERVER_PORT }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
           set -euo pipefail
           : "${SERVER_HOST:?Set SERVER_HOST secret}"
-          : "${SERVER_SSH_KEY:?Set SERVER_SSH_KEY secret}"
+          AUTH_VALUE="${SERVER_SSH_KEY:-${SERVER_PASSWORD:-}}"
+          : "${AUTH_VALUE:?Set SERVER_SSH_KEY or SERVER_PASSWORD secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
           install -m 700 -d ~/.ssh
           KEY_FILE="$HOME/.ssh/skit_deploy_key"
-          if printf '%s' "${SERVER_SSH_KEY}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
-            printf '%s' "${SERVER_SSH_KEY}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${KEY_FILE}"
-          else
-            if ! printf '%s' "${SERVER_SSH_KEY}" | tr -d '\r\n ' | base64 -d > "${KEY_FILE}" 2>/tmp/skit_key_decode_error; then
-              echo "::error::SERVER_SSH_KEY must be an unencrypted private key in raw multiline format, literal \\n format, or base64 format."
+          if printf '%s' "${AUTH_VALUE}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s' "${AUTH_VALUE}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${KEY_FILE}"
+            chmod 600 "${KEY_FILE}"
+            if ! ssh-keygen -y -P "" -f "${KEY_FILE}" >/dev/null; then
+              echo "::error::SERVER_SSH_KEY looks like a private key, but it is not readable. Use an unencrypted private key or set SERVER_PASSWORD instead."
               exit 1
             fi
+            printf 'SKIT_AUTH_MODE=key\n' > .deploy/ssh-auth.env
+          else
+            if printf '%s' "${AUTH_VALUE}" | tr -d '\r\n ' | base64 -d > "${KEY_FILE}" 2>/tmp/skit_key_decode_error \
+              && chmod 600 "${KEY_FILE}" \
+              && ssh-keygen -y -P "" -f "${KEY_FILE}" >/dev/null 2>&1; then
+              printf 'SKIT_AUTH_MODE=key\n' > .deploy/ssh-auth.env
+            else
+              sudo apt-get update
+              sudo apt-get install -y sshpass
+              {
+                printf 'SKIT_AUTH_MODE=password\n'
+                printf 'SKIT_SSH_PASSWORD=%q\n' "${AUTH_VALUE}"
+              } > .deploy/ssh-auth.env
+            fi
           fi
-          chmod 600 "${KEY_FILE}"
-          if ! ssh-keygen -y -f "${KEY_FILE}" >/dev/null; then
-            echo "::error::SERVER_SSH_KEY is not a readable unencrypted private key."
-            exit 1
+          chmod 600 .deploy/ssh-auth.env
+          cat > .deploy/ssh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$(dirname "$0")/ssh-auth.env"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          if [ "${SKIT_AUTH_MODE}" = "password" ]; then
+            SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e ssh -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -p "${SERVER_PORT}" "$@"
+          else
+            ssh -i "$HOME/.ssh/skit_deploy_key" -p "${SERVER_PORT}" "$@"
           fi
+          EOF
+          cat > .deploy/scp <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$(dirname "$0")/ssh-auth.env"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          if [ "${SKIT_AUTH_MODE}" = "password" ]; then
+            SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e scp -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -P "${SERVER_PORT}" "$@"
+          else
+            scp -i "$HOME/.ssh/skit_deploy_key" -P "${SERVER_PORT}" "$@"
+          fi
+          EOF
+          chmod +x .deploy/ssh .deploy/scp
           ssh-keyscan -p "${SERVER_PORT}" "${SERVER_HOST}" >> ~/.ssh/known_hosts
 
       - name: Upload release bundle
@@ -106,14 +144,14 @@ jobs:
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/skit-saas}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
           chmod +x .deploy/activate-backend.sh
-          ssh -i ~/.ssh/skit_deploy_key -p "${SERVER_PORT}" "${SSH_TARGET}" \
+          .deploy/ssh "${SSH_TARGET}" \
             "mkdir -p '${DEPLOY_PATH}/images' '${DEPLOY_PATH}/mysql/init'"
-          scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
+          .deploy/scp \
             ".deploy/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" \
             ".deploy/docker-compose.prod.yml" \
             ".deploy/activate-backend.sh" \
             "${SSH_TARGET}:${DEPLOY_PATH}/"
-          scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
+          .deploy/scp \
             ".deploy/ruoyi-vue-pro.sql" \
             ".deploy/skit-saas.sql" \
             "${SSH_TARGET}:${DEPLOY_PATH}/mysql/init/"
@@ -146,8 +184,8 @@ jobs:
             printf 'BACKEND_PORT=%q\n' "${BACKEND_PORT:-48080}"
             printf 'FRONTEND_PORT=%q\n' "${FRONTEND_PORT:-80}"
           } > .deploy/server.env
-          scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
+          .deploy/scp \
             ".deploy/server.env" \
             "${SSH_TARGET}:${DEPLOY_PATH}/server.env"
-          ssh -i ~/.ssh/skit_deploy_key -p "${SERVER_PORT}" "${SSH_TARGET}" \
+          .deploy/ssh "${SSH_TARGET}" \
             "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' '${DEPLOY_PATH}/activate-backend.sh'"
