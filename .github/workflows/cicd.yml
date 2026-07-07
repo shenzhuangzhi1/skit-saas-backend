@@ -1,0 +1,124 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skit-saas-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: skit-saas-backend
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+
+      - name: Build server jar
+        run: mvn -B -pl yudao-server -am -DskipTests package
+
+      - name: Build Docker image archive
+        run: |
+          set -euo pipefail
+          mkdir -p .deploy
+          docker build \
+            --label app=skit-saas-backend \
+            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            yudao-server
+          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | gzip > ".deploy/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz"
+          cp deploy/docker-compose.prod.yml .deploy/docker-compose.prod.yml
+          cp deploy/activate-backend.sh .deploy/activate-backend.sh
+          cp sql/mysql/ruoyi-vue-pro.sql .deploy/ruoyi-vue-pro.sql
+          cp sql/mysql/skit-saas.sql .deploy/skit-saas.sql
+
+      - name: Prepare SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_HOST:?Set SERVER_HOST secret}"
+          : "${SERVER_SSH_KEY:?Set SERVER_SSH_KEY secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/skit_deploy_key
+          chmod 600 ~/.ssh/skit_deploy_key
+          ssh-keyscan -p "${SERVER_PORT}" "${SERVER_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Upload release bundle
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_USER:?Set SERVER_USER secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/skit-saas}"
+          SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
+          chmod +x .deploy/activate-backend.sh
+          ssh -i ~/.ssh/skit_deploy_key -p "${SERVER_PORT}" "${SSH_TARGET}" \
+            "mkdir -p '${DEPLOY_PATH}/images' '${DEPLOY_PATH}/mysql/init'"
+          scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
+            ".deploy/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" \
+            ".deploy/docker-compose.prod.yml" \
+            ".deploy/activate-backend.sh" \
+            "${SSH_TARGET}:${DEPLOY_PATH}/"
+          scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
+            ".deploy/ruoyi-vue-pro.sql" \
+            ".deploy/skit-saas.sql" \
+            "${SSH_TARGET}:${DEPLOY_PATH}/mysql/init/"
+
+      - name: Activate backend on server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+          MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
+          MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          BACKEND_PORT: ${{ secrets.BACKEND_PORT }}
+          FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
+        run: |
+          set -euo pipefail
+          : "${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/skit-saas}"
+          SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
+          cat > .deploy/server.env <<EOF
+          MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+          MYSQL_DATABASE=${MYSQL_DATABASE:-skit_saas}
+          MYSQL_PORT=${MYSQL_PORT:-3306}
+          REDIS_PORT=${REDIS_PORT:-6379}
+          BACKEND_PORT=${BACKEND_PORT:-48080}
+          FRONTEND_PORT=${FRONTEND_PORT:-80}
+          EOF
+          scp -i ~/.ssh/skit_deploy_key -P "${SERVER_PORT}" \
+            ".deploy/server.env" \
+            "${SSH_TARGET}:${DEPLOY_PATH}/server.env"
+          ssh -i ~/.ssh/skit_deploy_key -p "${SERVER_PORT}" "${SSH_TARGET}" \
+            "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' '${DEPLOY_PATH}/activate-backend.sh'"

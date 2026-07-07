@@ -1,0 +1,5 @@
+target/*
+!target/yudao-server.jar
+.git
+.DS_Store
+*.log

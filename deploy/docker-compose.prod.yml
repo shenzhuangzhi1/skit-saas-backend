@@ -1,0 +1,77 @@
+name: skit-saas
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: skit-saas-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-skit_saas}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init/ruoyi-vue-pro.sql:/docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql:ro
+      - ./mysql/init/skit-saas.sql:/docker-entrypoint-initdb.d/02-skit-saas.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:6-alpine
+    container_name: skit-saas-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: skit-saas-backend:${BACKEND_IMAGE_TAG:-latest}
+    container_name: skit-saas-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-48080}:48080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx512m -Djava.security.egd=file:/dev/./urandom}
+      ARGS: >-
+        --spring.datasource.dynamic.datasource.master.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-skit_saas}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
+        --spring.datasource.dynamic.datasource.master.username=root
+        --spring.datasource.dynamic.datasource.master.password=${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+        --spring.datasource.dynamic.datasource.slave.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-skit_saas}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
+        --spring.datasource.dynamic.datasource.slave.username=root
+        --spring.datasource.dynamic.datasource.slave.password=${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+        --spring.redis.host=redis
+        --spring.redis.port=6379
+
+  frontend:
+    image: skit-saas-frontend:${FRONTEND_IMAGE_TAG:-latest}
+    container_name: skit-saas-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+volumes:
+  mysql_data:
+  redis_data:
