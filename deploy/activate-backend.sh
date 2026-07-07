@@ -117,6 +117,7 @@ upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"
 upsert_env BACKEND_PORT "${BACKEND_PORT:-48080}"
+upsert_env BACKEND_HEALTH_PATH "${BACKEND_HEALTH_PATH:-/actuator/health}"
 upsert_env FRONTEND_PORT "${FRONTEND_PORT:-80}"
 upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
@@ -124,8 +125,10 @@ upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 compose -f docker-compose.prod.yml --env-file .env pull backend
 compose -f docker-compose.prod.yml --env-file .env up -d mysql redis backend
 
+health_url="http://127.0.0.1:${BACKEND_PORT:-48080}${BACKEND_HEALTH_PATH:-/actuator/health}"
 for _ in $(seq 1 90); do
-  if curl -fsS "http://127.0.0.1:${BACKEND_PORT:-48080}/actuator/health" >/dev/null; then
+  status_code="$(curl -sS -o /dev/null -w '%{http_code}' "${health_url}" || true)"
+  if [ "${status_code}" -ge 200 ] 2>/dev/null && [ "${status_code}" -lt 500 ]; then
     docker_cmd ps --filter name=skit-saas-backend
     exit 0
   fi

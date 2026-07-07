@@ -29,6 +29,7 @@ Optional secrets:
 - `MYSQL_PORT`: host MySQL port, default `3306`.
 - `REDIS_PORT`: host Redis port, default `6379`.
 - `BACKEND_PORT`: host backend port, default `48080`.
+- `BACKEND_HEALTH_PATH`: backend HTTP path used by deployment health checks, default `/actuator/health`.
 - `FRONTEND_PORT`: host frontend port, default `80`.
 
 ## Deployment order
