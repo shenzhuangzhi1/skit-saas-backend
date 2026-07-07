@@ -30,19 +30,77 @@ upsert_env() {
   chmod 600 .env
 }
 
-compose() {
-  if docker compose version >/dev/null 2>&1; then
-    docker compose "$@"
+DOCKER_USE_SUDO=0
+DOCKER_SUDO_PASSWORD=0
+
+sudo_cmd() {
+  if [ "${DOCKER_SUDO_PASSWORD}" = "1" ]; then
+    printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
+docker_cmd() {
+  if [ "${DOCKER_USE_SUDO}" = "1" ]; then
+    if [ -n "${DOCKER_CONFIG:-}" ]; then
+      sudo_cmd env DOCKER_CONFIG="${DOCKER_CONFIG}" docker "$@"
+    else
+      sudo_cmd docker "$@"
+    fi
+  else
+    docker "$@"
+  fi
+}
+
+compose_cmd() {
+  if [ "${DOCKER_USE_SUDO}" = "1" ]; then
+    if [ -n "${DOCKER_CONFIG:-}" ]; then
+      sudo_cmd env DOCKER_CONFIG="${DOCKER_CONFIG}" docker-compose "$@"
+    else
+      sudo_cmd docker-compose "$@"
+    fi
   else
     docker-compose "$@"
   fi
 }
 
+prepare_docker_access() {
+  if docker version >/dev/null 2>&1; then
+    return
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n docker version >/dev/null 2>&1; then
+    DOCKER_USE_SUDO=1
+    return
+  fi
+  if [ -n "${SUDO_PASSWORD:-}" ] && command -v sudo >/dev/null 2>&1 \
+    && printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' docker version >/dev/null 2>&1; then
+    DOCKER_USE_SUDO=1
+    DOCKER_SUDO_PASSWORD=1
+    return
+  fi
+  echo "Docker is not accessible for this SSH user. Add the user to the docker group or configure sudo access."
+  exit 1
+}
+
+compose() {
+  if docker_cmd compose version >/dev/null 2>&1; then
+    docker_cmd compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    compose_cmd "$@"
+  else
+    echo "Docker Compose is not installed."
+    exit 1
+  fi
+}
+
+prepare_docker_access
+
 docker_config=""
 if [ -n "${GHCR_TOKEN:-}" ]; then
   docker_config="$(mktemp -d)"
   export DOCKER_CONFIG="${docker_config}"
-  printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME:-github-actions}" --password-stdin
+  printf '%s' "${GHCR_TOKEN}" | docker_cmd login ghcr.io -u "${GHCR_USERNAME:-github-actions}" --password-stdin
   trap 'rm -rf "${docker_config}"' EXIT
 fi
 
@@ -68,11 +126,11 @@ compose -f docker-compose.prod.yml --env-file .env up -d mysql redis backend
 
 for _ in $(seq 1 90); do
   if curl -fsS "http://127.0.0.1:${BACKEND_PORT:-48080}/actuator/health" >/dev/null; then
-    docker ps --filter name=skit-saas-backend
+    docker_cmd ps --filter name=skit-saas-backend
     exit 0
   fi
   sleep 2
 done
 
-docker logs --tail 120 skit-saas-backend || true
+docker_cmd logs --tail 120 skit-saas-backend || true
 exit 1

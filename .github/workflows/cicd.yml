@@ -180,6 +180,8 @@ jobs:
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
           set -euo pipefail
           SERVER_PORT="${SERVER_PORT:-22}"
@@ -198,7 +200,9 @@ jobs:
           .deploy/scp \
             ".deploy/server.env" \
             "${SSH_TARGET}:${DEPLOY_PATH}/server.env"
+          SUDO_PASSWORD="${SERVER_SUDO_PASSWORD:-${SERVER_PASSWORD:-}}"
           printf -v GHCR_USERNAME_Q '%q' "${GHCR_USERNAME}"
           printf -v GHCR_TOKEN_Q '%q' "${GHCR_TOKEN}"
+          printf -v SUDO_PASSWORD_Q '%q' "${SUDO_PASSWORD}"
           .deploy/ssh "${SSH_TARGET}" \
-            "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' GHCR_USERNAME=${GHCR_USERNAME_Q} GHCR_TOKEN=${GHCR_TOKEN_Q} '${DEPLOY_PATH}/activate-backend.sh'"
+            "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' GHCR_USERNAME=${GHCR_USERNAME_Q} GHCR_TOKEN=${GHCR_TOKEN_Q} SUDO_PASSWORD=${SUDO_PASSWORD_Q} '${DEPLOY_PATH}/activate-backend.sh'"
