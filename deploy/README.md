@@ -2,6 +2,10 @@
 
 This repository owns the shared production Docker Compose stack.
 
+The backend workflow publishes the Docker image to GitHub Container Registry
+and the server pulls that image during activation. SSH only uploads Compose,
+activation scripts, and database initialization SQL.
+
 ## Server prerequisites
 
 - Linux server with Docker Engine and Docker Compose v2.

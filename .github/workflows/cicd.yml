@@ -8,13 +8,14 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: skit-saas-backend-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  IMAGE_NAME: skit-saas-backend
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/skit-saas-backend
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
@@ -35,14 +36,25 @@ jobs:
       - name: Build server jar
         run: mvn -B -pl yudao-server -am -DskipTests package
 
-      - name: Prepare backend release bundle
+      - name: Login to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
         run: |
           set -euo pipefail
-          mkdir -p .deploy/backend-build/target
-          cp yudao-server/target/yudao-server.jar .deploy/backend-build/target/yudao-server.jar
-          cp yudao-server/Dockerfile .deploy/backend-build/Dockerfile
-          tar -C .deploy -czf ".deploy/${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz" backend-build
-          ls -lh ".deploy/${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz"
+          docker build \
+            --label app=skit-saas-backend \
+            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            yudao-server
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Prepare deployment files
+        run: |
+          set -euo pipefail
+          mkdir -p .deploy
           cp deploy/docker-compose.prod.yml .deploy/docker-compose.prod.yml
           cp deploy/activate-backend.sh .deploy/activate-backend.sh
           cp sql/mysql/ruoyi-vue-pro.sql .deploy/ruoyi-vue-pro.sql
@@ -143,9 +155,8 @@ jobs:
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
           chmod +x .deploy/activate-backend.sh
           .deploy/ssh "${SSH_TARGET}" \
-            "mkdir -p '${DEPLOY_PATH}/builds' '${DEPLOY_PATH}/images' '${DEPLOY_PATH}/mysql/init'"
+            "mkdir -p '${DEPLOY_PATH}/mysql/init'"
           .deploy/scp \
-            ".deploy/${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz" \
             ".deploy/docker-compose.prod.yml" \
             ".deploy/activate-backend.sh" \
             "${SSH_TARGET}:${DEPLOY_PATH}/"
@@ -167,6 +178,8 @@ jobs:
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
           BACKEND_PORT: ${{ secrets.BACKEND_PORT }}
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           SERVER_PORT="${SERVER_PORT:-22}"
@@ -185,5 +198,7 @@ jobs:
           .deploy/scp \
             ".deploy/server.env" \
             "${SSH_TARGET}:${DEPLOY_PATH}/server.env"
+          printf -v GHCR_USERNAME_Q '%q' "${GHCR_USERNAME}"
+          printf -v GHCR_TOKEN_Q '%q' "${GHCR_TOKEN}"
           .deploy/ssh "${SSH_TARGET}" \
-            "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' '${DEPLOY_PATH}/activate-backend.sh'"
+            "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' GHCR_USERNAME=${GHCR_USERNAME_Q} GHCR_TOKEN=${GHCR_TOKEN_Q} '${DEPLOY_PATH}/activate-backend.sh'"

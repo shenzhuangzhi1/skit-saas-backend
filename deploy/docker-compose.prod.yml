@@ -40,7 +40,7 @@ services:
       retries: 20
 
   backend:
-    image: skit-saas-backend:${BACKEND_IMAGE_TAG:-latest}
+    image: ${BACKEND_IMAGE:-skit-saas-backend}:${BACKEND_IMAGE_TAG:-latest}
     container_name: skit-saas-backend
     restart: unless-stopped
     depends_on:

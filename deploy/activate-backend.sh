@@ -38,31 +38,12 @@ compose() {
   fi
 }
 
-mkdir -p builds images
-build_package="${IMAGE_NAME}-${IMAGE_TAG}-build.tar.gz"
-if [ -f "${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" ]; then
-  mv "${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz"
-fi
-
-if [ -f "${build_package}" ]; then
-  mv "${build_package}" "builds/${build_package}"
-fi
-
-if [ -f "builds/${build_package}" ]; then
-  build_dir="builds/${IMAGE_NAME}-${IMAGE_TAG}"
-  rm -rf "${build_dir}"
-  mkdir -p "${build_dir}"
-  tar -xzf "builds/${build_package}" -C "${build_dir}"
-  docker build \
-    --label app=skit-saas-backend \
-    --label "org.opencontainers.image.revision=${IMAGE_TAG}" \
-    -t "${IMAGE_NAME}:${IMAGE_TAG}" \
-    "${build_dir}/backend-build"
-elif [ -f "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" ]; then
-  gzip -dc "images/${IMAGE_NAME}-${IMAGE_TAG}.tar.gz" | docker load
-else
-  echo "Missing backend release package for ${IMAGE_NAME}:${IMAGE_TAG}"
-  exit 1
+docker_config=""
+if [ -n "${GHCR_TOKEN:-}" ]; then
+  docker_config="$(mktemp -d)"
+  export DOCKER_CONFIG="${docker_config}"
+  printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME:-github-actions}" --password-stdin
+  trap 'rm -rf "${docker_config}"' EXIT
 fi
 
 if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
@@ -79,8 +60,10 @@ upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"
 upsert_env BACKEND_PORT "${BACKEND_PORT:-48080}"
 upsert_env FRONTEND_PORT "${FRONTEND_PORT:-80}"
+upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 
+compose -f docker-compose.prod.yml --env-file .env pull backend
 compose -f docker-compose.prod.yml --env-file .env up -d mysql redis backend
 
 for _ in $(seq 1 90); do
