@@ -174,8 +174,32 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         try {
             return objectMapper.readValue(data, new TypeReference<LinkedHashMap<String, Object>>() {});
         } catch (Exception e) {
-            throw new IllegalArgumentException("短剧记录 JSON 解析失败", e);
+            return parseLegacyRecordData(data);
         }
+    }
+
+    private Map<String, Object> parseLegacyRecordData(String data) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        String content = StrUtil.trim(data);
+        if (content.startsWith("{") && content.endsWith("}") && content.contains("=")) {
+            String body = content.substring(1, content.length() - 1);
+            String[] pairs = body.split(", ");
+            for (String pair : pairs) {
+                int splitIndex = pair.indexOf('=');
+                if (splitIndex <= 0) {
+                    continue;
+                }
+                String key = pair.substring(0, splitIndex).trim();
+                String value = pair.substring(splitIndex + 1).trim();
+                if (StrUtil.isNotBlank(key)) {
+                    row.put(key, value);
+                }
+            }
+        }
+        if (row.isEmpty()) {
+            row.put("raw", data);
+        }
+        return row;
     }
 
     private static PageSeedSpec getSpec(String pageKey) {
