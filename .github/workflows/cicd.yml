@@ -76,8 +76,20 @@ jobs:
           : "${SERVER_SSH_KEY:?Set SERVER_SSH_KEY secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
           install -m 700 -d ~/.ssh
-          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/skit_deploy_key
-          chmod 600 ~/.ssh/skit_deploy_key
+          KEY_FILE="$HOME/.ssh/skit_deploy_key"
+          if printf '%s' "${SERVER_SSH_KEY}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s' "${SERVER_SSH_KEY}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${KEY_FILE}"
+          else
+            if ! printf '%s' "${SERVER_SSH_KEY}" | tr -d '\r\n ' | base64 -d > "${KEY_FILE}" 2>/tmp/skit_key_decode_error; then
+              echo "::error::SERVER_SSH_KEY must be an unencrypted private key in raw multiline format, literal \\n format, or base64 format."
+              exit 1
+            fi
+          fi
+          chmod 600 "${KEY_FILE}"
+          if ! ssh-keygen -y -f "${KEY_FILE}" >/dev/null; then
+            echo "::error::SERVER_SSH_KEY is not a readable unencrypted private key."
+            exit 1
+          fi
           ssh-keyscan -p "${SERVER_PORT}" "${SERVER_HOST}" >> ~/.ssh/known_hosts
 
       - name: Upload release bundle
