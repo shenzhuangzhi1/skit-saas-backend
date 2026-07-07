@@ -64,7 +64,7 @@ services:
         --spring.redis.port=6379
 
   frontend:
-    image: skit-saas-frontend:${FRONTEND_IMAGE_TAG:-latest}
+    image: ${FRONTEND_IMAGE:-skit-saas-frontend}:${FRONTEND_IMAGE_TAG:-latest}
     container_name: skit-saas-frontend
     restart: unless-stopped
     depends_on:
