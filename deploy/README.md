@@ -6,7 +6,7 @@ This repository owns the shared production Docker Compose stack.
 
 - Linux server with Docker Engine and Docker Compose v2.
 - SSH user that can run Docker commands.
-- Empty deployment directory, default: `/opt/skit-saas`.
+- Empty deployment directory, default: `$HOME/skit-saas`.
 
 ## Required GitHub Secrets
 
@@ -20,7 +20,7 @@ Set these secrets in each repository that deploys to the server:
 Optional secrets:
 
 - `SERVER_PORT`: SSH port, default `22`.
-- `DEPLOY_PATH`: deployment directory, default `/opt/skit-saas`.
+- `DEPLOY_PATH`: deployment directory, default `$HOME/skit-saas`.
 - `MYSQL_DATABASE`: database name, default `skit_saas`.
 - `MYSQL_PORT`: host MySQL port, default `3306`.
 - `REDIS_PORT`: host Redis port, default `6379`.

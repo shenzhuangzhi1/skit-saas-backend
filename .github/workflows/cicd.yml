@@ -141,7 +141,7 @@ jobs:
           set -euo pipefail
           : "${SERVER_USER:?Set SERVER_USER secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/skit-saas}"
+          DEPLOY_PATH="${DEPLOY_PATH:-$HOME/skit-saas}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
           chmod +x .deploy/activate-backend.sh
           .deploy/ssh "${SSH_TARGET}" \
@@ -172,7 +172,7 @@ jobs:
         run: |
           set -euo pipefail
           SERVER_PORT="${SERVER_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/skit-saas}"
+          DEPLOY_PATH="${DEPLOY_PATH:-$HOME/skit-saas}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
           {
             if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
