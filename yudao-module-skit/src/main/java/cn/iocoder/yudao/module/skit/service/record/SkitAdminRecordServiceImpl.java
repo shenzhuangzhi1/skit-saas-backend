@@ -380,6 +380,8 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     private static Object dictionaryValue(String prop, int index) {
         Map<String, Object> dictionary = new HashMap<>();
         dictionary.put("title", "公告标题 " + index);
+        dictionary.put("category", new String[]{"都市", "逆袭", "甜宠", "悬疑"}[index % 4]);
+        dictionary.put("episodes", 80 + (index % 20));
         dictionary.put("content", "公告正文摘要 " + index);
         dictionary.put("filename", "upload-" + index + ".png");
         dictionary.put("filesize", (300 + index * 12) + " KB");
@@ -430,7 +432,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         add(specs, "adminUser", 1, "id", "username", "nickname", "groups_text", "email", "status", "logintime");
         add(specs, "adminLog", 147, "id", "username", "title", "url", "ip", "browser", "createtime");
         add(specs, "group", 3, "id", "name", "rules", "createtime");
-        add(specs, "drama", 12, "id", "title", "cover", "status", "createtime");
+        add(specs, "drama", 12, "id", "title", "cover", "category", "episodes", "status", "createtime", "updatetime");
         add(specs, "adRecord", 943, "id", "user_id", "ad_network", "network_firm_id", "trans_id", "publisher_revenue", "reward_points", "createtime");
         add(specs, "withdraw", 18, "id", "user_id", "user_text", "withdraw_type", "account_type", "account", "money", "score", "review_mode", "payment_status_text", "reject_reason", "createtime", "paytime");
         add(specs, "scoreLog", 666, "id", "user_id", "type", "score", "before", "after", "memo", "createtime");
@@ -441,7 +443,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         add(specs, "announcement", 5, "id", "title", "content", "status", "createtime");
         add(specs, "douyinMiniProgram", 3, "id", "name", "appid", "appsecret", "callback_url", "status", "createtime");
         add(specs, "douyinLoginRecord", 22, "id", "user_id", "mini_program_text", "host_app_name", "host_app_version", "model", "ip", "createtime");
-        add(specs, "douyinAdRecord", 0, "id", "user_id", "ad_slot", "status", "createtime");
+        add(specs, "douyinAdRecord", 22, "id", "mini_program_text", "appid", "user_id", "user_text", "ad_slot", "trans_id", "publisher_revenue", "reward_points", "device_platform", "ip", "createtime");
         add(specs, "douyinTrafficRecord", 9, "id", "mini_program_text", "csite", "sl", "type", "createtime");
         return specs;
     }
