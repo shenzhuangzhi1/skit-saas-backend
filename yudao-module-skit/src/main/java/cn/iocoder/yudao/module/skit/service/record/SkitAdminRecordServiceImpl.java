@@ -665,10 +665,13 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
             return "******";
         }
         if (prop.contains("ip")) {
-            return "192.0.2." + index;
+            return "192.0.2." + ((index % 250) + 1);
         }
         if ("browser".equals(prop)) {
             return "Mozilla/5.0";
+        }
+        if ("callback_status".equals(prop)) {
+            return index % 2 == 0 ? "是" : "否";
         }
         if ("payment_status_text".equals(prop)) {
             return index % 4 == 0 ? "已打款" : "未打款";
@@ -705,7 +708,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
 
     private static long sampleId(int index) {
         long[] ids = new long[]{23267, 21566, 21565, 20178, 20176, 17665, 17663, 17661, 16582, 16581};
-        return index <= ids.length ? ids[index - 1] : 16000L - index;
+        return index <= ids.length ? ids[index - 1] : 90000L - index;
     }
 
     private static Object dictionaryValue(String pageKey, String prop, int index) {
@@ -810,13 +813,13 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         dictionary.put("ad_time", String.format("2026-07-%02d %02d:38:52", (index % 6) + 1, (18 + index) % 24));
         dictionary.put("ad_revenue", BigDecimal.valueOf(index).multiply(new BigDecimal("1.816740")).setScale(6, BigDecimal.ROUND_HALF_UP));
         dictionary.put("source", "douyin_ecpm");
-        dictionary.put("type", "douyinTrafficRecord".equals(pageKey) ? "active" : "广告奖励");
+        dictionary.put("type", "douyinTrafficRecord".equals(pageKey) ? "展示" : "广告奖励");
         dictionary.put("callback_url", "https://callback.example.com/skit");
         dictionary.put("callback_status", index % 2 == 0 ? "是" : "否");
         dictionary.put("model", "V2047A");
         dictionary.put("request_time", String.format("2026-07-%02d %02d:10:00", (index % 6) + 1, (9 + index) % 24));
-        dictionary.put("request_ip", "198.51.100." + index);
-        dictionary.put("param_ip", "203.0.113." + index);
+        dictionary.put("request_ip", "198.51.100." + ((index % 250) + 1));
+        dictionary.put("param_ip", "203.0.113." + ((index % 250) + 1));
         dictionary.put("os", index % 2 == 0 ? "android" : "ios");
         dictionary.put("csite", "site");
         dictionary.put("sl", "sl");
