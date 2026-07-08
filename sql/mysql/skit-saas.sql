@@ -18,3 +18,14 @@ CREATE TABLE IF NOT EXISTS `skit_admin_record` (
   KEY `idx_skit_admin_record_row_key` (`row_key`),
   KEY `idx_skit_admin_record_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧 SaaS 后台通用记录表';
+
+CREATE TABLE IF NOT EXISTS `skit_system_config` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
+  `config_data` longtext NOT NULL COMMENT '系统配置 JSON',
+  `creator` varchar(64) DEFAULT '' COMMENT '创建者',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updater` varchar(64) DEFAULT '' COMMENT '更新者',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `deleted` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否删除',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧 SaaS 系统配置表';
