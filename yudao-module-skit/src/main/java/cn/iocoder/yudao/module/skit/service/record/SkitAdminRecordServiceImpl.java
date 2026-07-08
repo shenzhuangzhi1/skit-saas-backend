@@ -31,7 +31,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
 
     private static final Map<String, PageSeedSpec> PAGE_SPECS = buildPageSpecs();
     private static final int MAX_SEED_ROWS = 2000;
-    private static final String SEED_VERSION = "2026-07-08.2";
+    private static final String SEED_VERSION = "2026-07-08.3";
 
     @Resource
     private SkitAdminRecordMapper skitAdminRecordMapper;
@@ -352,8 +352,220 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         for (String column : spec.columns) {
             row.put(column, valueFor(spec.key, column, index));
         }
+        applyLiveFirstRow(spec.key, index, row);
         row.put("_seedVersion", SEED_VERSION);
         return row;
+    }
+
+    private static void applyLiveFirstRow(String pageKey, int index, Map<String, Object> row) {
+        if (index != 1) {
+            return;
+        }
+        switch (pageKey) {
+            case "attachment":
+                row.put("id", 5L);
+                row.put("preview", "");
+                row.put("filename", "");
+                row.put("filesize", "801 KB");
+                row.put("imagewidth", "1254");
+                row.put("imageheight", "1254");
+                row.put("imagetype", "png");
+                row.put("storage", "local");
+                row.put("mimetype", "image/png");
+                row.put("createtime", "2026-06-18 15:33:53");
+                return;
+            case "operationLog":
+                row.put("id", 1564L);
+                row.put("title", "代理管理 确认用户");
+                row.put("url", "");
+                row.put("ip", "124.237.35.211");
+                row.put("createtime", "2026-07-06 18:53:15");
+                return;
+            case "adminUser":
+                row.put("id", 2L);
+                row.put("username", "123456");
+                row.put("nickname", "123456");
+                row.put("groups_text", "超级管理员");
+                row.put("email", "123456@qq.com");
+                row.put("status", "正常");
+                row.put("logintime", "2026-07-08 22:31:41");
+                return;
+            case "adminLog":
+                row.put("id", 1564L);
+                row.put("username", "123456");
+                row.put("title", "代理管理 确认用户");
+                row.put("url", "");
+                row.put("ip", "124.237.35.211");
+                row.put("browser", "Mozilla/5.0");
+                row.put("createtime", "2026-07-06 18:53:15");
+                return;
+            case "group":
+                row.put("id", 2L);
+                row.put("pid", 0);
+                row.put("name", "超级管理员");
+                row.put("status", "正常");
+                return;
+            case "adRecord":
+                row.put("id", 26506L);
+                row.put("user_id", 14);
+                row.put("ad_network", "baidu");
+                row.put("network_firm_id", 22);
+                row.put("trans_id", "7afa18e0b1b0fb563511904a5d014d48_14204758_1783515328747");
+                row.put("publisher_revenue", "0.00349037");
+                row.put("reward_points", "3.490000");
+                row.put("createtime", "2026-07-08 20:55:47");
+                return;
+            case "withdraw":
+                row.put("id", 367L);
+                row.put("user_text", "138****2566 / 13836432566 (#149)");
+                row.put("withdraw_type", "score");
+                row.put("account_type", "wechat_pay");
+                row.put("account", "微信用户");
+                row.put("money", "2.00");
+                row.put("fee", "0.20");
+                row.put("real_money", "2.00");
+                row.put("score", "2200.000000");
+                row.put("status", "待审核");
+                row.put("payment_status_text", "未发起");
+                row.put("review_mode", "manual");
+                row.put("reject_reason", "");
+                row.put("createtime", "2026-07-03 09:51:45");
+                row.put("audittime", "无");
+                row.put("paytime", "无");
+                return;
+            case "scoreLog":
+                row.put("id", 72121L);
+                row.put("user_id", 14);
+                row.put("user_text", "186****46261 / 18600204621 (#14)");
+                row.put("score", "3.490000");
+                row.put("before", "420357.830688");
+                row.put("after", "420361.320688");
+                row.put("memo", "激励广告奖励 #26506");
+                row.put("createtime", "2026-07-08 20:55:47");
+                return;
+            case "promotionAgent":
+                return;
+            case "loginRecord":
+                row.put("id", 2969L);
+                row.put("user_id", 2338);
+                row.put("user_text", "抖音用户3144AD (#2338)");
+                row.put("mobile", "");
+                row.put("login_type", "douyin_mini");
+                row.put("device_platform", "android");
+                row.put("device_id", "");
+                row.put("idf", "");
+                row.put("oaid", "");
+                row.put("imei", "");
+                row.put("location", "");
+                row.put("province", "");
+                row.put("city", "");
+                row.put("district", "");
+                row.put("device_brand", "HUAWEI");
+                return;
+            case "deviceLog":
+                row.put("id", 8361L);
+                row.put("user_id", 14);
+                row.put("user_text", "186****46261 / 18600204621 (#14)");
+                row.put("log_date", "2026-07-08");
+                row.put("ip", "124.237.35.211");
+                row.put("device_platform", "android");
+                row.put("device_id", "local-hjdlj33wzo");
+                row.put("oaid", "e38c265f-2a0a-4510-a42c-7033c58eaa5b");
+                row.put("android_id", "c0eadd6ca28eac3d");
+                row.put("device_brand", "motorola");
+                row.put("device_model", "XT2201-2");
+                row.put("os_version", "Android 14 (SDK 34)");
+                row.put("network_type", "wifi");
+                row.put("is_vpn", "否");
+                row.put("is_proxy", "否");
+                return;
+            case "user":
+                row.put("id", 2338L);
+                row.put("nickname", "抖音用户3144AD");
+                row.put("email", "");
+                row.put("invite_code", "NC4D3P");
+                row.put("direct_user_count", 0);
+                row.put("ad_reward_ratio", "默认");
+                row.put("avatar", "");
+                row.put("score", "0.000000");
+                row.put("money", "0.00");
+                row.put("ban_status_text", "正常");
+                row.put("ban_reason", "");
+                row.put("logintime", "2026-07-08 22:21:26");
+                row.put("loginip", "116.162.233.27");
+                row.put("jointime", "2026-07-08 22:21:26");
+                row.put("status", "正常");
+                return;
+            case "announcement":
+                row.put("id", 3L);
+                row.put("title", "系统公告");
+                row.put("content", "【师徒裂变计划开启，收益上不封顶！】 亲爱的用户： 全新“师徒邀请”玩法正式上线！现在邀请好友注册，即可建立师徒关系，轻松赚取丰厚奖励： 1. 收徒拿奖励：邀请...");
+                row.put("createtime", "2026-06-18 15:33:56");
+                row.put("updatetime", "2026-06-18 17:11:59");
+                return;
+            case "douyinMiniProgram":
+                row.put("id", 4L);
+                row.put("name", "玩出新层次");
+                row.put("appid", "ttf5a3831e6aa1650902");
+                row.put("appsecret", "******");
+                row.put("ad_base_score", "1000");
+                row.put("self_commission_rate", "50");
+                row.put("max_ad_score", "0");
+                row.put("withdraw_min_amount", "5.00");
+                row.put("withdraw_fee_rate", "0.00");
+                row.put("withdraw_fixed_fee", "0.00");
+                row.put("access_token_expiretime", "2026-07-08 22:39:34");
+                row.put("status", "开启");
+                row.put("createtime", "2026-07-01 14:37:56");
+                row.put("updatetime", "2026-07-08 22:34:34");
+                return;
+            case "douyinLoginRecord":
+                row.put("id", 1315L);
+                row.put("mini_program_text", "精准烧脑 (#2)");
+                row.put("appid", "tt8f3ff98211592ad302");
+                row.put("user_id", 2338);
+                row.put("user_text", "抖音用户3144AD (#2338)");
+                row.put("nickname", "抖音用户3144AD");
+                row.put("mobile", "");
+                row.put("scene", "登录");
+                row.put("ad_slot", "");
+                row.put("rewarded_count", 0);
+                row.put("device_platform", "android");
+                row.put("device_brand", "HUAWEI");
+                row.put("device_model", "LIO-AN00P");
+                row.put("os_name", "Android 12");
+                row.put("os_version", "Android 12");
+                return;
+            case "douyinAdRecord":
+                row.put("id", 840L);
+                row.put("mini_program_text", "修罗小子 (#3)");
+                row.put("openid", "_000wDm1o92gxR17pJW1c_gnXaMr3snE6cWv");
+                row.put("nickname", "");
+                row.put("ad_type", "激励广告");
+                row.put("ad_time", "2026-07-08 19:38:52");
+                row.put("ad_revenue", "1.816740");
+                row.put("source", "douyin_ecpm");
+                row.put("ip", "");
+                row.put("city", "");
+                row.put("device_brand", "");
+                row.put("device_model", "");
+                row.put("host_app_version", "");
+                return;
+            case "douyinTrafficRecord":
+                row.put("id", 34534L);
+                row.put("type", "展示");
+                row.put("request_time", "2026-07-08 22:18:31");
+                row.put("request_ip", "118.77.204.179");
+                row.put("param_ip", "118.77.204.179");
+                row.put("os", "安卓");
+                row.put("model", "2201122C");
+                row.put("csite", "番茄小说 (26046)");
+                row.put("sl", "__SL__");
+                row.put("callback_url", "https://ad.toutiao.com/track/activate/?callback=B.taU4oDphvaTCcoR224iEumkURQwcvvGMcFEVg7IIwIeuvVyt2ri7tHMLbXZUiYhS4ufdYTOkZi8VeKbIr1UeP7tfSbOYnq8Wzeu1DZ4baU7gneSEIZjdodiOTbNB3zVfrA37EeekQdJQBUMFrZQbkK3&os=0&muid=");
+                row.put("callback_status", "否");
+                return;
+            default:
+        }
     }
 
     private static Object valueFor(String pageKey, String prop, int index) {
@@ -470,6 +682,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         dictionary.put("content", "公告正文摘要 " + index);
         dictionary.put("url", urlFor(pageKey, index));
         dictionary.put("groups_text", "超级管理员");
+        dictionary.put("pid", 0);
         dictionary.put("rules", "全部权限");
         dictionary.put("cover", "/uploads/20260708/drama-cover-" + index + ".jpg");
         dictionary.put("avatar", "/uploads/20260708/avatar-" + index + ".png");
@@ -559,8 +772,13 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         dictionary.put("rewarded_count", index % 4);
         dictionary.put("host_app_name", "Douyin");
         dictionary.put("host_app_version", "30.8.0");
+        dictionary.put("ad_type", "激励广告");
+        dictionary.put("ad_time", String.format("2026-07-%02d %02d:38:52", (index % 6) + 1, (18 + index) % 24));
+        dictionary.put("ad_revenue", BigDecimal.valueOf(index).multiply(new BigDecimal("1.816740")).setScale(6, BigDecimal.ROUND_HALF_UP));
+        dictionary.put("source", "douyin_ecpm");
         dictionary.put("type", "douyinTrafficRecord".equals(pageKey) ? "active" : "广告奖励");
         dictionary.put("callback_url", "https://callback.example.com/skit");
+        dictionary.put("callback_status", index % 2 == 0 ? "是" : "否");
         dictionary.put("model", "V2047A");
         dictionary.put("request_time", String.format("2026-07-%02d %02d:10:00", (index % 6) + 1, (9 + index) % 24));
         dictionary.put("request_ip", "198.51.100." + index);
@@ -630,20 +848,20 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         add(specs, "operationLog", 147, "id", "title", "url", "ip", "createtime");
         add(specs, "adminUser", 1, "id", "username", "nickname", "groups_text", "email", "status", "logintime");
         add(specs, "adminLog", 147, "id", "username", "title", "url", "ip", "browser", "createtime");
-        add(specs, "group", 3, "id", "name", "rules", "createtime");
+        add(specs, "group", 1, "id", "pid", "name", "status", "operate");
         add(specs, "drama", 12, "id", "title", "cover", "category", "episodes", "status", "createtime", "updatetime");
-        add(specs, "adRecord", 943, "id", "user_id", "ad_network", "network_firm_id", "trans_id", "publisher_revenue", "reward_points", "createtime");
+        add(specs, "adRecord", 947, "id", "user_id", "ad_network", "network_firm_id", "trans_id", "publisher_revenue", "reward_points", "createtime");
         add(specs, "withdraw", 26, "id", "user_text", "withdraw_type", "account_type", "account", "money", "fee", "real_money", "score", "status", "payment_status_text", "review_mode", "reject_reason", "createtime", "audittime", "paytime");
-        add(specs, "scoreLog", 1932, "id", "user_id", "user_text", "score", "before", "after", "memo", "createtime");
-        add(specs, "promotionAgent", 63, "id", "user_id", "user_text", "inviter_text", "agent_ratio", "member_self_ratio", "member_parent_ratio", "member_grandparent_ratio", "descendant_count", "today_agent_points", "total_agent_points", "remark", "createtime", "updatetime");
-        add(specs, "loginRecord", 101, "id", "user_id", "user_text", "mobile", "login_type", "device_platform", "device_id", "idf", "oaid", "imei", "location", "province", "city", "district", "device_brand", "device_model", "os_name", "os_version", "android_version", "ip", "createtime");
-        add(specs, "deviceLog", 103, "id", "user_id", "user_text", "log_date", "ip", "device_platform", "device_id", "oaid", "android_id", "device_brand", "device_model", "os_version", "network_type", "is_vpn", "is_proxy", "is_emulator", "is_root", "is_developer_mode", "is_usb_debug", "sim_operator", "location", "createtime");
-        add(specs, "user", 63, "id", "nickname", "email", "invite_code", "direct_user_count", "ad_reward_ratio", "avatar", "score", "money", "ban_status_text", "ban_reason", "logintime", "loginip", "jointime", "status");
+        add(specs, "scoreLog", 1936, "id", "user_id", "user_text", "score", "before", "after", "memo", "createtime");
+        add(specs, "promotionAgent", 0, "id", "user_id", "user_text", "inviter_text", "agent_ratio", "member_self_ratio", "member_parent_ratio", "member_grandparent_ratio", "descendant_count", "today_agent_points", "total_agent_points", "remark", "createtime", "updatetime");
+        add(specs, "loginRecord", 1342, "id", "user_id", "user_text", "mobile", "login_type", "device_platform", "device_id", "idf", "oaid", "imei", "location", "province", "city", "district", "device_brand", "device_model", "os_name", "os_version", "android_version", "ip", "createtime");
+        add(specs, "deviceLog", 153, "id", "user_id", "user_text", "log_date", "ip", "device_platform", "device_id", "oaid", "android_id", "device_brand", "device_model", "os_version", "network_type", "is_vpn", "is_proxy", "is_emulator", "is_root", "is_developer_mode", "is_usb_debug", "sim_operator", "location", "createtime");
+        add(specs, "user", 1258, "id", "nickname", "email", "invite_code", "direct_user_count", "ad_reward_ratio", "avatar", "score", "money", "ban_status_text", "ban_reason", "logintime", "loginip", "jointime", "status");
         add(specs, "announcement", 2, "id", "title", "content", "createtime", "updatetime");
         add(specs, "douyinMiniProgram", 3, "id", "name", "appid", "appsecret", "ad_base_score", "self_commission_rate", "max_ad_score", "withdraw_min_amount", "withdraw_fee_rate", "withdraw_fixed_fee", "access_token_expiretime", "status", "createtime", "updatetime");
-        add(specs, "douyinLoginRecord", 16, "id", "mini_program_text", "appid", "user_id", "user_text", "nickname", "mobile", "scene", "ad_slot", "rewarded_count", "device_platform", "device_brand", "device_model", "os_name", "os_version", "host_app_name", "host_app_version", "ip", "createtime");
-        add(specs, "douyinAdRecord", 22, "id", "mini_program_text", "appid", "user_id", "user_text", "ad_slot", "trans_id", "publisher_revenue", "reward_points", "device_platform", "ip", "createtime");
-        add(specs, "douyinTrafficRecord", 9, "id", "type", "request_time", "request_ip", "param_ip", "os", "model", "csite", "sl", "callback_url");
+        add(specs, "douyinLoginRecord", 1303, "id", "mini_program_text", "appid", "user_id", "user_text", "nickname", "mobile", "scene", "ad_slot", "rewarded_count", "device_platform", "device_brand", "device_model", "os_name", "os_version", "host_app_name", "host_app_version", "ip", "createtime");
+        add(specs, "douyinAdRecord", 717, "id", "mini_program_text", "openid", "nickname", "ad_type", "ad_time", "ad_revenue", "source", "ip", "city", "device_brand", "device_model", "host_app_version");
+        add(specs, "douyinTrafficRecord", 34513, "id", "type", "request_time", "request_ip", "param_ip", "os", "model", "csite", "sl", "callback_url", "callback_status");
         return specs;
     }
 
