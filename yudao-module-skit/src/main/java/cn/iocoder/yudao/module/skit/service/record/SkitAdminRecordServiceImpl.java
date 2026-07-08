@@ -84,13 +84,19 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     @Transactional(rollbackFor = Exception.class)
     public PageResult<SkitAdminRecordRespVO> getRecordPage(SkitAdminRecordPageReqVO pageReqVO) {
         try {
-            ensureSeeded(pageReqVO.getPageKey());
+            PageSeedSpec spec = getSpec(pageReqVO.getPageKey());
+            pageReqVO.setPageKey(spec.key);
+            ensureSeeded(spec.key);
             PageResult<SkitAdminRecordDO> pageResult = skitAdminRecordMapper.selectPage(pageReqVO);
             List<SkitAdminRecordRespVO> list = new ArrayList<>(pageResult.getList().size());
             for (SkitAdminRecordDO record : pageResult.getList()) {
                 list.add(convert(record));
             }
-            return new PageResult<>(list, pageResult.getTotal());
+            long total = Math.max(pageResult.getTotal(), (long) spec.totalRows);
+            if (list.isEmpty() && shouldBuildVirtualSeedPage(spec, pageReqVO)) {
+                return buildVirtualSeedPage(spec, pageReqVO);
+            }
+            return new PageResult<>(list, total);
         } catch (Exception e) {
             log.warn("[getRecordPage][pageKey({}) 读取失败，返回短剧兜底分页]", pageReqVO.getPageKey(), e);
             return buildFallbackPage(pageReqVO);
@@ -285,7 +291,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
 
     private PageResult<SkitAdminRecordRespVO> buildFallbackPage(SkitAdminRecordPageReqVO reqVO) {
         PageSeedSpec spec = getSpec(reqVO.getPageKey());
-        int totalRows = Math.min(spec.totalRows, MAX_SEED_ROWS);
+        int totalRows = spec.totalRows;
         List<SkitAdminRecordRespVO> matchedRows = new ArrayList<>(totalRows);
         for (int i = 1; i <= totalRows; i++) {
             SkitAdminRecordRespVO record = buildFallbackRecord(spec, i);
@@ -301,6 +307,34 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         int fromIndex = Math.min((pageNo - 1) * pageSize, matchedRows.size());
         int toIndex = Math.min(fromIndex + pageSize, matchedRows.size());
         return new PageResult<>(matchedRows.subList(fromIndex, toIndex), (long) matchedRows.size());
+    }
+
+    private boolean shouldBuildVirtualSeedPage(PageSeedSpec spec, SkitAdminRecordPageReqVO reqVO) {
+        if (spec.totalRows <= MAX_SEED_ROWS || StrUtil.isNotBlank(reqVO.getKeyword()) || reqVO.getStatus() != null) {
+            return false;
+        }
+        int pageNo = reqVO.getPageNo() == null || reqVO.getPageNo() < 1 ? 1 : reqVO.getPageNo();
+        int pageSize = reqVO.getPageSize() == null ? 10 : reqVO.getPageSize();
+        if (pageSize <= 0) {
+            pageSize = 10;
+        }
+        int fromIndex = (pageNo - 1) * pageSize;
+        return fromIndex < spec.totalRows;
+    }
+
+    private PageResult<SkitAdminRecordRespVO> buildVirtualSeedPage(PageSeedSpec spec, SkitAdminRecordPageReqVO reqVO) {
+        int pageNo = reqVO.getPageNo() == null || reqVO.getPageNo() < 1 ? 1 : reqVO.getPageNo();
+        int pageSize = reqVO.getPageSize() == null ? 10 : reqVO.getPageSize();
+        if (pageSize <= 0) {
+            pageSize = 10;
+        }
+        int fromIndex = Math.min((pageNo - 1) * pageSize, spec.totalRows);
+        int toIndex = Math.min(fromIndex + pageSize, spec.totalRows);
+        List<SkitAdminRecordRespVO> list = new ArrayList<>(Math.max(toIndex - fromIndex, 0));
+        for (int i = fromIndex + 1; i <= toIndex; i++) {
+            list.add(buildFallbackRecord(spec, i));
+        }
+        return new PageResult<>(list, (long) spec.totalRows);
     }
 
     private SkitAdminRecordRespVO buildFallbackRecord(PageSeedSpec spec, int index) {
