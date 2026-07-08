@@ -7,6 +7,8 @@ import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPa
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
 import org.apache.ibatis.annotations.Mapper;
 
+import java.util.List;
+
 @Mapper
 public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
 
@@ -21,6 +23,13 @@ public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
 
     default Long selectCountByPageKey(String pageKey) {
         return selectCount(SkitAdminRecordDO::getPageKey, pageKey);
+    }
+
+    default List<SkitAdminRecordDO> selectListByPageKey(String pageKey) {
+        return selectList(new LambdaQueryWrapperX<SkitAdminRecordDO>()
+                .eq(SkitAdminRecordDO::getPageKey, pageKey)
+                .orderByAsc(SkitAdminRecordDO::getSort)
+                .orderByDesc(SkitAdminRecordDO::getId));
     }
 
 }

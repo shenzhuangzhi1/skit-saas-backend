@@ -32,6 +32,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
 
     private static final Map<String, PageSeedSpec> PAGE_SPECS = buildPageSpecs();
     private static final int MAX_SEED_ROWS = 2000;
+    private static final String SEED_VERSION = "2026-07-08.2";
 
     @Resource
     private SkitAdminRecordMapper skitAdminRecordMapper;
@@ -102,25 +103,9 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     public Integer seedPage(String pageKey) {
         PageSeedSpec spec = getSpec(pageKey);
         if (skitAdminRecordMapper.selectCountByPageKey(spec.key) > 0) {
-            return 0;
+            return repairSeededPage(spec);
         }
-        int count = Math.min(spec.totalRows, MAX_SEED_ROWS);
-        if (count <= 0) {
-            return 0;
-        }
-        List<SkitAdminRecordDO> records = new ArrayList<>(count);
-        for (int i = 1; i <= count; i++) {
-            Map<String, Object> data = buildRecordData(spec, i);
-            records.add(SkitAdminRecordDO.builder()
-                    .pageKey(spec.key)
-                    .rowKey(spec.key + "-" + i)
-                    .recordData(toJson(data))
-                    .status(i % 3 == 0 ? 1 : 0)
-                    .sort(i)
-                    .build());
-        }
-        skitAdminRecordMapper.insertBatch(records);
-        return records.size();
+        return insertMissingSeedRows(spec, Collections.emptySet());
     }
 
     @Override
@@ -142,8 +127,90 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     }
 
     private void ensureSeeded(String pageKey) {
-        if (skitAdminRecordMapper.selectCountByPageKey(pageKey) == 0) {
-            seedPage(pageKey);
+        seedPage(pageKey);
+    }
+
+    private Integer repairSeededPage(PageSeedSpec spec) {
+        List<SkitAdminRecordDO> records = skitAdminRecordMapper.selectListByPageKey(spec.key);
+        Set<String> existingSeedRowKeys = new HashSet<>();
+        int changed = 0;
+        for (SkitAdminRecordDO record : records) {
+            int index = seedIndexOf(spec, record);
+            if (index <= 0) {
+                continue;
+            }
+            if (index > Math.min(spec.totalRows, MAX_SEED_ROWS)) {
+                skitAdminRecordMapper.deleteById(record.getId());
+                changed++;
+                continue;
+            }
+            existingSeedRowKeys.add(record.getRowKey());
+            Map<String, Object> recordData = fromJson(record.getRecordData());
+            if (!needsSeedRepair(spec, recordData)) {
+                continue;
+            }
+            record.setRecordData(toJson(buildRecordData(spec, index)));
+            record.setStatus(index % 3 == 0 ? 1 : 0);
+            record.setSort(index);
+            skitAdminRecordMapper.updateById(record);
+            changed++;
+        }
+        return changed + insertMissingSeedRows(spec, existingSeedRowKeys);
+    }
+
+    private Integer insertMissingSeedRows(PageSeedSpec spec, Set<String> existingSeedRowKeys) {
+        int count = Math.min(spec.totalRows, MAX_SEED_ROWS);
+        if (count <= 0) {
+            return 0;
+        }
+        List<SkitAdminRecordDO> records = new ArrayList<>(count);
+        for (int i = 1; i <= count; i++) {
+            String rowKey = spec.key + "-" + i;
+            if (existingSeedRowKeys.contains(rowKey)) {
+                continue;
+            }
+            Map<String, Object> data = buildRecordData(spec, i);
+            records.add(SkitAdminRecordDO.builder()
+                    .pageKey(spec.key)
+                    .rowKey(rowKey)
+                    .recordData(toJson(data))
+                    .status(i % 3 == 0 ? 1 : 0)
+                    .sort(i)
+                    .build());
+        }
+        if (records.isEmpty()) {
+            return 0;
+        }
+        skitAdminRecordMapper.insertBatch(records);
+        return records.size();
+    }
+
+    private static boolean needsSeedRepair(PageSeedSpec spec, Map<String, Object> recordData) {
+        if (!SEED_VERSION.equals(String.valueOf(recordData.get("_seedVersion")))) {
+            return true;
+        }
+        for (String column : spec.columns) {
+            if (!recordData.containsKey(column)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int seedIndexOf(PageSeedSpec spec, SkitAdminRecordDO record) {
+        String rowKey = record.getRowKey();
+        String prefix = spec.key + "-";
+        if (StrUtil.isBlank(rowKey) || !rowKey.startsWith(prefix)) {
+            return -1;
+        }
+        String suffix = rowKey.substring(prefix.length());
+        if (!suffix.matches("\\d+")) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(suffix);
+        } catch (NumberFormatException e) {
+            return -1;
         }
     }
 
@@ -281,12 +348,13 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     private static Map<String, Object> buildRecordData(PageSeedSpec spec, int index) {
         Map<String, Object> row = new LinkedHashMap<>();
         for (String column : spec.columns) {
-            row.put(column, valueFor(column, index));
+            row.put(column, valueFor(spec.key, column, index));
         }
+        row.put("_seedVersion", SEED_VERSION);
         return row;
     }
 
-    private static Object valueFor(String prop, int index) {
+    private static Object valueFor(String pageKey, String prop, int index) {
         if ("id".equals(prop)) {
             return sampleId(index);
         }
@@ -297,8 +365,11 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
             int[] values = new int[]{28, 15, 8};
             return values[index % values.length];
         }
-        if ("reward_points".equals(prop) || "score".equals(prop) || "before".equals(prop) || "after".equals(prop)) {
+        if ("reward_points".equals(prop)) {
             return index * 10;
+        }
+        if ("score".equals(prop) || "before".equals(prop) || "after".equals(prop)) {
+            return index * 100;
         }
         if ("publisher_revenue".equals(prop)) {
             return new BigDecimal("0.021").multiply(BigDecimal.valueOf(index)).setScale(3, BigDecimal.ROUND_HALF_UP);
@@ -351,11 +422,23 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         if ("browser".equals(prop)) {
             return "Mozilla/5.0";
         }
+        if ("payment_status_text".equals(prop)) {
+            return index % 4 == 0 ? "已打款" : "未打款";
+        }
+        if ("ban_status_text".equals(prop)) {
+            return "未封禁";
+        }
         if ("status".equals(prop) || prop.contains("status")) {
             return index % 3 == 0 ? "待处理" : "正常";
         }
         if (prop.startsWith("is_")) {
             return index % 2 == 0 ? "否" : "是";
+        }
+        if ("fee".equals(prop)) {
+            return BigDecimal.valueOf(index).multiply(new BigDecimal("0.03")).setScale(2, BigDecimal.ROUND_HALF_UP);
+        }
+        if ("real_money".equals(prop)) {
+            return BigDecimal.valueOf(index).multiply(new BigDecimal("3.24")).setScale(2, BigDecimal.ROUND_HALF_UP);
         }
         if (prop.contains("money") || "fee".equals(prop)) {
             return BigDecimal.valueOf(index).multiply(new BigDecimal("3.27")).setScale(2, BigDecimal.ROUND_HALF_UP);
@@ -369,7 +452,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         if ("operate".equals(prop) || "state".equals(prop) || "0".equals(prop)) {
             return "";
         }
-        return dictionaryValue(prop, index);
+        return dictionaryValue(pageKey, prop, index);
     }
 
     private static long sampleId(int index) {
@@ -377,12 +460,17 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         return index <= ids.length ? ids[index - 1] : 16000L - index;
     }
 
-    private static Object dictionaryValue(String prop, int index) {
+    private static Object dictionaryValue(String pageKey, String prop, int index) {
         Map<String, Object> dictionary = new HashMap<>();
-        dictionary.put("title", "公告标题 " + index);
+        dictionary.put("title", titleFor(pageKey, index));
         dictionary.put("category", new String[]{"都市", "逆袭", "甜宠", "悬疑"}[index % 4]);
         dictionary.put("episodes", 80 + (index % 20));
         dictionary.put("content", "公告正文摘要 " + index);
+        dictionary.put("url", urlFor(pageKey, index));
+        dictionary.put("groups_text", "超级管理员");
+        dictionary.put("rules", "全部权限");
+        dictionary.put("cover", "/uploads/20260708/drama-cover-" + index + ".jpg");
+        dictionary.put("avatar", "/uploads/20260708/avatar-" + index + ".png");
         dictionary.put("filename", "upload-" + index + ".png");
         dictionary.put("filesize", (300 + index * 12) + " KB");
         dictionary.put("imagewidth", "1254");
@@ -393,36 +481,145 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         dictionary.put("withdraw_type", "积分提现");
         dictionary.put("account_type", "微信");
         dictionary.put("account", "mock-account-" + index);
+        dictionary.put("fee", BigDecimal.valueOf(index).multiply(new BigDecimal("0.03")).setScale(2, BigDecimal.ROUND_HALF_UP));
+        dictionary.put("real_money", BigDecimal.valueOf(index).multiply(new BigDecimal("3.24")).setScale(2, BigDecimal.ROUND_HALF_UP));
         dictionary.put("review_mode", "人工审核");
         dictionary.put("payment_status_text", "未打款");
         dictionary.put("reject_reason", "-");
         dictionary.put("memo", "广告奖励");
+        dictionary.put("agent_ratio", 20 + index);
+        dictionary.put("member_self_ratio", 100);
+        dictionary.put("member_parent_ratio", 10);
+        dictionary.put("member_grandparent_ratio", 5);
+        dictionary.put("descendant_count", index % 7);
+        dictionary.put("today_agent_points", index * 12);
+        dictionary.put("total_agent_points", index * 320);
+        dictionary.put("remark", "默认分佣规则");
         dictionary.put("login_type", "手机号");
+        dictionary.put("device_id", "device-" + String.format("%04d", index));
+        dictionary.put("idf", "idf-" + String.format("%04d", index));
+        dictionary.put("idfa", "idfa-" + String.format("%04d", index));
+        dictionary.put("idfv", "idfv-" + String.format("%04d", index));
+        dictionary.put("oaid", "oaid-" + String.format("%04d", index));
+        dictionary.put("imei", "860000000000" + String.format("%03d", index));
+        dictionary.put("android_id", "android-" + String.format("%04d", index));
         dictionary.put("device_platform", index % 2 == 0 ? "android" : "ios");
         dictionary.put("device_brand", index % 2 == 0 ? "Redmi" : "iPhone");
         dictionary.put("device_model", index % 2 == 0 ? "K70" : "iPhone 15");
         dictionary.put("os_name", index % 2 == 0 ? "Android" : "iOS");
         dictionary.put("os_version", index % 2 == 0 ? "Android 13" : "iOS 17");
+        dictionary.put("android_version", index % 2 == 0 ? "13" : "-");
+        dictionary.put("app_version", "1.0." + (index % 9));
+        dictionary.put("app_build", "100" + index);
+        dictionary.put("package_name", "com.skit.duanju");
         dictionary.put("network_type", "wifi");
+        dictionary.put("sim_state", "ready");
+        dictionary.put("sim_operator", index % 2 == 0 ? "中国移动" : "中国联通");
+        dictionary.put("sim_count", index % 2 == 0 ? 2 : 1);
         dictionary.put("province", "示例省");
         dictionary.put("city", "示例市");
         dictionary.put("district", "示例区");
+        dictionary.put("country", "中国");
+        dictionary.put("address", "示例市短剧产业园 " + index + " 号");
         dictionary.put("location", "示例位置");
+        dictionary.put("latitude", "23.1291");
+        dictionary.put("longitude", "113.2644");
+        dictionary.put("screen_size", index % 2 == 0 ? "1080x2400" : "1179x2556");
+        dictionary.put("language", "zh-CN");
+        dictionary.put("timezone", "Asia/Shanghai");
+        dictionary.put("user_agent", "Mozilla/5.0 SkitApp/" + index);
+        dictionary.put("info_hash", "infohash-" + index);
+        dictionary.put("install_time", String.format("2026-07-%02d 08:00:00", (index % 6) + 1));
         dictionary.put("invite_code", "SKIT" + (1000 + index));
         dictionary.put("ban_status_text", "未封禁");
+        dictionary.put("ban_reason", "-");
+        dictionary.put("direct_user_count", index % 8);
+        dictionary.put("ad_reward_ratio", 100);
+        dictionary.put("logintime", String.format("2026-07-%02d %02d:18:00", (index % 6) + 1, (8 + index) % 24));
+        dictionary.put("loginip", "192.0.2." + index);
+        dictionary.put("jointime", String.format("2026-06-%02d %02d:18:00", (index % 20) + 1, (8 + index) % 24));
         dictionary.put("name", "精准短剧 " + index);
+        dictionary.put("ad_base_score", 10);
+        dictionary.put("self_commission_rate", 100);
+        dictionary.put("max_ad_score", 1000);
+        dictionary.put("withdraw_min_amount", "1.00");
+        dictionary.put("withdraw_fee_rate", "0");
+        dictionary.put("withdraw_fixed_fee", "0");
+        dictionary.put("access_token_expiretime", String.format("2026-07-%02d 23:59:59", (index % 6) + 1));
+        dictionary.put("access_token_updatetime", String.format("2026-07-%02d 10:00:00", (index % 6) + 1));
+        dictionary.put("mini_program_id", index % 3 + 1);
+        dictionary.put("third_id", "third-" + index);
+        dictionary.put("openid", "openid-" + index);
+        dictionary.put("unionid", "unionid-" + index);
+        dictionary.put("anonymous_openid", "anonymous-" + index);
         dictionary.put("scene", "登录");
         dictionary.put("ad_slot", "rewarded");
         dictionary.put("rewarded_count", index % 4);
         dictionary.put("host_app_name", "Douyin");
         dictionary.put("host_app_version", "30.8.0");
-        dictionary.put("type", "active");
+        dictionary.put("type", "douyinTrafficRecord".equals(pageKey) ? "active" : "广告奖励");
         dictionary.put("callback_url", "https://callback.example.com/skit");
         dictionary.put("model", "V2047A");
+        dictionary.put("request_time", String.format("2026-07-%02d %02d:10:00", (index % 6) + 1, (9 + index) % 24));
+        dictionary.put("request_ip", "198.51.100." + index);
+        dictionary.put("param_ip", "203.0.113." + index);
+        dictionary.put("os", index % 2 == 0 ? "android" : "ios");
         dictionary.put("csite", "site");
         dictionary.put("sl", "sl");
+        dictionary.put("geo", "广东省广州市");
+        dictionary.put("city_code", "440100");
+        dictionary.put("site", "douyin");
+        dictionary.put("union_site", "union-" + index);
+        dictionary.put("ts", String.valueOf(1783507200L + index));
+        dictionary.put("callback", "callback-" + index);
+        dictionary.put("advertiser_id", "advertiser-" + index);
+        dictionary.put("promotion_id", "promotion-" + index);
+        dictionary.put("project_id", "project-" + index);
+        dictionary.put("aid", "aid-" + index);
+        dictionary.put("aid_name", "计划 " + index);
+        dictionary.put("cid", "cid-" + index);
+        dictionary.put("cid_name", "创意 " + index);
+        dictionary.put("campaign_id", "campaign-" + index);
+        dictionary.put("campaign_name", "广告组 " + index);
+        dictionary.put("convert_id", "convert-" + index);
+        dictionary.put("request_id", "request-" + index);
+        dictionary.put("track_id", "track-" + index);
+        dictionary.put("outerid", "outer-" + index);
+        dictionary.put("productid", "product-" + index);
+        dictionary.put("request_path", "/manystore/duanju/douyin_mini_program_traffic_record");
+        dictionary.put("dedupe_hash", "dedupe-" + index);
         Object value = dictionary.get(prop);
         return value == null ? prop + "-" + index : value;
+    }
+
+    private static String titleFor(String pageKey, int index) {
+        if ("drama".equals(pageKey)) {
+            String[] names = new String[]{"重生后我逆袭成王", "闪婚后傅总追妻忙", "保洁妈妈是首富", "离婚后前夫后悔了"};
+            return names[(index - 1) % names.length] + " " + index;
+        }
+        if ("operationLog".equals(pageKey)) {
+            return "后台访问 " + index;
+        }
+        if ("adminLog".equals(pageKey)) {
+            return "管理员操作日志 " + index;
+        }
+        if ("announcement".equals(pageKey)) {
+            return "公告标题 " + index;
+        }
+        return "记录标题 " + index;
+    }
+
+    private static String urlFor(String pageKey, int index) {
+        Map<String, String> urls = new HashMap<>();
+        urls.put("operationLog", "/manystore/index/index");
+        urls.put("adminLog", "/manystore/auth/manystorelog");
+        urls.put("drama", "/manystore/duanju");
+        urls.put("adRecord", "/manystore/duanju/ad_record");
+        urls.put("withdraw", "/manystore/duanju/withdraw");
+        urls.put("scoreLog", "/manystore/duanju/score_log");
+        urls.put("douyinAdRecord", "/manystore/duanju/douyin_mini_program_ad_record");
+        String url = urls.get(pageKey);
+        return (url == null ? "/manystore/index/index" : url) + "?page=" + index;
     }
 
     private static Map<String, PageSeedSpec> buildPageSpecs() {
@@ -434,17 +631,17 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         add(specs, "group", 3, "id", "name", "rules", "createtime");
         add(specs, "drama", 12, "id", "title", "cover", "category", "episodes", "status", "createtime", "updatetime");
         add(specs, "adRecord", 943, "id", "user_id", "ad_network", "network_firm_id", "trans_id", "publisher_revenue", "reward_points", "createtime");
-        add(specs, "withdraw", 18, "id", "user_id", "user_text", "withdraw_type", "account_type", "account", "money", "score", "review_mode", "payment_status_text", "reject_reason", "createtime", "paytime");
-        add(specs, "scoreLog", 666, "id", "user_id", "type", "score", "before", "after", "memo", "createtime");
-        add(specs, "promotionAgent", 63, "id", "user_id", "user_text", "inviter_text", "invite_code", "ratio", "status", "createtime");
-        add(specs, "loginRecord", 182, "id", "user_id", "login_type", "ip", "province", "city", "createtime");
-        add(specs, "deviceLog", 121, "id", "user_id", "device_platform", "device_brand", "device_model", "os_name", "os_version", "network_type", "createtime");
-        add(specs, "user", 63, "id", "nickname", "mobile", "invite_code", "score", "ban_status_text", "createtime");
-        add(specs, "announcement", 5, "id", "title", "content", "status", "createtime");
-        add(specs, "douyinMiniProgram", 3, "id", "name", "appid", "appsecret", "callback_url", "status", "createtime");
-        add(specs, "douyinLoginRecord", 22, "id", "user_id", "mini_program_text", "host_app_name", "host_app_version", "model", "ip", "createtime");
+        add(specs, "withdraw", 26, "id", "user_text", "withdraw_type", "account_type", "account", "money", "fee", "real_money", "score", "status", "payment_status_text", "review_mode", "reject_reason", "createtime", "audittime", "paytime");
+        add(specs, "scoreLog", 1932, "id", "user_id", "user_text", "score", "before", "after", "memo", "createtime");
+        add(specs, "promotionAgent", 63, "id", "user_id", "user_text", "inviter_text", "agent_ratio", "member_self_ratio", "member_parent_ratio", "member_grandparent_ratio", "descendant_count", "today_agent_points", "total_agent_points", "remark", "createtime", "updatetime");
+        add(specs, "loginRecord", 101, "id", "user_id", "user_text", "mobile", "login_type", "device_platform", "device_id", "idf", "oaid", "imei", "location", "province", "city", "district", "device_brand", "device_model", "os_name", "os_version", "android_version", "ip", "createtime");
+        add(specs, "deviceLog", 103, "id", "user_id", "user_text", "log_date", "ip", "device_platform", "device_id", "oaid", "android_id", "device_brand", "device_model", "os_version", "network_type", "is_vpn", "is_proxy", "is_emulator", "is_root", "is_developer_mode", "is_usb_debug", "sim_operator", "location", "createtime");
+        add(specs, "user", 63, "id", "nickname", "email", "invite_code", "direct_user_count", "ad_reward_ratio", "avatar", "score", "money", "ban_status_text", "ban_reason", "logintime", "loginip", "jointime", "status");
+        add(specs, "announcement", 2, "id", "title", "content", "createtime", "updatetime");
+        add(specs, "douyinMiniProgram", 3, "id", "name", "appid", "appsecret", "ad_base_score", "self_commission_rate", "max_ad_score", "withdraw_min_amount", "withdraw_fee_rate", "withdraw_fixed_fee", "access_token_expiretime", "status", "createtime", "updatetime");
+        add(specs, "douyinLoginRecord", 16, "id", "mini_program_text", "appid", "user_id", "user_text", "nickname", "mobile", "scene", "ad_slot", "rewarded_count", "device_platform", "device_brand", "device_model", "os_name", "os_version", "host_app_name", "host_app_version", "ip", "createtime");
         add(specs, "douyinAdRecord", 22, "id", "mini_program_text", "appid", "user_id", "user_text", "ad_slot", "trans_id", "publisher_revenue", "reward_points", "device_platform", "ip", "createtime");
-        add(specs, "douyinTrafficRecord", 9, "id", "mini_program_text", "csite", "sl", "type", "createtime");
+        add(specs, "douyinTrafficRecord", 9, "id", "type", "request_time", "request_ip", "param_ip", "os", "model", "csite", "sl", "callback_url");
         return specs;
     }
 
