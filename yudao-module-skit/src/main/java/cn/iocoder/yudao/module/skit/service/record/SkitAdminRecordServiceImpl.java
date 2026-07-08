@@ -3,7 +3,6 @@ package cn.iocoder.yudao.module.skit.service.record;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
-import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordSaveReqVO;
@@ -229,13 +228,16 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         if (record == null) {
             return null;
         }
-        SkitAdminRecordRespVO respVO = BeanUtils.toBean(record, SkitAdminRecordRespVO.class);
-        fillRecordData(record, respVO);
-        return respVO;
-    }
-
-    private void fillRecordData(SkitAdminRecordDO record, SkitAdminRecordRespVO respVO) {
+        SkitAdminRecordRespVO respVO = new SkitAdminRecordRespVO();
+        respVO.setId(record.getId());
+        respVO.setPageKey(record.getPageKey());
+        respVO.setRowKey(record.getRowKey());
+        respVO.setStatus(record.getStatus());
+        respVO.setSort(record.getSort());
+        respVO.setCreateTime(record.getCreateTime());
+        respVO.setUpdateTime(record.getUpdateTime());
         respVO.setRecordData(fromJson(record.getRecordData()));
+        return respVO;
     }
 
     private String toJson(Map<String, Object> data) {
