@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.controller.admin.config;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.skit.service.config.SkitSystemConfigService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -17,6 +18,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @RestController
 @RequestMapping("/skit/general/config")
 @Validated
+@TenantIgnore
 public class SkitSystemConfigController {
 
     @Resource

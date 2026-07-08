@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.controller.admin.record;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordSaveReqVO;
@@ -23,6 +24,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @RestController
 @RequestMapping("/skit/admin-record")
 @Validated
+@TenantIgnore
 public class SkitAdminRecordController {
 
     @Resource
