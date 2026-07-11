@@ -20,7 +20,6 @@ import java.util.Map;
 @Validated
 public class SkitSystemConfigServiceImpl implements SkitSystemConfigService {
 
-    private static final long CONFIG_ID = 1L;
     private static final Map<String, Object> DEFAULT_CONFIG = buildDefaultConfig();
 
     @Resource
@@ -57,12 +56,11 @@ public class SkitSystemConfigServiceImpl implements SkitSystemConfigService {
     }
 
     private SkitSystemConfigDO ensureConfig() {
-        SkitSystemConfigDO config = skitSystemConfigMapper.selectById(CONFIG_ID);
+        SkitSystemConfigDO config = skitSystemConfigMapper.selectCurrentTenantConfig();
         if (config != null) {
             return config;
         }
         config = SkitSystemConfigDO.builder()
-                .id(CONFIG_ID)
                 .configData(toJson(DEFAULT_CONFIG))
                 .build();
         skitSystemConfigMapper.insert(config);
@@ -70,11 +68,12 @@ public class SkitSystemConfigServiceImpl implements SkitSystemConfigService {
     }
 
     private void saveConfig(Map<String, Object> config) {
+        SkitSystemConfigDO current = skitSystemConfigMapper.selectCurrentTenantConfig();
         SkitSystemConfigDO configDO = SkitSystemConfigDO.builder()
-                .id(CONFIG_ID)
+                .id(current != null ? current.getId() : null)
                 .configData(toJson(normalizeConfig(config)))
                 .build();
-        if (skitSystemConfigMapper.selectById(CONFIG_ID) == null) {
+        if (current == null) {
             skitSystemConfigMapper.insert(configDO);
         } else {
             skitSystemConfigMapper.updateById(configDO);

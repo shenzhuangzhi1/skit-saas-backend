@@ -1,7 +1,6 @@
 package cn.iocoder.yudao.module.skit.dal.dataobject.record;
 
-import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
-import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
+import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.KeySequence;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -21,8 +20,7 @@ import lombok.*;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@TenantIgnore
-public class SkitAdminRecordDO extends BaseDO {
+public class SkitAdminRecordDO extends TenantBaseDO {
 
     @TableId
     private Long id;

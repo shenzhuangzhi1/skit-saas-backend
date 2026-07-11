@@ -49,7 +49,8 @@ public class RateLimiterAspect {
         boolean success = rateLimiterRedisDAO.tryAcquire(key,
                 rateLimiter.count(), rateLimiter.time(), rateLimiter.timeUnit());
         if (!success) {
-            log.info("[beforePointCut][方法({}) 参数({}) 请求过于频繁]", joinPoint.getSignature().toString(), joinPoint.getArgs());
+            // Never log method arguments here: login passwords, refresh tokens, and other credentials can be present.
+            log.info("[beforePointCut][方法({}) 请求过于频繁]", joinPoint.getSignature().toString());
             String message = StrUtil.blankToDefault(rateLimiter.message(),
                     GlobalErrorCodeConstants.TOO_MANY_REQUESTS.getMsg());
             throw new ServiceException(GlobalErrorCodeConstants.TOO_MANY_REQUESTS.getCode(), message);
@@ -57,4 +58,3 @@ public class RateLimiterAspect {
     }
 
 }
-

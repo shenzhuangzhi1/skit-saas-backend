@@ -1,15 +1,14 @@
 package cn.iocoder.yudao.module.skit.controller.admin.config;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
-import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.skit.service.config.SkitSystemConfigService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
-import javax.annotation.security.PermitAll;
 import java.util.Map;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
@@ -18,7 +17,6 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @RestController
 @RequestMapping("/skit/general/config")
 @Validated
-@TenantIgnore
 public class SkitSystemConfigController {
 
     @Resource
@@ -26,14 +24,14 @@ public class SkitSystemConfigController {
 
     @GetMapping
     @Operation(summary = "获得短剧系统配置")
-    @PermitAll
+    @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
     public CommonResult<Map<String, Object>> getConfig() {
         return success(skitSystemConfigService.getConfig());
     }
 
     @PutMapping
     @Operation(summary = "更新短剧系统配置")
-    @PermitAll
+    @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
     public CommonResult<Boolean> updateConfig(@RequestBody Map<String, Object> config) {
         skitSystemConfigService.updateConfig(config);
         return success(true);
@@ -41,7 +39,7 @@ public class SkitSystemConfigController {
 
     @PostMapping("/reset")
     @Operation(summary = "重置短剧系统配置")
-    @PermitAll
+    @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
     public CommonResult<Map<String, Object>> resetConfig() {
         return success(skitSystemConfigService.resetConfig());
     }
