@@ -4,7 +4,6 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
-import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
@@ -167,10 +166,13 @@ public class SkitTenantBusinessController {
     }
 
     private Long resolveTargetTenant(Long requestedTenantId) {
-        Long effectiveTenantId = requestedTenantId == null
-                ? TenantContextHolder.getRequiredTenantId() : requestedTenantId;
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long originalTenantId = loginUser == null ? null : loginUser.getTenantId();
+        if (originalTenantId == null) {
+            platformAdminGuard.check();
+        }
+        // Never derive an agent request from TenantContextHolder: visit-tenant headers can change it.
+        Long effectiveTenantId = requestedTenantId == null ? originalTenantId : requestedTenantId;
         if (!Objects.equals(effectiveTenantId, originalTenantId)) {
             platformAdminGuard.check();
         }

@@ -89,6 +89,24 @@ class SkitTenantBusinessControllerTest {
     }
 
     @Test
+    void tenantAdminIgnoresVisitTenantContextWhenNoTenantIsRequested() {
+        authenticate(10L);
+        TenantContextHolder.setTenantId(20L);
+        mockExistingAgent(10L);
+        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
+        settings.setPangleAppId("pangle-10");
+        when(adAccountService.getSettings()).thenAnswer(invocation -> {
+            assertEquals(10L, TenantContextHolder.getRequiredTenantId());
+            return settings;
+        });
+
+        CommonResult<SkitAdAccountService.Settings> response = controller.getAdAccount(null);
+
+        assertEquals("pangle-10", response.getData().getPangleAppId());
+        verify(platformAdminGuard, never()).check();
+    }
+
+    @Test
     void platformAdminCrossTenantAccessRunsInsideSelectedAgentContext() {
         authenticate(1L);
         TenantContextHolder.setTenantId(1L);
