@@ -26,6 +26,7 @@ public interface SkitMemberService {
 
     @Data
     class RegisterCommand {
+        private Long tenantId;
         private String mobile;
         private String password;
         private String nickname;
@@ -35,6 +36,7 @@ public interface SkitMemberService {
 
     @Data
     class LoginCommand {
+        private Long tenantId;
         private String mobile;
         private String password;
         private String loginIp;

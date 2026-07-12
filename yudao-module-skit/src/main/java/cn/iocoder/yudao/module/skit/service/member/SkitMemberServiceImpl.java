@@ -62,11 +62,13 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     @Transactional(rollbackFor = Exception.class)
     public AuthResult register(RegisterCommand command) {
         InvitationTarget invitation = resolveTarget(normalizeCode(command.getInviteCode()));
-        List<SkitMemberDO> existingMembers = withoutTenant(() -> memberMapper.selectListByMobile(command.getMobile()));
-        if (existingMembers != null && !existingMembers.isEmpty()) {
-            throw exception(MEMBER_MOBILE_EXISTS);
+        if (!Objects.equals(invitation.tenantId, command.getTenantId())) {
+            throw exception(MEMBER_APP_CONTEXT_INVALID);
         }
         return inTenant(invitation.tenantId, () -> {
+            if (memberMapper.selectByMobile(command.getMobile()) != null) {
+                throw exception(MEMBER_MOBILE_EXISTS);
+            }
             SkitMemberDO inviter = invitation.inviterId == null ? null : memberMapper.selectById(invitation.inviterId);
             if (invitation.inviterId != null && (inviter == null || CommonStatusEnum.isDisable(inviter.getStatus()))) {
                 throw exception(INVITE_CODE_INVALID);
@@ -85,7 +87,10 @@ public class SkitMemberServiceImpl implements SkitMemberService {
 
     @Override
     public AuthResult login(LoginCommand command) {
-        Long tenantId = resolveLoginTenant(command.getMobile());
+        Long tenantId = command.getTenantId();
+        if (tenantId == null) {
+            throw exception(MEMBER_APP_CONTEXT_INVALID);
+        }
         return inTenant(tenantId, () -> {
             SkitMemberDO member = memberMapper.selectByMobile(command.getMobile());
             if (member == null || !passwordEncoder.matches(command.getPassword(), member.getPassword())) {
@@ -270,14 +275,6 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         result.setUserId(token.getUserId());
         result.setTenantId(tenantId);
         return result;
-    }
-
-    private Long resolveLoginTenant(String mobile) {
-        List<SkitMemberDO> matches = withoutTenant(() -> memberMapper.selectListByMobile(mobile));
-        if (matches == null || matches.size() != 1 || matches.get(0).getTenantId() == null) {
-            throw exception(MEMBER_LOGIN_FAILED);
-        }
-        return matches.get(0).getTenantId();
     }
 
     private InvitationTarget resolveTarget(String inviteCode) {

@@ -30,8 +30,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
-import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_LOGIN_FAILED;
-import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_MOBILE_EXISTS;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_APP_CONTEXT_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_TOKEN_SCOPE_INVALID;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -103,6 +102,7 @@ class SkitMemberServiceImplTest {
         });
 
         SkitMemberService.RegisterCommand command = new SkitMemberService.RegisterCommand();
+        command.setTenantId(TENANT_ID);
         command.setMobile("13800000001");
         command.setPassword("secret123");
         command.setNickname("new member");
@@ -142,13 +142,9 @@ class SkitMemberServiceImplTest {
     }
 
     @Test
-    void loginUsesTheTenantBoundToTheOnlyMatchingMobile() {
+    void loginUsesTheTenantFromVerifiedAppContext() {
         SkitMemberDO member = enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88");
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
-        when(memberMapper.selectListByMobile("13800000002")).thenAnswer(invocation -> {
-            assertTrue(TenantContextHolder.isIgnore());
-            return Collections.singletonList(member);
-        });
         when(memberMapper.selectByMobile("13800000002")).thenAnswer(invocation -> {
             assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
             assertFalse(TenantContextHolder.isIgnore());
@@ -161,6 +157,7 @@ class SkitMemberServiceImplTest {
             return token(MEMBER_ID);
         });
         SkitMemberService.LoginCommand command = new SkitMemberService.LoginCommand();
+        command.setTenantId(TENANT_ID);
         command.setMobile("13800000002");
         command.setPassword("secret123");
         command.setLoginIp("127.0.0.2");
@@ -173,21 +170,30 @@ class SkitMemberServiceImplTest {
     }
 
     @Test
-    void loginRejectsLegacyMobileBoundToMultipleTenants() {
-        SkitMemberDO first = enabledMember(1L, 10L, 0, "INVITE10");
-        SkitMemberDO second = enabledMember(2L, 20L, 0, "INVITE20");
-        when(memberMapper.selectListByMobile("13800000003")).thenReturn(Arrays.asList(first, second));
+    void loginDoesNotQueryAnotherTenantForTheSameMobile() {
+        SkitMemberDO member = enabledMember(2L, 20L, 0, "INVITE20");
+        when(agentMapper.selectByTenantId(20L)).thenReturn(SkitAgentDO.builder().tenantId(20L)
+                .tenantCode("AGENT20").status(CommonStatusEnum.ENABLE.getStatus()).build());
+        when(memberMapper.selectByMobile("13800000003")).thenAnswer(invocation -> {
+            assertEquals(20L, TenantContextHolder.getTenantId());
+            return member;
+        });
+        when(passwordEncoder.matches("secret123", member.getPassword())).thenReturn(true);
+        when(memberMapper.updateById(any(SkitMemberDO.class))).thenReturn(1);
+        when(oauth2TokenApi.createAccessToken(any(OAuth2AccessTokenCreateReqDTO.class))).thenReturn(token(2L));
         SkitMemberService.LoginCommand command = new SkitMemberService.LoginCommand();
+        command.setTenantId(20L);
         command.setMobile("13800000003");
         command.setPassword("secret123");
 
-        assertServiceException(() -> memberService.login(command), MEMBER_LOGIN_FAILED);
-        verify(memberMapper, never()).selectByMobile(anyString());
-        verifyNoInteractions(passwordEncoder, oauth2TokenApi);
+        SkitMemberService.AuthResult result = memberService.login(command);
+
+        assertEquals(20L, result.getTenantId());
+        verify(memberMapper, never()).selectListByMobile(anyString());
     }
 
     @Test
-    void registerRejectsMobileAlreadyBoundToAnotherTenant() {
+    void registerAllowsMobileAlreadyUsedByAnotherTenant() {
         SkitAgentDO agent = SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
                 .rootInviteCode("ROOT42").status(CommonStatusEnum.ENABLE.getStatus()).build();
         SkitMemberDO existingMember = enabledMember(99L, 43L, 0, "OTHER99");
@@ -196,14 +202,60 @@ class SkitMemberServiceImplTest {
             assertTrue(TenantContextHolder.isIgnore());
             return Collections.singletonList(existingMember);
         });
+        when(memberMapper.selectByMobile("13800000004")).thenAnswer(invocation -> {
+            assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
+            return null;
+        });
+        when(passwordEncoder.encode("secret123")).thenReturn("encoded-password");
+        when(memberMapper.insert(any(SkitMemberDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitMemberDO>getArgument(0).setId(MEMBER_ID);
+            return 1;
+        });
+        when(closureMapper.insert(any(SkitMemberClosureDO.class))).thenReturn(1);
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(agent);
+        when(oauth2TokenApi.createAccessToken(any(OAuth2AccessTokenCreateReqDTO.class))).thenReturn(token(MEMBER_ID));
         SkitMemberService.RegisterCommand command = new SkitMemberService.RegisterCommand();
+        command.setTenantId(TENANT_ID);
         command.setMobile("13800000004");
         command.setPassword("secret123");
         command.setNickname("new member");
         command.setInviteCode("ROOT42");
 
-        assertServiceException(() -> memberService.register(command), MEMBER_MOBILE_EXISTS);
+        SkitMemberService.AuthResult result = memberService.register(command);
+
+        assertEquals(TENANT_ID, result.getTenantId());
+        assertEquals(MEMBER_ID, result.getUserId());
+        verify(memberMapper).insert(any(SkitMemberDO.class));
+        verify(memberMapper, never()).selectListByMobile(anyString());
+    }
+
+    @Test
+    void registerRejectsInviteFromAnotherAgentContextBeforeMemberLookup() {
+        SkitAgentDO agent = SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
+                .rootInviteCode("ROOT42").status(CommonStatusEnum.ENABLE.getStatus()).build();
+        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(agent);
+        SkitMemberService.RegisterCommand command = new SkitMemberService.RegisterCommand();
+        command.setTenantId(43L);
+        command.setMobile("13800000005");
+        command.setPassword("secret123");
+        command.setNickname("new member");
+        command.setInviteCode("ROOT42");
+
+        assertServiceException(() -> memberService.register(command), MEMBER_APP_CONTEXT_INVALID);
+
+        verify(memberMapper, never()).selectByMobile(anyString());
         verify(memberMapper, never()).insert(any(SkitMemberDO.class));
+    }
+
+    @Test
+    void loginRejectsMissingAppContextBeforeMemberLookup() {
+        SkitMemberService.LoginCommand command = new SkitMemberService.LoginCommand();
+        command.setMobile("13800000006");
+        command.setPassword("secret123");
+
+        assertServiceException(() -> memberService.login(command), MEMBER_APP_CONTEXT_INVALID);
+
+        verifyNoInteractions(memberMapper, passwordEncoder, oauth2TokenApi);
     }
 
     @Test

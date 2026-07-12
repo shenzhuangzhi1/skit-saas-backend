@@ -60,6 +60,14 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 + auditColumns() + ",PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_agent_tenant` (`tenant_id`),"
                 + "UNIQUE KEY `uk_skit_agent_code` (`tenant_code`),UNIQUE KEY `uk_skit_agent_invite` (`root_invite_code`))"
                 + tableOptions());
+        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS `skit_app_release_profile` ("
+                + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,`profile_code` varchar(32) NOT NULL,"
+                + "`channel` varchar(16) NOT NULL DEFAULT 'production',`min_native_version` varchar(32) DEFAULT '',"
+                + "`hot_version` varchar(32) DEFAULT '',`hot_bundle_url` varchar(500) DEFAULT '',"
+                + "`hot_bundle_sha256` char(64) DEFAULT '',`native_version` varchar(32) DEFAULT '',"
+                + "`native_package` varchar(255) DEFAULT '',`status` tinyint NOT NULL DEFAULT 0," + auditColumns()
+                + ",PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_app_release_profile_code` (`profile_code`),"
+                + "UNIQUE KEY `uk_skit_app_release_profile_tenant_channel` (`tenant_id`,`channel`))" + tableOptions());
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS `skit_ad_account` ("
                 + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,`provider` varchar(16) NOT NULL,"
                 + "`account_name` varchar(128) DEFAULT '',`account_id` varchar(128) DEFAULT '',`app_id` varchar(128) DEFAULT '',"
@@ -71,7 +79,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 + "`password` varchar(100) NOT NULL,`nickname` varchar(64) NOT NULL,`inviter_id` bigint DEFAULT NULL,"
                 + "`invite_code` varchar(32) NOT NULL,`depth` int NOT NULL DEFAULT 1,`status` tinyint NOT NULL DEFAULT 0,"
                 + "`register_ip` varchar(50) DEFAULT '',`login_ip` varchar(50) DEFAULT '',`login_time` datetime DEFAULT NULL,"
-                + auditColumns() + ",PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_member_mobile` (`mobile`),"
+                + auditColumns() + ",PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_member_tenant_mobile` (`tenant_id`,`mobile`),"
                 + "UNIQUE KEY `uk_skit_member_invite_code` (`invite_code`),KEY `idx_skit_member_tenant_inviter` (`tenant_id`,`inviter_id`))"
                 + tableOptions());
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS `skit_member_closure` ("
@@ -114,8 +122,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     }
 
     private void migrateDomainIndexes() {
-        // 手机号是会员的全局登录身份，不能在多个租户下重复绑定；邀请码仍负责确定注册租户。
-        addIndexIfMissing("skit_member", "uk_skit_member_mobile", "`mobile`", true);
+        // 手机号是租户内会员身份；邀请码和 App 上下文决定所属代理商租户。
+        dropIndexIfExists("skit_member", "uk_skit_member_mobile");
+        addIndexIfMissing("skit_member", "uk_skit_member_tenant_mobile", "`tenant_id`,`mobile`", true);
     }
 
     private void addColumnIfMissing(String table, String column, String definition) {
@@ -134,6 +143,15 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         if (count != null && count == 0) {
             jdbcTemplate.execute("ALTER TABLE `" + table + "` ADD " + (unique ? "UNIQUE " : "")
                     + "INDEX `" + index + "` (" + columns + ")");
+        }
+    }
+
+    private void dropIndexIfExists(String table, String index) {
+        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM information_schema.STATISTICS "
+                        + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?",
+                Integer.class, table, index);
+        if (count != null && count > 0) {
+            jdbcTemplate.execute("ALTER TABLE `" + table + "` DROP INDEX `" + index + "`");
         }
     }
 

@@ -46,6 +46,24 @@ CREATE TABLE IF NOT EXISTS `skit_agent` (
   UNIQUE KEY `uk_skit_agent_code` (`tenant_code`), UNIQUE KEY `uk_skit_agent_invite` (`root_invite_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理商全局注册表';
 
+CREATE TABLE IF NOT EXISTS `skit_app_release_profile` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `profile_code` varchar(32) NOT NULL COMMENT '白标 App 发布档案代码，等于代理商代码',
+  `channel` varchar(16) NOT NULL DEFAULT 'production' COMMENT '发布渠道',
+  `min_native_version` varchar(32) DEFAULT '' COMMENT '支持热更新的最低原生版本',
+  `hot_version` varchar(32) DEFAULT '' COMMENT '热更新版本',
+  `hot_bundle_url` varchar(500) DEFAULT '' COMMENT '公开 HTTPS 热更新包地址',
+  `hot_bundle_sha256` char(64) DEFAULT '' COMMENT '热更新包 SHA-256',
+  `native_version` varchar(32) DEFAULT '' COMMENT '当前原生壳版本',
+  `native_package` varchar(255) DEFAULT '' COMMENT '原生包名，不包含签名或广告凭证',
+  `status` tinyint NOT NULL DEFAULT 0,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_app_release_profile_code` (`profile_code`),
+  UNIQUE KEY `uk_skit_app_release_profile_tenant_channel` (`tenant_id`,`channel`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理商白标 App 发布档案';
+
 CREATE TABLE IF NOT EXISTS `skit_ad_account` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
   `provider` varchar(16) NOT NULL, `account_name` varchar(128) DEFAULT '', `account_id` varchar(128) DEFAULT '',
@@ -66,7 +84,7 @@ CREATE TABLE IF NOT EXISTS `skit_member` (
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_skit_member_mobile` (`mobile`),
+  UNIQUE KEY `uk_skit_member_tenant_mobile` (`tenant_id`,`mobile`),
   UNIQUE KEY `uk_skit_member_invite_code` (`invite_code`),
   KEY `idx_skit_member_tenant_inviter` (`tenant_id`,`inviter_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧独立会员';

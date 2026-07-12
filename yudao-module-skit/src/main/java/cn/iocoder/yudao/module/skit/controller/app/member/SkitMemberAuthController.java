@@ -9,6 +9,7 @@ import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.framework.ratelimiter.core.annotation.RateLimiter;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientIpRateLimiterKeyResolver;
+import cn.iocoder.yudao.module.skit.service.member.SkitMemberAppContextService;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -36,6 +37,8 @@ public class SkitMemberAuthController {
     @Resource
     private SkitMemberService memberService;
     @Resource
+    private SkitMemberAppContextService appContextService;
+    @Resource
     private SecurityProperties securityProperties;
 
     @PostMapping("/register")
@@ -50,6 +53,7 @@ public class SkitMemberAuthController {
         command.setPassword(reqVO.getPassword());
         command.setNickname(reqVO.getNickname());
         command.setInviteCode(reqVO.getInviteCode());
+        command.setTenantId(appContextService.requireTenantId(reqVO.getContextToken()));
         command.setRegisterIp(ServletUtils.getClientIP());
         return success(memberService.register(command));
     }
@@ -64,8 +68,17 @@ public class SkitMemberAuthController {
         SkitMemberService.LoginCommand command = new SkitMemberService.LoginCommand();
         command.setMobile(reqVO.getMobile());
         command.setPassword(reqVO.getPassword());
+        command.setTenantId(appContextService.requireTenantId(reqVO.getContextToken()));
         command.setLoginIp(ServletUtils.getClientIP());
         return success(memberService.login(command));
+    }
+
+    @PostMapping("/bootstrap")
+    @PermitAll
+    @RateLimiter(time = 60, count = 30, keyResolver = SkitClientIpRateLimiterKeyResolver.class)
+    @Operation(summary = "获取代理商 App 登录上下文")
+    public CommonResult<SkitMemberAppContextService.AppContext> bootstrap(@Valid @RequestBody BootstrapReqVO reqVO) {
+        return success(appContextService.issue(reqVO.getAgentCode()));
     }
 
     @PostMapping("/refresh-token")
@@ -104,6 +117,9 @@ public class SkitMemberAuthController {
         @NotBlank
         @Length(max = 32)
         private String inviteCode;
+        @NotBlank
+        @Length(max = 64)
+        private String contextToken;
     }
 
     @Data
@@ -113,5 +129,15 @@ public class SkitMemberAuthController {
         private String mobile;
         @NotBlank
         private String password;
+        @NotBlank
+        @Length(max = 64)
+        private String contextToken;
+    }
+
+    @Data
+    public static class BootstrapReqVO {
+        @NotBlank
+        @Length(max = 32)
+        private String agentCode;
     }
 }

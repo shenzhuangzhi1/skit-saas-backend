@@ -13,6 +13,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
+import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
 import cn.iocoder.yudao.module.system.controller.admin.tenant.vo.tenant.TenantSaveReqVO;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
@@ -59,6 +60,8 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     private SkitAdAccountService adAccountService;
     @Resource
     private SkitCommissionService commissionService;
+    @Resource
+    private SkitAppReleaseService appReleaseService;
 
     @Override
     public PageResult<SkitAgentRespVO> getAgentPage(SkitAgentPageReqVO pageReqVO) {
@@ -108,6 +111,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
                 .status(createReqVO.getStatus())
                 .remark(StrUtil.nullToEmpty(createReqVO.getRemark()))
                 .build());
+        appReleaseService.ensureProfile(tenantId, tenantCode);
         TenantUtils.execute(tenantId, () -> {
             adAccountService.ensureDefaultAccounts();
             saveAdSettings(createReqVO, false);
@@ -137,6 +141,9 @@ public class SkitAgentServiceImpl implements SkitAgentService {
                 .setTenantCode(tenantCode)
                 .setStatus(updateReqVO.getStatus())
                 .setRemark(updateReqVO.getRemark() == null ? agent.getRemark() : updateReqVO.getRemark()));
+        if (!tenantCode.equals(agent.getTenantCode())) {
+            appReleaseService.renameProfile(agent.getTenantId(), tenantCode);
+        }
 
         Long tenantId = agent.getTenantId();
         if (StrUtil.isNotBlank(updateReqVO.getPassword()) && tenant.getContactUserId() != null) {

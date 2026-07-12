@@ -12,6 +12,7 @@ import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
+import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import cn.iocoder.yudao.module.skit.service.revenue.SkitRevenueService;
@@ -29,6 +30,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import javax.annotation.Resource;
 import javax.validation.Valid;
 import javax.validation.constraints.NotEmpty;
+import javax.validation.constraints.NotNull;
 import java.util.List;
 import java.util.Objects;
 import java.time.LocalDateTime;
@@ -46,6 +48,8 @@ public class SkitTenantBusinessController {
 
     @Resource
     private SkitAdAccountService adAccountService;
+    @Resource
+    private SkitAppReleaseService appReleaseService;
     @Resource
     private SkitCommissionService commissionService;
     @Resource
@@ -102,6 +106,34 @@ public class SkitTenantBusinessController {
         settings.setTakuPlacementId(reqVO.getTakuPlacementId());
         settings.setTakuEnabled(reqVO.getTakuEnabled());
         return success(inTargetTenant(reqVO.getTenantId(), () -> adAccountService.saveSettings(settings)));
+    }
+
+    @GetMapping("/app-release")
+    @PreAuthorize("@ss.hasRole('super_admin')")
+    @Operation(summary = "获得代理商 App 发布档案")
+    public CommonResult<SkitAppReleaseService.ProfileView> getAppRelease(
+            @RequestParam("tenantId") Long tenantId) {
+        platformAdminGuard.check();
+        return success(appReleaseService.getProfile(tenantId));
+    }
+
+    @PutMapping("/app-release")
+    @PreAuthorize("@ss.hasRole('super_admin')")
+    @Operation(summary = "保存代理商 App 发布档案")
+    public CommonResult<SkitAppReleaseService.ProfileView> saveAppRelease(
+            @Valid @RequestBody AppReleaseSaveReqVO reqVO) {
+        platformAdminGuard.check();
+        SkitAppReleaseService.ProfileView profile = new SkitAppReleaseService.ProfileView();
+        profile.setTenantId(reqVO.getTenantId());
+        profile.setChannel(reqVO.getChannel());
+        profile.setMinNativeVersion(reqVO.getMinNativeVersion());
+        profile.setHotVersion(reqVO.getHotVersion());
+        profile.setHotBundleUrl(reqVO.getHotBundleUrl());
+        profile.setHotBundleSha256(reqVO.getHotBundleSha256());
+        profile.setNativeVersion(reqVO.getNativeVersion());
+        profile.setNativePackage(reqVO.getNativePackage());
+        profile.setStatus(reqVO.getStatus());
+        return success(appReleaseService.saveProfile(profile));
     }
 
     @GetMapping("/commission-rules")
@@ -178,6 +210,21 @@ public class SkitTenantBusinessController {
         @NotEmpty(message = "分成规则不能为空")
         @Valid
         private List<SkitCommissionService.RuleView> rules;
+    }
+
+    @Data
+    public static class AppReleaseSaveReqVO {
+        @NotNull
+        private Long tenantId;
+        private String channel;
+        private String minNativeVersion;
+        private String hotVersion;
+        private String hotBundleUrl;
+        private String hotBundleSha256;
+        private String nativeVersion;
+        private String nativePackage;
+        @NotNull
+        private Integer status;
     }
 
     @Data
