@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
 import cn.iocoder.yudao.module.system.controller.admin.tenant.vo.tenant.TenantSaveReqVO;
+import cn.iocoder.yudao.module.system.dal.dataobject.user.AdminUserDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantPackageService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
@@ -21,9 +22,12 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Collections;
+
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.PLATFORM_ADMIN_REQUIRED;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_USERNAME_EXISTS;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -88,6 +92,16 @@ class SkitAgentServiceImplTest {
         verify(adAccountService).ensureDefaultAccounts();
         verify(adAccountService).saveSettings(any(SkitAdAccountService.Settings.class));
         verify(commissionService).ensureDefaultPlan();
+    }
+
+    @Test
+    void createAgentRejectsAdministratorUsernameAlreadyBoundToAnotherTenant() {
+        when(adminUserService.getUserListByUsernameIgnoreTenant("agent-admin"))
+                .thenReturn(Collections.singletonList(new AdminUserDO()));
+
+        assertServiceException(() -> agentService.createAgent(createRequest()), USER_USERNAME_EXISTS);
+
+        verifyNoInteractions(tenantService, agentMapper, memberMapper, adAccountService, commissionService);
     }
 
     private SkitAgentSaveReqVO createRequest() {

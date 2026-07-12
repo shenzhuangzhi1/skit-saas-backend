@@ -111,6 +111,16 @@ public interface AdminUserService {
     AdminUserDO getUserByUsername(String username);
 
     /**
+     * 忽略租户查询同名账号。
+     *
+     * 登录入口使用该方法确定账号唯一绑定的租户，避免让用户手工输入租户名称。
+     *
+     * @param username 用户名
+     * @return 同名用户列表
+     */
+    List<AdminUserDO> getUserListByUsernameIgnoreTenant(String username);
+
+    /**
      * 通过手机号获取用户
      *
      * @param mobile 手机号

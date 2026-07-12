@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.system.service.auth;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.ObjectUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.enums.UserTypeEnum;
@@ -8,6 +9,7 @@ import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
 import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
 import cn.iocoder.yudao.framework.datapermission.core.annotation.DataPermission;
+import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.system.api.logger.dto.LoginLogCreateReqDTO;
 import cn.iocoder.yudao.module.system.api.sms.SmsCodeApi;
 import cn.iocoder.yudao.module.system.api.sms.dto.code.SmsCodeUseReqDTO;
@@ -38,7 +40,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import javax.validation.Validator;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.common.util.servlet.ServletUtils.getClientIP;
@@ -104,7 +108,14 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         // 校验验证码
         validateCaptcha(reqVO);
 
-        // 使用账号密码，进行登录
+        // 一个后台用户名必须唯一绑定一个租户。登录时由该绑定关系决定租户，前端无需再传 tenant-id。
+        Long tenantId = resolveLoginTenantId(reqVO.getUsername());
+        AtomicReference<AuthLoginRespVO> result = new AtomicReference<>();
+        TenantUtils.execute(tenantId, () -> result.set(loginWithinTenant(reqVO)));
+        return result.get();
+    }
+
+    private AuthLoginRespVO loginWithinTenant(AuthLoginReqVO reqVO) {
         AdminUserDO user = authenticate(reqVO.getUsername(), reqVO.getPassword());
 
         // 如果 socialType 非空，说明需要绑定社交用户
@@ -114,6 +125,16 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         }
         // 创建 Token 令牌，记录登录日志
         return createTokenAfterLoginSuccess(user.getId(), reqVO.getUsername(), LoginLogTypeEnum.LOGIN_USERNAME);
+    }
+
+    private Long resolveLoginTenantId(String username) {
+        List<AdminUserDO> users = userService.getUserListByUsernameIgnoreTenant(username);
+        if (CollUtil.size(users) != 1 || users.get(0).getTenantId() == null) {
+            // 不暴露用户名是否存在或是否发生冲突，避免通过登录接口枚举租户用户。
+            createLoginLog(null, username, LoginLogTypeEnum.LOGIN_USERNAME, LoginResultEnum.BAD_CREDENTIALS);
+            throw exception(AUTH_LOGIN_BAD_CREDENTIALS);
+        }
+        return users.get(0).getTenantId();
     }
 
     @Override

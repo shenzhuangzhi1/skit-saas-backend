@@ -12,6 +12,7 @@ import cn.iocoder.yudao.framework.common.util.collection.CollectionUtils;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
 import cn.iocoder.yudao.framework.datapermission.core.util.DataPermissionUtils;
+import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.infra.api.config.ConfigApi;
 import cn.iocoder.yudao.module.system.controller.admin.auth.vo.AuthRegisterReqVO;
 import cn.iocoder.yudao.module.system.controller.admin.user.vo.profile.UserProfileUpdatePasswordReqVO;
@@ -299,6 +300,12 @@ public class AdminUserServiceImpl implements AdminUserService {
     @Override
     public AdminUserDO getUserByUsername(String username) {
         return userMapper.selectByUsername(username);
+    }
+
+    @Override
+    @TenantIgnore
+    public List<AdminUserDO> getUserListByUsernameIgnoreTenant(String username) {
+        return userMapper.selectListByUsernameIgnoreTenant(username);
     }
 
     @Override

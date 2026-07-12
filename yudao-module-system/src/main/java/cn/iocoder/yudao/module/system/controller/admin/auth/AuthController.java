@@ -8,6 +8,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.datapermission.core.annotation.DataPermission;
 import cn.iocoder.yudao.framework.security.config.SecurityProperties;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
+import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.system.controller.admin.auth.vo.*;
 import cn.iocoder.yudao.module.system.convert.auth.AuthConvert;
 import cn.iocoder.yudao.module.system.dal.dataobject.permission.MenuDO;
@@ -65,6 +66,7 @@ public class AuthController {
 
     @PostMapping("/login")
     @PermitAll
+    @TenantIgnore // 登录租户由用户名绑定关系在 Service 内解析
     @Operation(summary = "使用账号密码登录")
     public CommonResult<AuthLoginRespVO> login(@RequestBody @Valid AuthLoginReqVO reqVO) {
         return success(authService.login(reqVO));

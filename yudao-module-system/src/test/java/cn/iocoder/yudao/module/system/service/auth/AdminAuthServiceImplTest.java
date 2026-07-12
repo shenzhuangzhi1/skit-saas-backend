@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.system.service.auth;
 import cn.hutool.core.util.ReflectUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.enums.UserTypeEnum;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.test.core.ut.BaseDbUnitTest;
 import cn.iocoder.yudao.module.system.api.sms.SmsCodeApi;
 import cn.iocoder.yudao.module.system.api.social.dto.SocialUserBindReqDTO;
@@ -29,6 +30,9 @@ import org.springframework.context.annotation.Import;
 import javax.annotation.Resource;
 import javax.validation.Validation;
 import javax.validation.Validator;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static cn.hutool.core.util.RandomUtil.randomEle;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertPojoEquals;
@@ -37,6 +41,7 @@ import static cn.iocoder.yudao.framework.test.core.util.RandomUtils.randomPojo;
 import static cn.iocoder.yudao.framework.test.core.util.RandomUtils.randomString;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -157,20 +162,34 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
         // mock 验证码正确
         authService.setCaptchaEnable(false);
         // mock user 数据
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(1L).setUsername("test_username")
-                .setPassword("test_password").setStatus(CommonStatusEnum.ENABLE.getStatus()));
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> {
+            o.setId(1L).setUsername("test_username").setPassword("test_password")
+                    .setStatus(CommonStatusEnum.ENABLE.getStatus());
+            o.setTenantId(42L);
+        });
+        when(userService.getUserListByUsernameIgnoreTenant(eq("test_username")))
+                .thenReturn(Collections.singletonList(user));
         when(userService.getUserByUsername(eq("test_username"))).thenReturn(user);
         // mock password 匹配
         when(userService.isPasswordMatch(eq("test_password"), eq(user.getPassword()))).thenReturn(true);
         // mock 缓存登录用户到 Redis
-        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o.setUserId(1L)
-                .setUserType(UserTypeEnum.ADMIN.getValue()));
+        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> {
+            o.setUserId(1L).setUserType(UserTypeEnum.ADMIN.getValue());
+            o.setTenantId(42L);
+        });
+        AtomicReference<Long> tokenTenantId = new AtomicReference<>();
         when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()), eq("default"), isNull()))
-                .thenReturn(accessTokenDO);
+                .thenAnswer(invocation -> {
+                    tokenTenantId.set(TenantContextHolder.getTenantId());
+                    return accessTokenDO;
+                });
 
         // 调用，并校验
         AuthLoginRespVO loginRespVO = authService.login(reqVO);
         assertPojoEquals(accessTokenDO, loginRespVO);
+        assertEquals(42L, loginRespVO.getTenantId());
+        assertEquals(42L, tokenTenantId.get());
+        assertNull(TenantContextHolder.getTenantId());
         // 校验调用参数
         verify(loginLogService).createLoginLog(
                 argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_USERNAME.getType())
@@ -180,6 +199,21 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
         verify(socialUserService).bindSocialUser(eq(new SocialUserBindReqDTO(
                 user.getId(), UserTypeEnum.ADMIN.getValue(),
                 reqVO.getSocialType(), reqVO.getSocialCode(), reqVO.getSocialState())));
+    }
+
+    @Test
+    public void testLogin_rejectsUsernameBoundToMultipleTenants() {
+        authService.setCaptchaEnable(false);
+        AuthLoginReqVO reqVO = new AuthLoginReqVO();
+        reqVO.setUsername("shared-admin");
+        reqVO.setPassword("secret123");
+        when(userService.getUserListByUsernameIgnoreTenant(eq("shared-admin"))).thenReturn(Arrays.asList(
+                randomPojo(AdminUserDO.class, o -> o.setTenantId(42L)),
+                randomPojo(AdminUserDO.class, o -> o.setTenantId(43L))));
+
+        assertServiceException(() -> authService.login(reqVO), AUTH_LOGIN_BAD_CREDENTIALS);
+        verify(userService, never()).getUserByUsername(anyString());
+        verifyNoInteractions(oauth2TokenService);
     }
 
     @Test

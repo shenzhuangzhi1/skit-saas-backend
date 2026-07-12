@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.skit.service.agent;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
@@ -34,6 +35,7 @@ import java.util.stream.Collectors;
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_CODE_EXISTS;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_USERNAME_EXISTS;
 
 @Service
 public class SkitAgentServiceImpl implements SkitAgentService {
@@ -91,6 +93,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     @DSTransactional
     public Long createAgent(SkitAgentSaveReqVO createReqVO) {
         platformAdminGuard.check();
+        validateAdministratorUsernameUnbound(createReqVO.getUsername());
         String requestedTenantCode = normalizeTenantCode(createReqVO.getTenantCode());
         validateTenantCodeDuplicate(requestedTenantCode, null);
 
@@ -165,6 +168,12 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         SkitAgentDO existing = agentMapper.selectByTenantCode(tenantCode);
         if (existing != null && !Objects.equals(existing.getTenantId(), excludeTenantId)) {
             throw exception(AGENT_CODE_EXISTS);
+        }
+    }
+
+    private void validateAdministratorUsernameUnbound(String username) {
+        if (CollUtil.isNotEmpty(adminUserService.getUserListByUsernameIgnoreTenant(username))) {
+            throw exception(USER_USERNAME_EXISTS);
         }
     }
 

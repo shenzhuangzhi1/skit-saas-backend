@@ -15,6 +15,9 @@ import java.time.LocalDateTime;
 @Builder
 public class AuthLoginRespVO {
 
+    @Schema(description = "当前登录用户绑定的租户编号", requiredMode = Schema.RequiredMode.REQUIRED, example = "1")
+    private Long tenantId;
+
     @Schema(description = "用户编号", requiredMode = Schema.RequiredMode.REQUIRED, example = "1024")
     private Long userId;
 
