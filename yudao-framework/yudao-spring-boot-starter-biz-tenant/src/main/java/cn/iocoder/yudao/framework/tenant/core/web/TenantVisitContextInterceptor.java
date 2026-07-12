@@ -15,13 +15,15 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import java.util.Objects;
+
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception0;
 
 @RequiredArgsConstructor
 @Slf4j
 public class TenantVisitContextInterceptor implements HandlerInterceptor {
 
-    private static final String PERMISSION = "system:tenant:visit";
+    private static final String PLATFORM_ADMIN_ROLE = "super_admin";
 
     private final TenantProperties tenantProperties;
 
@@ -43,9 +45,11 @@ public class TenantVisitContextInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        // 校验用户是否可切换租户
-        if (!securityFrameworkService.hasAnyPermissions(PERMISSION)) {
-            throw exception0(GlobalErrorCodeConstants.FORBIDDEN.getCode(), "您无权切换租户");
+        // Only the platform super-admin in the system tenant may switch tenants. Menu permissions alone
+        // are insufficient: a tenant package must never turn an agent administrator into a cross-tenant user.
+        if (!Objects.equals(loginUser.getTenantId(), tenantProperties.getPlatformTenantId())
+                || !securityFrameworkService.hasRole(PLATFORM_ADMIN_ROLE)) {
+            throw exception0(GlobalErrorCodeConstants.FORBIDDEN.getCode(), "仅平台超级管理员可切换租户");
         }
 
         // 【重点】切换租户编号

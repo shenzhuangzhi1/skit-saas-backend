@@ -49,7 +49,24 @@
 - [ ] Test platform-admin cross-tenant access and same-tenant agent-admin access.
 - [ ] Run the focused Maven test plus `deploy/test-compose-topology.sh`; commit with `fix: enforce agent tenant data boundaries`.
 
-### Task 3: Verify roles and navigation end-to-end
+### Task 3: Restrict the framework tenant-visit override
+
+**Files:**
+- Modify: `yudao-framework/yudao-spring-boot-starter-biz-tenant/src/main/java/cn/iocoder/yudao/framework/tenant/config/TenantProperties.java`
+- Modify: `yudao-framework/yudao-spring-boot-starter-biz-tenant/src/main/java/cn/iocoder/yudao/framework/tenant/core/web/TenantVisitContextInterceptor.java`
+- Test: `yudao-framework/yudao-spring-boot-starter-biz-tenant/src/test/java/cn/iocoder/yudao/framework/tenant/core/web/TenantVisitContextInterceptorTest.java`
+
+**Interfaces:**
+- Consumes the original `LoginUser.tenantId`, `TenantProperties.platformTenantId`, and `super_admin` role.
+- Produces a tenant-visit override available only to the system-tenant platform administrator.
+
+- [ ] Add a failing interceptor test for a tenant administrator whose request has `visit-tenant-id` and an old visit permission; it must receive `FORBIDDEN`.
+- [ ] Add a passing test for system tenant `1` with `super_admin` role visiting tenant `42`.
+- [ ] Add `platformTenantId` to `TenantProperties`, defaulting to `1`, so nonstandard deployments can override it.
+- [ ] Replace the menu-permission-only check with the conjunction of original system tenant and `super_admin` role.
+- [ ] Run `mvn -pl yudao-framework/yudao-spring-boot-starter-biz-tenant -am -Dtest=TenantVisitContextInterceptorTest -Dsurefire.failIfNoSpecifiedTests=false test`; commit with `fix: restrict tenant visit to platform admins`.
+
+### Task 4: Verify roles and navigation end-to-end
 
 **Files:**
 - Modify if needed: `skit-saas-frontend/src/router/modules/remaining.ts`

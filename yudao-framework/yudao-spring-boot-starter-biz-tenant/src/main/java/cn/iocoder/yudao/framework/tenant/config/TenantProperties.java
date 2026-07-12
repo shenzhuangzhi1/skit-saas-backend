@@ -41,6 +41,11 @@ public class TenantProperties {
     private Set<String> ignoreVisitUrls = Collections.emptySet();
 
     /**
+     * 平台超级管理员所在的系统租户。只有该租户的 super_admin 可访问其他租户。
+     */
+    private Long platformTenantId = 1L;
+
+    /**
      * 需要忽略多租户的表
      *
      * 即默认所有表都开启多租户的功能，所以记得添加对应的 tenant_id 字段哟
