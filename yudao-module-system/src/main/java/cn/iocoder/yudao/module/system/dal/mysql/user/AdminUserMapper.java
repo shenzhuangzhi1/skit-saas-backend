@@ -23,12 +23,22 @@ public interface AdminUserMapper extends BaseMapperX<AdminUserDO> {
         return selectList(AdminUserDO::getUsername, username);
     }
 
+    @TenantIgnore
+    default List<AdminUserDO> selectListByMobileIgnoreTenant(String mobile) {
+        return selectList(AdminUserDO::getMobile, mobile);
+    }
+
     default AdminUserDO selectByEmail(String email) {
         return selectOne(AdminUserDO::getEmail, email);
     }
 
     default AdminUserDO selectByMobile(String mobile) {
         return selectOne(AdminUserDO::getMobile, mobile);
+    }
+
+    @TenantIgnore
+    default AdminUserDO selectByIdIgnoreTenant(Long id) {
+        return selectById(id);
     }
 
     default PageResult<AdminUserDO> selectPage(UserPageReqVO reqVO, Collection<Long> deptIds, Collection<Long> userIds) {

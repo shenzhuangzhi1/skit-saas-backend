@@ -64,7 +64,6 @@ public class SkitMemberAuthController {
         SkitMemberService.LoginCommand command = new SkitMemberService.LoginCommand();
         command.setMobile(reqVO.getMobile());
         command.setPassword(reqVO.getPassword());
-        command.setTenantCode(reqVO.getTenantCode());
         command.setLoginIp(ServletUtils.getClientIP());
         return success(memberService.login(command));
     }
@@ -114,7 +113,5 @@ public class SkitMemberAuthController {
         private String mobile;
         @NotBlank
         private String password;
-        @Length(max = 32)
-        private String tenantCode;
     }
 }

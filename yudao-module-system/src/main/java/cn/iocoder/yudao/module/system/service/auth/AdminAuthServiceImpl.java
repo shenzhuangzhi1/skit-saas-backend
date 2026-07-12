@@ -147,8 +147,8 @@ public class AdminAuthServiceImpl implements AdminAuthService {
             }
         }
 
-        // 登录场景，验证是否存在
-        if (userService.getUserByMobile(reqVO.getMobile()) == null) {
+        // 手机号也是全局唯一的登录身份，不能依赖请求头指定租户。
+        if (resolveLoginUserByMobile(reqVO.getMobile()) == null) {
             throw exception(AUTH_MOBILE_NOT_EXISTS);
         }
         // 发送验证码
@@ -160,14 +160,16 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         // 校验验证码
         smsCodeApi.useSmsCode(AuthConvert.INSTANCE.convert(reqVO, SmsSceneEnum.ADMIN_MEMBER_LOGIN.getScene(), getClientIP()));
 
-        // 获得用户信息
-        AdminUserDO user = userService.getUserByMobile(reqVO.getMobile());
+        // 获得用户信息，并按手机号绑定关系切换到正确租户。
+        AdminUserDO user = resolveLoginUserByMobile(reqVO.getMobile());
         if (user == null) {
             throw exception(USER_NOT_EXISTS);
         }
 
-        // 创建 Token 令牌，记录登录日志
-        return createTokenAfterLoginSuccess(user.getId(), reqVO.getMobile(), LoginLogTypeEnum.LOGIN_MOBILE);
+        AtomicReference<AuthLoginRespVO> result = new AtomicReference<>();
+        TenantUtils.execute(user.getTenantId(), () -> result.set(
+                createTokenAfterLoginSuccess(user.getId(), reqVO.getMobile(), LoginLogTypeEnum.LOGIN_MOBILE)));
+        return result.get();
     }
 
     private void createLoginLog(Long userId, String username,
@@ -198,14 +200,16 @@ public class AdminAuthServiceImpl implements AdminAuthService {
             throw exception(AUTH_THIRD_LOGIN_NOT_BIND);
         }
 
-        // 获得用户
-        AdminUserDO user = userService.getUser(socialUser.getUserId());
-        if (user == null) {
+        // 社交绑定关系记录的是全局用户编号，仍需由用户绑定关系决定租户。
+        AdminUserDO user = userService.getUserIgnoreTenant(socialUser.getUserId());
+        if (user == null || user.getTenantId() == null) {
             throw exception(USER_NOT_EXISTS);
         }
 
-        // 创建 Token 令牌，记录登录日志
-        return createTokenAfterLoginSuccess(user.getId(), user.getUsername(), LoginLogTypeEnum.LOGIN_SOCIAL);
+        AtomicReference<AuthLoginRespVO> result = new AtomicReference<>();
+        TenantUtils.execute(user.getTenantId(), () -> result.set(
+                createTokenAfterLoginSuccess(user.getId(), user.getUsername(), LoginLogTypeEnum.LOGIN_SOCIAL)));
+        return result.get();
     }
 
     @VisibleForTesting
@@ -310,7 +314,7 @@ public class AdminAuthServiceImpl implements AdminAuthService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void resetPassword(AuthResetPasswordReqVO reqVO) {
-        AdminUserDO userByMobile = userService.getUserByMobile(reqVO.getMobile());
+        AdminUserDO userByMobile = resolveLoginUserByMobile(reqVO.getMobile());
         if (userByMobile == null) {
             throw exception(USER_MOBILE_NOT_EXISTS);
         }
@@ -322,6 +326,15 @@ public class AdminAuthServiceImpl implements AdminAuthService {
                 .setUsedIp(getClientIP())
         );
 
-        userService.updateUserPassword(userByMobile.getId(), reqVO.getPassword());
+        TenantUtils.execute(userByMobile.getTenantId(),
+                () -> userService.updateUserPassword(userByMobile.getId(), reqVO.getPassword()));
+    }
+
+    private AdminUserDO resolveLoginUserByMobile(String mobile) {
+        List<AdminUserDO> users = userService.getUserListByMobileIgnoreTenant(mobile);
+        if (CollUtil.size(users) != 1 || users.get(0).getTenantId() == null) {
+            return null;
+        }
+        return users.get(0);
     }
 }

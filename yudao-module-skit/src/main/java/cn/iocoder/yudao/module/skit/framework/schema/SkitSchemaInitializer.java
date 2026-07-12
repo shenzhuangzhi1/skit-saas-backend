@@ -24,6 +24,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         migrateLegacyTenantColumns();
         createDomainTables();
         migrateDomainColumns();
+        migrateDomainIndexes();
         log.info("[run][skit SaaS schema ready]");
     }
 
@@ -70,7 +71,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 + "`password` varchar(100) NOT NULL,`nickname` varchar(64) NOT NULL,`inviter_id` bigint DEFAULT NULL,"
                 + "`invite_code` varchar(32) NOT NULL,`depth` int NOT NULL DEFAULT 1,`status` tinyint NOT NULL DEFAULT 0,"
                 + "`register_ip` varchar(50) DEFAULT '',`login_ip` varchar(50) DEFAULT '',`login_time` datetime DEFAULT NULL,"
-                + auditColumns() + ",PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_member_tenant_mobile` (`tenant_id`,`mobile`),"
+                + auditColumns() + ",PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_member_mobile` (`mobile`),"
                 + "UNIQUE KEY `uk_skit_member_invite_code` (`invite_code`),KEY `idx_skit_member_tenant_inviter` (`tenant_id`,`inviter_id`))"
                 + tableOptions());
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS `skit_member_closure` ("
@@ -110,6 +111,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private void migrateDomainColumns() {
         addColumnIfMissing("skit_ad_revenue_event", "placement_id",
                 "varchar(128) NOT NULL DEFAULT '' COMMENT '广告位编号' AFTER `provider`");
+    }
+
+    private void migrateDomainIndexes() {
+        // 手机号是会员的全局登录身份，不能在多个租户下重复绑定；邀请码仍负责确定注册租户。
+        addIndexIfMissing("skit_member", "uk_skit_member_mobile", "`mobile`", true);
     }
 
     private void addColumnIfMissing(String table, String column, String definition) {

@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS `skit_member` (
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_skit_member_tenant_mobile` (`tenant_id`,`mobile`),
+  UNIQUE KEY `uk_skit_member_mobile` (`mobile`),
   UNIQUE KEY `uk_skit_member_invite_code` (`invite_code`),
   KEY `idx_skit_member_tenant_inviter` (`tenant_id`,`inviter_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧独立会员';

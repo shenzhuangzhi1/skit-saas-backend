@@ -309,6 +309,12 @@ public class AdminUserServiceImpl implements AdminUserService {
     }
 
     @Override
+    @TenantIgnore
+    public List<AdminUserDO> getUserListByMobileIgnoreTenant(String mobile) {
+        return userMapper.selectListByMobileIgnoreTenant(mobile);
+    }
+
+    @Override
     public AdminUserDO getUserByMobile(String mobile) {
         return userMapper.selectByMobile(mobile);
     }
@@ -331,6 +337,12 @@ public class AdminUserServiceImpl implements AdminUserService {
     @Override
     public AdminUserDO getUser(Long id) {
         return userMapper.selectById(id);
+    }
+
+    @Override
+    @TenantIgnore
+    public AdminUserDO getUserIgnoreTenant(Long id) {
+        return userMapper.selectByIdIgnoreTenant(id);
     }
 
     @Override

@@ -223,8 +223,8 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
         Integer scene = SmsSceneEnum.ADMIN_MEMBER_LOGIN.getScene();
         AuthSmsSendReqVO reqVO = new AuthSmsSendReqVO(mobile, scene);
         // mock 方法（用户信息）
-        AdminUserDO user = randomPojo(AdminUserDO.class);
-        when(userService.getUserByMobile(eq(mobile))).thenReturn(user);
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setTenantId(42L));
+        when(userService.getUserListByMobileIgnoreTenant(eq(mobile))).thenReturn(Collections.singletonList(user));
 
         // 调用
         authService.sendSmsCode(reqVO);
@@ -250,17 +250,23 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
             return true;
         })));
         // mock 方法（用户信息）
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(1L));
-        when(userService.getUserByMobile(eq(mobile))).thenReturn(user);
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(1L).setTenantId(42L));
+        when(userService.getUserListByMobileIgnoreTenant(eq(mobile))).thenReturn(Collections.singletonList(user));
         // mock 缓存登录用户到 Redis
         OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o.setUserId(1L)
                 .setUserType(UserTypeEnum.ADMIN.getValue()));
+        AtomicReference<Long> tokenTenantId = new AtomicReference<>();
         when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()), eq("default"), isNull()))
-                .thenReturn(accessTokenDO);
+                .thenAnswer(invocation -> {
+                    tokenTenantId.set(TenantContextHolder.getTenantId());
+                    return accessTokenDO;
+                });
 
         // 调用，并断言
         AuthLoginRespVO loginRespVO = authService.smsLogin(reqVO);
         assertPojoEquals(accessTokenDO, loginRespVO);
+        assertEquals(42L, tokenTenantId.get());
+        assertNull(TenantContextHolder.getTenantId());
         // 断言调用
         verify(loginLogService).createLoginLog(
                 argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_MOBILE.getType())
@@ -278,23 +284,47 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
         when(socialUserService.getSocialUserByCode(eq(UserTypeEnum.ADMIN.getValue()), eq(reqVO.getType()),
                 eq(reqVO.getCode()), eq(reqVO.getState()))).thenReturn(new SocialUserRespDTO(randomString(), randomString(), randomString(), userId));
         // mock（用户）
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(userId));
-        when(userService.getUser(eq(userId))).thenReturn(user);
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(userId).setTenantId(42L));
+        when(userService.getUserIgnoreTenant(eq(userId))).thenReturn(user);
         // mock 缓存登录用户到 Redis
         OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o.setUserId(1L)
                 .setUserType(UserTypeEnum.ADMIN.getValue()));
+        AtomicReference<Long> tokenTenantId = new AtomicReference<>();
         when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()), eq("default"), isNull()))
-                .thenReturn(accessTokenDO);
+                .thenAnswer(invocation -> {
+                    tokenTenantId.set(TenantContextHolder.getTenantId());
+                    return accessTokenDO;
+                });
 
         // 调用，并断言
         AuthLoginRespVO loginRespVO = authService.socialLogin(reqVO);
         assertPojoEquals(accessTokenDO, loginRespVO);
+        assertEquals(42L, tokenTenantId.get());
+        assertNull(TenantContextHolder.getTenantId());
         // 断言调用
         verify(loginLogService).createLoginLog(
                 argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_SOCIAL.getType())
                         && o.getResult().equals(LoginResultEnum.SUCCESS.getResult())
                         && o.getUserId().equals(user.getId()))
         );
+    }
+
+    @Test
+    public void testResetPassword_resolvesTenantByMobile() {
+        String mobile = "13800000004";
+        AuthResetPasswordReqVO reqVO = new AuthResetPasswordReqVO("new-password", mobile, "123456");
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(1L).setTenantId(42L));
+        when(userService.getUserListByMobileIgnoreTenant(eq(mobile))).thenReturn(Collections.singletonList(user));
+        AtomicReference<Long> passwordUpdateTenantId = new AtomicReference<>();
+        doAnswer(invocation -> {
+            passwordUpdateTenantId.set(TenantContextHolder.getTenantId());
+            return null;
+        }).when(userService).updateUserPassword(eq(user.getId()), eq("new-password"));
+
+        authService.resetPassword(reqVO);
+
+        assertEquals(42L, passwordUpdateTenantId.get());
+        assertNull(TenantContextHolder.getTenantId());
     }
 
     @Test

@@ -1,6 +1,9 @@
 # Skit SaaS Production Deployment
 
-This repository owns the shared production Docker Compose stack.
+This repository owns the shared production Docker Compose stack. The frontend
+is a static Nginx service and has no runtime dependency on the backend
+container; a frontend release must therefore never pull, recreate, or restart
+the backend service.
 
 The backend workflow publishes the Docker image to GitHub Container Registry
 and the server pulls that image during activation. SSH only uploads Compose,
@@ -34,8 +37,8 @@ Optional secrets:
 
 ## Deployment order
 
-1. Run the backend workflow first. It uploads `docker-compose.prod.yml`, database init SQL, and the backend image.
-2. Run the frontend workflow. It uploads and starts the Nginx frontend image in the same Compose project.
+1. Run the backend workflow whenever the shared Compose topology, database init SQL, or backend image changes. It uploads the canonical `docker-compose.prod.yml` and activates the backend stack.
+2. Run the frontend workflow for frontend-only releases. It pulls and recreates only the Nginx frontend container, verifies the requested immutable image tag is running, and does not operate the backend container.
 3. Run the app workflow if you want a server-side copy of the mobile source bundle.
 
 The MySQL init SQL only runs when the MySQL volume is created for the first time. If the database already exists, import `sql/mysql/skit-saas.sql` manually.

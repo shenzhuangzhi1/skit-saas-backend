@@ -37,7 +37,6 @@ public interface SkitMemberService {
     class LoginCommand {
         private String mobile;
         private String password;
-        private String tenantCode;
         private String loginIp;
     }
 

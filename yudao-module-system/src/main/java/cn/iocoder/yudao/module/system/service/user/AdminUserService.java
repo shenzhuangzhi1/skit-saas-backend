@@ -121,6 +121,16 @@ public interface AdminUserService {
     List<AdminUserDO> getUserListByUsernameIgnoreTenant(String username);
 
     /**
+     * 忽略租户查询同手机号账号。
+     *
+     * 短信登录和找回密码用该方法确定手机号唯一绑定的租户。
+     *
+     * @param mobile 手机号
+     * @return 同手机号用户列表
+     */
+    List<AdminUserDO> getUserListByMobileIgnoreTenant(String mobile);
+
+    /**
      * 通过手机号获取用户
      *
      * @param mobile 手机号
@@ -143,6 +153,16 @@ public interface AdminUserService {
      * @return 用户对象信息
      */
     AdminUserDO getUser(Long id);
+
+    /**
+     * 忽略租户查询用户。
+     *
+     * 社交登录已经取得全局用户编号，仍必须先获取所属租户再签发令牌。
+     *
+     * @param id 用户编号
+     * @return 用户对象信息
+     */
+    AdminUserDO getUserIgnoreTenant(Long id);
 
     /**
      * 获得指定部门的用户数组

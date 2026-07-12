@@ -62,10 +62,11 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     @Transactional(rollbackFor = Exception.class)
     public AuthResult register(RegisterCommand command) {
         InvitationTarget invitation = resolveTarget(normalizeCode(command.getInviteCode()));
+        List<SkitMemberDO> existingMembers = withoutTenant(() -> memberMapper.selectListByMobile(command.getMobile()));
+        if (existingMembers != null && !existingMembers.isEmpty()) {
+            throw exception(MEMBER_MOBILE_EXISTS);
+        }
         return inTenant(invitation.tenantId, () -> {
-            if (memberMapper.selectByMobile(command.getMobile()) != null) {
-                throw exception(MEMBER_MOBILE_EXISTS);
-            }
             SkitMemberDO inviter = invitation.inviterId == null ? null : memberMapper.selectById(invitation.inviterId);
             if (invitation.inviterId != null && (inviter == null || CommonStatusEnum.isDisable(inviter.getStatus()))) {
                 throw exception(INVITE_CODE_INVALID);
@@ -84,7 +85,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
 
     @Override
     public AuthResult login(LoginCommand command) {
-        Long tenantId = resolveLoginTenant(command.getMobile(), command.getTenantCode());
+        Long tenantId = resolveLoginTenant(command.getMobile());
         return inTenant(tenantId, () -> {
             SkitMemberDO member = memberMapper.selectByMobile(command.getMobile());
             if (member == null || !passwordEncoder.matches(command.getPassword(), member.getPassword())) {
@@ -271,20 +272,10 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         return result;
     }
 
-    private Long resolveLoginTenant(String mobile, String tenantCode) {
-        if (StrUtil.isNotBlank(tenantCode)) {
-            SkitAgentDO agent = agentMapper.selectByTenantCode(normalizeCode(tenantCode));
-            if (agent == null || CommonStatusEnum.isDisable(agent.getStatus())) {
-                throw exception(MEMBER_LOGIN_FAILED);
-            }
-            return agent.getTenantId();
-        }
+    private Long resolveLoginTenant(String mobile) {
         List<SkitMemberDO> matches = withoutTenant(() -> memberMapper.selectListByMobile(mobile));
-        if (matches == null || matches.isEmpty()) {
+        if (matches == null || matches.size() != 1 || matches.get(0).getTenantId() == null) {
             throw exception(MEMBER_LOGIN_FAILED);
-        }
-        if (matches.size() > 1) {
-            throw exception(TENANT_CODE_REQUIRED);
         }
         return matches.get(0).getTenantId();
     }
