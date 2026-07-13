@@ -53,6 +53,14 @@ public interface TenantPackageService {
     TenantPackageDO getTenantPackage(Long id);
 
     /**
+     * 按稳定编码获得租户套餐
+     *
+     * @param code 稳定套餐编码
+     * @return 租户套餐
+     */
+    TenantPackageDO getTenantPackageByCode(String code);
+
+    /**
      * 获得租户套餐分页
      *
      * @param pageReqVO 分页查询

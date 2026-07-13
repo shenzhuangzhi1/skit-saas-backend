@@ -32,6 +32,10 @@ public class TenantPackageDO extends BaseDO {
      */
     private Long id;
     /**
+     * 稳定套餐编码
+     */
+    private String code;
+    /**
      * 套餐名，唯一
      */
     private String name;

@@ -217,6 +217,17 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
     }
 
     @Test
+    public void testGetTenantPackageByCode() {
+        TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class,
+                o -> o.setCode("SKIT_AGENT_STANDARD"));
+        tenantPackageMapper.insert(dbTenantPackage);
+
+        TenantPackageDO result = tenantPackageService.getTenantPackageByCode("SKIT_AGENT_STANDARD");
+
+        assertPojoEquals(dbTenantPackage, result);
+    }
+
+    @Test
     public void testGetTenantPackageListByStatus() {
         // mock 数据
         TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class,

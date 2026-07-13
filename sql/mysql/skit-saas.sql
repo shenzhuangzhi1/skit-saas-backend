@@ -1,5 +1,13 @@
 -- 短剧 SaaS 业务表。除 skit_agent 外，所有业务表均以 tenant_id 隔离。
 
+CREATE TABLE IF NOT EXISTS `skit_schema_migration` (
+  `version` int NOT NULL COMMENT '迁移版本',
+  `description` varchar(255) NOT NULL COMMENT '迁移说明',
+  `checksum` char(64) NOT NULL COMMENT '迁移校验和',
+  `installed_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '安装时间',
+  PRIMARY KEY (`version`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧 SaaS 数据库迁移记录';
+
 CREATE TABLE IF NOT EXISTS `skit_admin_record` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户编号',
@@ -38,6 +46,8 @@ CREATE TABLE IF NOT EXISTS `skit_agent` (
   `tenant_code` varchar(32) NOT NULL COMMENT '代理商登录编码',
   `root_invite_code` varchar(32) NOT NULL COMMENT '代理商根邀请码',
   `status` tinyint NOT NULL DEFAULT 0,
+  `archived_time` datetime DEFAULT NULL COMMENT '归档时间',
+  `archived_by` bigint DEFAULT NULL COMMENT '归档操作人',
   `remark` varchar(500) DEFAULT '',
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -45,6 +55,11 @@ CREATE TABLE IF NOT EXISTS `skit_agent` (
   PRIMARY KEY (`id`), UNIQUE KEY `uk_skit_agent_tenant` (`tenant_id`),
   UNIQUE KEY `uk_skit_agent_code` (`tenant_code`), UNIQUE KEY `uk_skit_agent_invite` (`root_invite_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理商全局注册表';
+
+INSERT INTO `system_tenant_package` (`code`, `name`, `status`, `menu_ids`)
+VALUES ('SKIT_AGENT_STANDARD', '代理商标准套餐', 0, '[]')
+ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `status` = VALUES(`status`),
+  `menu_ids` = VALUES(`menu_ids`), `deleted` = b'0';
 
 CREATE TABLE IF NOT EXISTS `skit_app_release_profile` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,

@@ -27,6 +27,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @RestController
 @RequestMapping("/system/tenant-package")
 @Validated
+@PreAuthorize("@ss.hasRole('super_admin')")
 public class TenantPackageController {
 
     @Resource

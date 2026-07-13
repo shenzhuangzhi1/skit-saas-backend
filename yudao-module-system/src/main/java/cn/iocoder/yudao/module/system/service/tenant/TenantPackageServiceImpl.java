@@ -109,6 +109,11 @@ public class TenantPackageServiceImpl implements TenantPackageService {
     }
 
     @Override
+    public TenantPackageDO getTenantPackageByCode(String code) {
+        return tenantPackageMapper.selectByCode(code);
+    }
+
+    @Override
     public PageResult<TenantPackageDO> getTenantPackagePage(TenantPackagePageReqVO pageReqVO) {
         return tenantPackageMapper.selectPage(pageReqVO);
     }

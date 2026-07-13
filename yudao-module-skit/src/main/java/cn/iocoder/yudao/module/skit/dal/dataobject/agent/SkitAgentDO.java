@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.*;
 
+import java.time.LocalDateTime;
+
 @TableName("skit_agent")
 @KeySequence("skit_agent_seq")
 @TenantIgnore
@@ -23,6 +25,8 @@ public class SkitAgentDO extends BaseDO {
     private String tenantCode;
     private String rootInviteCode;
     private Integer status;
+    private LocalDateTime archivedTime;
+    private Long archivedBy;
     private String remark;
 
 }

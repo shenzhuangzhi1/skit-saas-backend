@@ -1,12 +1,23 @@
 package cn.iocoder.yudao.module.skit.framework.schema;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-import javax.annotation.Resource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 短剧 SaaS 模块幂等建表及存量表补丁。
@@ -15,17 +26,139 @@ import javax.annotation.Resource;
 @Slf4j
 public class SkitSchemaInitializer implements ApplicationRunner {
 
-    @Resource
-    private JdbcTemplate jdbcTemplate;
+    private static final String CREATE_MIGRATION_TABLE_SQL = "CREATE TABLE IF NOT EXISTS `skit_schema_migration` ("
+            + "`version` int NOT NULL,`description` varchar(255) NOT NULL,`checksum` char(64) NOT NULL,"
+            + "`installed_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY (`version`))"
+            + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String SELECT_APPLIED_MIGRATIONS_SQL =
+            "SELECT `version`, `checksum` FROM `skit_schema_migration` ORDER BY `version`";
+    private static final String INSERT_APPLIED_MIGRATION_SQL = "INSERT INTO `skit_schema_migration` "
+            + "(`version`, `description`, `checksum`, `installed_on`) VALUES (?, ?, ?, CURRENT_TIMESTAMP)";
+
+    private final JdbcTemplate jdbcTemplate;
+    private final List<Migration> migrations;
+
+    @Autowired
+    public SkitSchemaInitializer(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.migrations = buildMigrations();
+    }
+
+    SkitSchemaInitializer(JdbcTemplate jdbcTemplate, List<Migration> migrations) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.migrations = sortedMigrations(migrations);
+    }
 
     @Override
     public void run(ApplicationArguments args) {
-        createLegacyTables();
-        migrateLegacyTenantColumns();
-        createDomainTables();
-        migrateDomainColumns();
-        migrateDomainIndexes();
+        jdbcTemplate.execute(CREATE_MIGRATION_TABLE_SQL);
+        Map<Integer, String> appliedMigrations = loadAppliedMigrations();
+        for (Migration migration : migrations) {
+            if (appliedMigrations.containsKey(migration.getVersion())) {
+                String installedChecksum = appliedMigrations.get(migration.getVersion());
+                if (!migration.getChecksum().equals(installedChecksum)) {
+                    throw new IllegalStateException("Schema migration checksum mismatch for version "
+                            + migration.getVersion() + ": stored=" + installedChecksum + ", expected="
+                            + migration.getChecksum() + ". Restore the original migration or repair the schema history.");
+                }
+                continue;
+            }
+            migration.execute();
+            jdbcTemplate.update(INSERT_APPLIED_MIGRATION_SQL, migration.getVersion(), migration.getDescription(),
+                    migration.getChecksum());
+            log.info("[run][applied skit schema migration {} ({})]", migration.getVersion(),
+                    migration.getDescription());
+        }
         log.info("[run][skit SaaS schema ready]");
+    }
+
+    private List<Migration> buildMigrations() {
+        List<Migration> result = new ArrayList<>();
+        result.add(new Migration(2026071201, "baseline short-drama SaaS schema", "baseline-schema-v1", () -> {
+            createLegacyTables();
+            migrateLegacyTenantColumns();
+            createDomainTables();
+            migrateDomainColumns();
+            migrateDomainIndexes();
+        }));
+        result.add(new Migration(2026071301, "add package code and agent archive fields",
+                "tenant-package-code-active-code-unique-agent-archived-time-by-v1",
+                this::migrateLifecycleColumns));
+        result.add(new Migration(2026071302, "enforce global active system user identities",
+                "system-users-generated-active-username-mobile-unique-v1",
+                this::migrateActiveUserIdentityConstraints));
+        result.add(new Migration(2026071303, "seed standard agent package",
+                "standard-agent-package-SKIT_AGENT_STANDARD-enabled-empty-menus-v1",
+                this::seedStandardAgentPackage));
+        return sortedMigrations(result);
+    }
+
+    private Map<Integer, String> loadAppliedMigrations() {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(SELECT_APPLIED_MIGRATIONS_SQL);
+        Map<Integer, String> result = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Number version = (Number) row.get("version");
+            Object checksum = row.get("checksum");
+            result.put(version.intValue(), checksum == null ? null : checksum.toString());
+        }
+        return result;
+    }
+
+    private static List<Migration> sortedMigrations(List<Migration> migrations) {
+        List<Migration> result = new ArrayList<>(migrations);
+        Collections.sort(result, Comparator.comparingInt(Migration::getVersion));
+        Set<Integer> versions = new HashSet<>();
+        for (Migration migration : result) {
+            if (!versions.add(migration.getVersion())) {
+                throw new IllegalArgumentException("Duplicate skit schema migration version: " + migration.getVersion());
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    static final class Migration {
+
+        private final int version;
+        private final String description;
+        private final String checksum;
+        private final Runnable action;
+
+        Migration(int version, String description, String checksumSource, Runnable action) {
+            this.version = version;
+            this.description = description;
+            this.checksum = sha256(version + "\n" + description + "\n" + checksumSource);
+            this.action = action;
+        }
+
+        int getVersion() {
+            return version;
+        }
+
+        String getDescription() {
+            return description;
+        }
+
+        String getChecksum() {
+            return checksum;
+        }
+
+        void execute() {
+            action.run();
+        }
+
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 
     private void createLegacyTables() {
@@ -125,6 +258,64 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         // 手机号是租户内会员身份；邀请码和 App 上下文决定所属代理商租户。
         dropIndexIfExists("skit_member", "uk_skit_member_mobile");
         addIndexIfMissing("skit_member", "uk_skit_member_tenant_mobile", "`tenant_id`,`mobile`", true);
+    }
+
+    void migrateLifecycleColumns() {
+        addColumnIfMissing("system_tenant_package", "code",
+                "varchar(64) DEFAULT NULL COMMENT '稳定套餐编码' AFTER `id`");
+        addColumnIfMissing("system_tenant_package", "active_code",
+                "varchar(64) GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' AND `code` IS NOT NULL "
+                        + "AND TRIM(`code`) <> '' THEN `code` ELSE NULL END) STORED COMMENT '有效套餐编码' ");
+        addIndexIfMissing("system_tenant_package", "uk_system_tenant_package_active_code", "`active_code`", true);
+        addColumnIfMissing("skit_agent", "archived_time",
+                "datetime DEFAULT NULL COMMENT '归档时间' AFTER `status`");
+        addColumnIfMissing("skit_agent", "archived_by",
+                "bigint DEFAULT NULL COMMENT '归档操作人' AFTER `archived_time`");
+    }
+
+    void migrateActiveUserIdentityConstraints() {
+        validateNoActiveUserIdentityDuplicates();
+        addColumnIfMissing("system_users", "active_username",
+                "varchar(30) GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' THEN `username` ELSE NULL END) "
+                        + "STORED COMMENT '有效用户名唯一键'");
+        addColumnIfMissing("system_users", "active_mobile",
+                "varchar(11) GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' AND `mobile` IS NOT NULL "
+                        + "AND TRIM(`mobile`) <> '' THEN `mobile` ELSE NULL END) STORED COMMENT '有效手机号唯一键'");
+        addIndexIfMissing("system_users", "uk_system_users_active_username", "`active_username`", true);
+        addIndexIfMissing("system_users", "uk_system_users_active_mobile", "`active_mobile`", true);
+    }
+
+    void seedStandardAgentPackage() {
+        jdbcTemplate.update("INSERT INTO `system_tenant_package` (`code`, `name`, `status`, `menu_ids`) "
+                        + "VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), "
+                        + "`status` = VALUES(`status`), `menu_ids` = VALUES(`menu_ids`), `deleted` = b'0'",
+                "SKIT_AGENT_STANDARD", "代理商标准套餐", 0, "[]");
+    }
+
+    void validateNoActiveUserIdentityDuplicates() {
+        List<Map<String, Object>> duplicateUsernames = jdbcTemplate.queryForList(
+                "SELECT `username` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
+                        + "AS `duplicate_ids` FROM `system_users` WHERE `deleted` = b'0' GROUP BY `username` "
+                        + "HAVING COUNT(*) > 1 ORDER BY `username`");
+        List<Map<String, Object>> duplicateMobiles = jdbcTemplate.queryForList(
+                "SELECT `mobile` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
+                        + "AS `duplicate_ids` FROM `system_users` WHERE `deleted` = b'0' AND `mobile` IS NOT NULL "
+                        + "AND TRIM(`mobile`) <> '' GROUP BY `mobile` HAVING COUNT(*) > 1 ORDER BY `mobile`");
+        if (duplicateUsernames.isEmpty() && duplicateMobiles.isEmpty()) {
+            return;
+        }
+        throw new IllegalStateException("Cannot create global active system user identity indexes. "
+                + "Duplicate usernames=" + describeDuplicates(duplicateUsernames) + ", duplicate mobiles="
+                + describeDuplicates(duplicateMobiles) + ". Resolve the duplicates in system_users before restarting.");
+    }
+
+    private static String describeDuplicates(List<Map<String, Object>> duplicates) {
+        List<String> descriptions = new ArrayList<>();
+        for (Map<String, Object> duplicate : duplicates) {
+            descriptions.add(String.valueOf(duplicate.get("duplicate_value")) + " (ids="
+                    + String.valueOf(duplicate.get("duplicate_ids")) + ")");
+        }
+        return descriptions.toString();
     }
 
     private void addColumnIfMissing(String table, String column, String definition) {

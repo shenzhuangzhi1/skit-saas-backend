@@ -28,4 +28,8 @@ public interface TenantPackageMapper extends BaseMapperX<TenantPackageDO> {
     default TenantPackageDO selectByName(String name) {
         return selectOne(TenantPackageDO::getName, name);
     }
+
+    default TenantPackageDO selectByCode(String code) {
+        return selectOne(TenantPackageDO::getCode, code);
+    }
 }
