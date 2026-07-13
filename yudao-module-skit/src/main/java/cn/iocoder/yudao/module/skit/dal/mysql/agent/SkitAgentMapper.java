@@ -6,6 +6,7 @@ import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.MPJLambdaWrapperX;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPageReqVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentPageRow;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
@@ -15,10 +16,25 @@ import java.time.LocalDateTime;
 @Mapper
 public interface SkitAgentMapper extends BaseMapperX<SkitAgentDO> {
 
-    default PageResult<SkitAgentDO> selectPage(SkitAgentPageReqVO reqVO) {
+    default PageResult<SkitAgentPageRow> selectPage(SkitAgentPageReqVO reqVO) {
         String keyword = StrUtil.trim(reqVO.getKeyword());
         MPJLambdaWrapperX<SkitAgentDO> query = new MPJLambdaWrapperX<SkitAgentDO>()
-                .selectAll(SkitAgentDO.class)
+                .selectAs(SkitAgentDO::getId, SkitAgentPageRow::getAgentId)
+                .selectAs(SkitAgentDO::getTenantId, SkitAgentPageRow::getTenantId)
+                .selectAs(SkitAgentDO::getTenantCode, SkitAgentPageRow::getTenantCode)
+                .selectAs(SkitAgentDO::getRootInviteCode, SkitAgentPageRow::getRootInviteCode)
+                .selectAs(SkitAgentDO::getArchivedTime, SkitAgentPageRow::getArchivedTime)
+                .selectAs(SkitAgentDO::getArchivedBy, SkitAgentPageRow::getArchivedBy)
+                .selectAs(SkitAgentDO::getRemark, SkitAgentPageRow::getRemark)
+                .selectAs(SkitAgentDO::getCreateTime, SkitAgentPageRow::getCreateTime)
+                .selectAs(TenantDO::getName, SkitAgentPageRow::getName)
+                .selectAs(TenantDO::getContactUserId, SkitAgentPageRow::getContactUserId)
+                .selectAs(TenantDO::getContactName, SkitAgentPageRow::getContactName)
+                .selectAs(TenantDO::getContactMobile, SkitAgentPageRow::getContactMobile)
+                .selectAs(TenantDO::getStatus, SkitAgentPageRow::getStatus)
+                .selectAs(TenantDO::getPackageId, SkitAgentPageRow::getPackageId)
+                .selectAs(TenantDO::getExpireTime, SkitAgentPageRow::getExpireTime)
+                .selectAs(TenantDO::getAccountCount, SkitAgentPageRow::getAccountCount)
                 .innerJoin(TenantDO.class, TenantDO::getId, SkitAgentDO::getTenantId)
                 .eqIfPresent(TenantDO::getStatus, reqVO.getStatus())
                 .orderByDesc(SkitAgentDO::getId);
@@ -28,7 +44,7 @@ public interface SkitAgentMapper extends BaseMapperX<SkitAgentDO> {
                     .or().like(TenantDO::getContactName, keyword)
                     .or().like(TenantDO::getContactMobile, keyword));
         }
-        return selectJoinPage(reqVO, SkitAgentDO.class, query);
+        return selectJoinPage(reqVO, SkitAgentPageRow.class, query);
     }
 
     default SkitAgentDO selectByTenantId(Long tenantId) {

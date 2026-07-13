@@ -167,6 +167,9 @@ public interface AdminUserService {
      */
     AdminUserDO getUserIgnoreTenant(Long id);
 
+    /** Batch-loads globally identified administrators without applying the caller tenant filter. */
+    List<AdminUserDO> getUserListIgnoreTenant(Collection<Long> ids);
+
     /**
      * 获得指定部门的用户数组
      *

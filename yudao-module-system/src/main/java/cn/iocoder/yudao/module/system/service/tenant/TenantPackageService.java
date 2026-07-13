@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.system.controller.admin.tenant.vo.packages.Tenant
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantPackageDO;
 
 import javax.validation.Valid;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -51,6 +52,9 @@ public interface TenantPackageService {
      * @return 租户套餐
      */
     TenantPackageDO getTenantPackage(Long id);
+
+    /** Batch-loads tenant packages used to enrich a platform page. */
+    List<TenantPackageDO> getTenantPackageList(Collection<Long> ids);
 
     /**
      * 按稳定编码获得租户套餐

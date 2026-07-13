@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.system.service.tenant.handler.TenantInfoHandler;
 import cn.iocoder.yudao.module.system.service.tenant.handler.TenantMenuHandler;
 
 import javax.validation.Valid;
+import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 
@@ -66,6 +67,9 @@ public interface TenantService {
      * @return 租户
      */
     TenantDO getTenant(Long id);
+
+    /** Batch-loads tenants while preserving mapped fields such as websites. */
+    List<TenantDO> getTenantList(Collection<Long> ids);
 
     /**
      * 获得租户分页

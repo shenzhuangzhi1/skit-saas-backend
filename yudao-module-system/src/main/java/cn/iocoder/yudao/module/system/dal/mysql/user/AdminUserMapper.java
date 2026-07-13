@@ -41,6 +41,11 @@ public interface AdminUserMapper extends BaseMapperX<AdminUserDO> {
         return selectById(id);
     }
 
+    @TenantIgnore
+    default List<AdminUserDO> selectByIdsIgnoreTenant(Collection<Long> ids) {
+        return selectByIds(ids);
+    }
+
     default PageResult<AdminUserDO> selectPage(UserPageReqVO reqVO, Collection<Long> deptIds, Collection<Long> userIds) {
         return selectPage(reqVO, new LambdaQueryWrapperX<AdminUserDO>()
                 .likeIfPresent(AdminUserDO::getUsername, reqVO.getUsername())

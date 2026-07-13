@@ -37,6 +37,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
 import javax.annotation.Resource;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -252,6 +254,14 @@ public class TenantServiceImpl implements TenantService {
     @Override
     public TenantDO getTenant(Long id) {
         return tenantMapper.selectById(id);
+    }
+
+    @Override
+    public List<TenantDO> getTenantList(Collection<Long> ids) {
+        if (CollUtil.isEmpty(ids)) {
+            return Collections.emptyList();
+        }
+        return tenantMapper.selectByIds(ids);
     }
 
     @Override

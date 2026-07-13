@@ -9,7 +9,9 @@ import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentMobileUp
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPasswordResetReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentUpdateReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPageReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentRespVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentPageRow;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
@@ -32,6 +34,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.time.LocalDateTime;
 import javax.validation.ConstraintViolationException;
 
@@ -151,6 +155,14 @@ class SkitAgentServiceImplTest {
     void createContractRejectsExpiredTenant() {
         SkitAgentCreateReqVO request = createRequest();
         request.setExpireTime(LocalDateTime.now().minusSeconds(1));
+
+        assertThrows(ConstraintViolationException.class, () -> ValidationUtils.validate(request));
+    }
+
+    @Test
+    void pageContractRejectsOversizedKeyword() {
+        SkitAgentPageReqVO request = new SkitAgentPageReqVO();
+        request.setKeyword(String.join("", Collections.nCopies(65, "a")));
 
         assertThrows(ConstraintViolationException.class, () -> ValidationUtils.validate(request));
     }
@@ -374,24 +386,43 @@ class SkitAgentServiceImplTest {
         SkitAgentPageReqVO request = new SkitAgentPageReqVO();
         request.setPageNo(3);
         request.setPageSize(1);
-        SkitAgentDO pageAgent = SkitAgentDO.builder().id(4L).tenantId(42L).tenantCode("AG42")
-                .rootInviteCode("AINVITE00001").build();
+        SkitAgentPageRow pageAgent = new SkitAgentPageRow();
+        pageAgent.setAgentId(4L);
+        pageAgent.setTenantId(42L);
+        pageAgent.setTenantCode("AG42");
+        pageAgent.setRootInviteCode("AINVITE00001");
+        pageAgent.setName("Agent 42");
+        pageAgent.setContactUserId(420L);
+        pageAgent.setContactMobile("13800000000");
+        pageAgent.setStatus(CommonStatusEnum.ENABLE.getStatus());
+        pageAgent.setPackageId(7L);
+        pageAgent.setExpireTime(LocalDateTime.now().plusDays(30));
+        pageAgent.setAccountCount(1);
         when(agentMapper.selectPage(request)).thenReturn(new PageResult<>(Collections.singletonList(pageAgent), 99L));
-        when(tenantService.getTenant(42L)).thenReturn(new TenantDO().setId(42L).setName("Agent 42")
-                .setContactUserId(420L).setStatus(CommonStatusEnum.ENABLE.getStatus()).setPackageId(7L)
-                .setExpireTime(LocalDateTime.now().plusDays(30)).setAccountCount(1));
-        when(tenantPackageService.getTenantPackage(7L)).thenReturn(new TenantPackageDO().setId(7L).setName("标准套餐"));
-        when(adminUserService.getUserIgnoreTenant(420L))
-                .thenReturn(new AdminUserDO().setId(420L).setUsername("13800000000"));
-        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
+        when(tenantService.getTenantList(Collections.singleton(42L)))
+                .thenReturn(Collections.singletonList(new TenantDO().setId(42L)
+                        .setWebsites(Collections.singletonList("agent.example.com"))));
+        when(tenantPackageService.getTenantPackageList(Collections.singleton(7L)))
+                .thenReturn(Collections.singletonList(new TenantPackageDO().setId(7L).setName("标准套餐")));
+        when(adminUserService.getUserListIgnoreTenant(Collections.singleton(420L)))
+                .thenReturn(Collections.singletonList(new AdminUserDO().setId(420L).setUsername("13800000000")));
+        Map<Long, SkitAdAccountService.Settings> adSettings = new HashMap<>();
+        adSettings.put(42L, new SkitAdAccountService.Settings());
+        when(adAccountService.getSettingsMapForPlatform(Collections.singleton(42L))).thenReturn(adSettings);
 
-        PageResult<?> result = agentService.getAgentPage(request);
+        PageResult<SkitAgentRespVO> result = agentService.getAgentPage(request);
 
         assertEquals(99L, result.getTotal());
         assertEquals(1, result.getList().size());
+        assertEquals("标准套餐", result.getList().get(0).getPackageName());
+        assertEquals("13800000000", result.getList().get(0).getUsername());
+        assertEquals(Collections.singletonList("agent.example.com"), result.getList().get(0).getWebsites());
         verify(agentMapper).selectPage(request);
         verify(agentMapper, never()).selectList();
-        verify(tenantService, times(1)).getTenant(42L);
+        verify(tenantService, never()).getTenant(anyLong());
+        verify(tenantPackageService, never()).getTenantPackage(anyLong());
+        verify(adminUserService, never()).getUserIgnoreTenant(anyLong());
+        verify(adAccountService, never()).getSettings();
     }
 
     private void mockExistingAgent() {

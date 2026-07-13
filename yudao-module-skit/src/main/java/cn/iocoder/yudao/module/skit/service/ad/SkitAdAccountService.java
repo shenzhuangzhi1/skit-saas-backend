@@ -3,11 +3,16 @@ package cn.iocoder.yudao.module.skit.service.ad;
 import lombok.Data;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 public interface SkitAdAccountService {
 
     Settings getSettings();
+
+    /** Platform-only batch read. Returned settings contain configuration flags but never raw credentials. */
+    Map<Long, Settings> getSettingsMapForPlatform(Collection<Long> tenantIds);
 
     Settings saveSettings(Settings settings);
 

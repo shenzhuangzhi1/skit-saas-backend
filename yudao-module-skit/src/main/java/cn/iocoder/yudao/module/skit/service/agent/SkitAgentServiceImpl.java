@@ -8,6 +8,7 @@ import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.*;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentPageRow;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
@@ -26,9 +27,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
 import javax.annotation.Resource;
-import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_ARCHIVED;
@@ -70,11 +70,33 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     public PageResult<SkitAgentRespVO> getAgentPage(SkitAgentPageReqVO pageReqVO) {
         platformAdminGuard.check();
         ValidationUtils.validate(pageReqVO);
-        PageResult<SkitAgentDO> page = agentMapper.selectPage(pageReqVO);
+        PageResult<SkitAgentPageRow> page = agentMapper.selectPage(pageReqVO);
+        if (page.getList().isEmpty()) {
+            return new PageResult<>(Collections.emptyList(), page.getTotal());
+        }
+        Set<Long> packageIds = page.getList().stream().map(SkitAgentPageRow::getPackageId)
+                .filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, TenantPackageDO> packageMap = new HashMap<>();
+        for (TenantPackageDO tenantPackage : tenantPackageService.getTenantPackageList(packageIds)) {
+            packageMap.put(tenantPackage.getId(), tenantPackage);
+        }
+        Set<Long> administratorIds = page.getList().stream().map(SkitAgentPageRow::getContactUserId)
+                .filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, AdminUserDO> administratorMap = new HashMap<>();
+        for (AdminUserDO administrator : adminUserService.getUserListIgnoreTenant(administratorIds)) {
+            administratorMap.put(administrator.getId(), administrator);
+        }
+        Set<Long> tenantIds = page.getList().stream().map(SkitAgentPageRow::getTenantId)
+                .filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, TenantDO> tenantMap = new HashMap<>();
+        for (TenantDO tenant : tenantService.getTenantList(tenantIds)) {
+            tenantMap.put(tenant.getId(), tenant);
+        }
+        Map<Long, SkitAdAccountService.Settings> adSettingsMap =
+                adAccountService.getSettingsMapForPlatform(tenantIds);
         List<SkitAgentRespVO> list = page.getList().stream()
-                .map(this::toRespVO)
-                .filter(Objects::nonNull)
-                .collect(java.util.stream.Collectors.toList());
+                .map(row -> toPageRespVO(row, tenantMap, packageMap, administratorMap, adSettingsMap))
+                .collect(Collectors.toList());
         return new PageResult<>(list, page.getTotal());
     }
 
@@ -417,6 +439,40 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         }
         SkitAdAccountService.Settings settings = TenantUtils.execute(tenant.getId(), adAccountService::getSettings);
         fillAdSettings(result, settings);
+        return result;
+    }
+
+    private SkitAgentRespVO toPageRespVO(SkitAgentPageRow row,
+                                         Map<Long, TenantDO> tenantMap,
+                                         Map<Long, TenantPackageDO> packageMap,
+                                         Map<Long, AdminUserDO> administratorMap,
+                                         Map<Long, SkitAdAccountService.Settings> adSettingsMap) {
+        SkitAgentRespVO result = new SkitAgentRespVO();
+        result.setTenantId(row.getTenantId());
+        result.setTenantCode(row.getTenantCode());
+        result.setRootInviteCode(row.getRootInviteCode());
+        result.setArchivedTime(row.getArchivedTime());
+        result.setArchivedBy(row.getArchivedBy());
+        result.setName(row.getName());
+        result.setContactName(row.getContactName());
+        result.setContactMobile(row.getContactMobile());
+        result.setMobile(row.getContactMobile());
+        result.setStatus(row.getStatus());
+        TenantDO tenant = tenantMap.get(row.getTenantId());
+        result.setWebsites(tenant == null ? null : tenant.getWebsites());
+        result.setPackageId(row.getPackageId());
+        TenantPackageDO tenantPackage = packageMap.get(row.getPackageId());
+        result.setPackageName(tenantPackage == null ? null : tenantPackage.getName());
+        result.setExpireTime(row.getExpireTime());
+        result.setAccountCount(row.getAccountCount());
+        AdminUserDO administrator = administratorMap.get(row.getContactUserId());
+        result.setUsername(administrator == null ? null : administrator.getUsername());
+        result.setRemark(row.getRemark());
+        result.setCreateTime(row.getCreateTime());
+        SkitAdAccountService.Settings settings = adSettingsMap.get(row.getTenantId());
+        if (settings != null) {
+            fillAdSettings(result, settings);
+        }
         return result;
     }
 

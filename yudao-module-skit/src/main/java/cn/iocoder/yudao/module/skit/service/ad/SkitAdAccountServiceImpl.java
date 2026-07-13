@@ -2,8 +2,10 @@ package cn.iocoder.yudao.module.skit.service.ad;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -24,12 +26,37 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     private SkitAdAccountMapper accountMapper;
     @Resource
     private ObjectMapper objectMapper;
+    @Resource
+    private SkitPlatformAdminGuard platformAdminGuard;
 
     @Override
     public Settings getSettings() {
         Settings result = new Settings();
         fillSettings(result, accountMapper.selectByProvider(PROVIDER_PANGLE));
         fillSettings(result, accountMapper.selectByProvider(PROVIDER_TAKU));
+        return result;
+    }
+
+    @Override
+    public Map<Long, Settings> getSettingsMapForPlatform(Collection<Long> tenantIds) {
+        platformAdminGuard.check();
+        Set<Long> requestedTenantIds = new LinkedHashSet<>();
+        if (tenantIds != null) {
+            tenantIds.stream().filter(Objects::nonNull).forEach(requestedTenantIds::add);
+        }
+        Map<Long, Settings> result = new LinkedHashMap<>();
+        requestedTenantIds.forEach(tenantId -> result.put(tenantId, new Settings()));
+        if (requestedTenantIds.isEmpty()) {
+            return result;
+        }
+        List<SkitAdAccountDO> accounts = TenantUtils.executeIgnore(
+                () -> accountMapper.selectListByTenantIds(requestedTenantIds));
+        for (SkitAdAccountDO account : accounts) {
+            Settings settings = result.get(account.getTenantId());
+            if (settings != null) {
+                fillSettings(settings, account);
+            }
+        }
         return result;
     }
 
