@@ -179,6 +179,7 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
     public void testGetTenantPackagePage() {
        // mock 数据
        TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class, o -> { // 等会查询到
+           o.setCode("PACKAGE_PAGE_MATCH");
            o.setName("芋道源码");
            o.setStatus(CommonStatusEnum.ENABLE.getStatus());
            o.setRemark("源码解析");
@@ -186,13 +187,17 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
        });
        tenantPackageMapper.insert(dbTenantPackage);
        // 测试 name 不匹配
-       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage, o -> o.setName("源码")));
+       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage,
+               o -> o.setCode("PACKAGE_PAGE_NAME").setName("源码")));
        // 测试 status 不匹配
-       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage, o -> o.setStatus(CommonStatusEnum.DISABLE.getStatus())));
+       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage,
+               o -> o.setCode("PACKAGE_PAGE_STATUS").setStatus(CommonStatusEnum.DISABLE.getStatus())));
        // 测试 remark 不匹配
-       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage, o -> o.setRemark("解析")));
+       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage,
+               o -> o.setCode("PACKAGE_PAGE_REMARK").setRemark("解析")));
        // 测试 createTime 不匹配
-       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage, o -> o.setCreateTime(buildTime(2022, 11, 11))));
+       tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage,
+               o -> o.setCode("PACKAGE_PAGE_TIME").setCreateTime(buildTime(2022, 11, 11))));
        // 准备参数
        TenantPackagePageReqVO reqVO = new TenantPackagePageReqVO();
        reqVO.setName("芋道");
@@ -285,11 +290,11 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
     public void testGetTenantPackageListByStatus() {
         // mock 数据
         TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class,
-                o -> o.setStatus(CommonStatusEnum.ENABLE.getStatus()));
+                o -> o.setCode("PACKAGE_STATUS_ENABLE").setStatus(CommonStatusEnum.ENABLE.getStatus()));
         tenantPackageMapper.insert(dbTenantPackage);
         // 测试 status 不匹配
         tenantPackageMapper.insert(cloneIgnoreId(dbTenantPackage,
-                o -> o.setStatus(CommonStatusEnum.DISABLE.getStatus())));
+                o -> o.setCode("PACKAGE_STATUS_DISABLE").setStatus(CommonStatusEnum.DISABLE.getStatus())));
 
         // 调用
         List<TenantPackageDO> list = tenantPackageService.getTenantPackageListByStatus(
