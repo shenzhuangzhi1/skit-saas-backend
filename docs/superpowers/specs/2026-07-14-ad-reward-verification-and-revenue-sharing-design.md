@@ -2,7 +2,7 @@
 
 日期：2026-07-14
 
-状态：待书面批准
+状态：已批准
 
 范围：`skit-saas-backend`、`skit-saas-frontend`、`skit-saas-app`、每个代理商独立的 Taku/穿山甲配置
 
