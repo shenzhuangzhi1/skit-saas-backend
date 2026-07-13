@@ -30,6 +30,13 @@ releases reuse it automatically. To use a managed key instead, inject
 `SKIT_AD_ENCRYPTION_KEY` before the first backend activation. Never rotate it without
 first re-encrypting or clearing saved advertising credentials.
 
+On the first secured upgrade from the legacy repository key, activation stops the
+backend, clears the old encrypted `app_key`/`secret` values, disables those providers,
+and then records a one-time bootstrap marker. Public advertising account metadata,
+members, revenue events, commission rules, and ledgers are preserved. Re-enter the
+provider credentials after that upgrade if the old installation had any configured.
+Subsequent releases reuse the persisted key and never repeat this cleanup.
+
 Optional secrets:
 
 - `SERVER_PORT`: SSH port, default `22`.

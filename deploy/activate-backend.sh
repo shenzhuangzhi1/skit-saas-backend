@@ -132,6 +132,10 @@ if [[ ! "${SKIT_AD_ENCRYPTION_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
   echo "SKIT_AD_ENCRYPTION_KEY contains unsafe characters for server-side environment persistence."
   exit 1
 fi
+encryption_key_bootstrap_required=0
+if [ "${SKIT_AD_ENCRYPTION_KEY_BOOTSTRAPPED:-0}" != "1" ]; then
+  encryption_key_bootstrap_required=1
+fi
 
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
 upsert_env SKIT_AD_ENCRYPTION_KEY "${SKIT_AD_ENCRYPTION_KEY}"
@@ -145,7 +149,34 @@ upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 
 compose -f docker-compose.prod.yml --env-file .env pull backend
-compose -f docker-compose.prod.yml --env-file .env up -d mysql redis backend
+compose -f docker-compose.prod.yml --env-file .env up -d mysql redis
+
+if [ "${encryption_key_bootstrap_required}" = "1" ]; then
+  # The legacy release used a repository key that was never persisted on the server. Stop the
+  # backend and explicitly clear only encrypted advertising credentials before switching keys;
+  # public account metadata and all revenue history remain intact.
+  compose -f docker-compose.prod.yml --env-file .env stop backend >/dev/null 2>&1 || true
+  mysql_ready=0
+  for _ in $(seq 1 60); do
+    if compose -f docker-compose.prod.yml --env-file .env exec -T \
+        -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql mysqladmin -uroot --silent ping >/dev/null 2>&1; then
+      mysql_ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "${mysql_ready}" != "1" ]; then
+    echo "MySQL did not become ready for the one-time advertising credential migration."
+    exit 1
+  fi
+  credential_cleanup_sql="SET @table_exists := (SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skit_ad_account'); SET @cleanup_sql := IF(@table_exists > 0, 'UPDATE skit_ad_account SET app_key = NULL, secret = NULL, status = 1, update_time = NOW(), updater = ''system-encryption-key-bootstrap''', 'SELECT 1'); PREPARE cleanup_statement FROM @cleanup_sql; EXECUTE cleanup_statement; DEALLOCATE PREPARE cleanup_statement;"
+  compose -f docker-compose.prod.yml --env-file .env exec -T \
+    -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql mysql -uroot "${MYSQL_DATABASE:-skit_saas}" \
+    --batch --skip-column-names -e "${credential_cleanup_sql}" >/dev/null
+  upsert_env SKIT_AD_ENCRYPTION_KEY_BOOTSTRAPPED "1"
+fi
+
+compose -f docker-compose.prod.yml --env-file .env up -d backend
 
 health_url="http://127.0.0.1:${BACKEND_PORT:-48080}${BACKEND_HEALTH_PATH:-/actuator/health}"
 for _ in $(seq 1 90); do

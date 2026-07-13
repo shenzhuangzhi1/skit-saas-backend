@@ -37,6 +37,7 @@ jobs:
         run: |
           ./deploy/test-compose-topology.sh
           ./deploy/test-encryption-key.sh
+          ./deploy/test-activation-encryption-key.sh
 
       - name: Run focused tenant lifecycle tests
         run: >-
