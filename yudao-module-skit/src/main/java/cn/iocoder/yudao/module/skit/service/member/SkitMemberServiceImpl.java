@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.enums.oauth2.OAuth2ClientConstants;
+import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -57,6 +58,8 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     private PasswordEncoder passwordEncoder;
     @Resource
     private OAuth2TokenCommonApi oauth2TokenApi;
+    @Resource
+    private OAuth2TokenService oauth2TokenService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -91,6 +94,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         if (tenantId == null) {
             throw exception(MEMBER_APP_CONTEXT_INVALID);
         }
+        validateMemberTenant(tenantId);
         return inTenant(tenantId, () -> {
             SkitMemberDO member = memberMapper.selectByMobile(command.getMobile());
             if (member == null || !passwordEncoder.matches(command.getPassword(), member.getPassword())) {
@@ -199,6 +203,36 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         return convertPage(memberMapper.selectPage(pageParam, keyword, status));
     }
 
+    @Override
+    public MemberView getMember(Long memberId) {
+        return toMemberView(requireMember(memberId));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateMemberStatus(Long memberId, Integer status) {
+        if (status == null || (!CommonStatusEnum.isEnable(status) && !CommonStatusEnum.isDisable(status))) {
+            throw exception(MEMBER_STATUS_INVALID);
+        }
+        SkitMemberDO member = requireMember(memberId);
+        memberMapper.updateById(new SkitMemberDO().setId(member.getId()).setStatus(status));
+        if (CommonStatusEnum.isDisable(status)) {
+            revokeSkitMemberTokens(member.getId());
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void resetMemberPassword(Long memberId, String password) {
+        if (StrUtil.isBlank(password) || password.length() < 6 || password.length() > 32) {
+            throw exception(MEMBER_PASSWORD_INVALID);
+        }
+        SkitMemberDO member = requireMember(memberId);
+        memberMapper.updateById(new SkitMemberDO().setId(member.getId())
+                .setPassword(passwordEncoder.encode(password)));
+        revokeSkitMemberTokens(member.getId());
+    }
+
     private SkitMemberDO requireMember(Long memberId) {
         SkitMemberDO member = memberMapper.selectById(memberId);
         if (member == null) {
@@ -210,30 +244,39 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     private PageResult<MemberView> convertPage(PageResult<SkitMemberDO> page) {
         List<MemberView> list = new ArrayList<>();
         for (SkitMemberDO member : page.getList()) {
-            MemberView item = new MemberView();
-            item.setId(member.getId());
-            item.setUserId(member.getId());
-            item.setUsername(member.getMobile());
-            item.setMobile(member.getMobile());
-            item.setNickname(member.getNickname());
-            item.setInviteCode(member.getInviteCode());
-            item.setInviterId(member.getInviterId());
-            item.setParentId(member.getInviterId());
-            item.setParentUserId(member.getInviterId());
-            if (member.getInviterId() != null) {
-                SkitMemberDO parent = memberMapper.selectById(member.getInviterId());
-                item.setParentName(parent == null ? null : parent.getNickname());
-                item.setParentNickname(parent == null ? null : parent.getNickname());
-            }
-            item.setLevel(member.getDepth());
-            item.setDepth(member.getDepth());
-            item.setStatus(member.getStatus());
-            item.setChildCount(memberMapper.selectCountByInviterId(member.getId()));
-            item.setCreateTime(member.getCreateTime());
-            item.setLoginTime(member.getLoginTime());
-            list.add(item);
+            list.add(toMemberView(member));
         }
         return new PageResult<>(list, page.getTotal());
+    }
+
+    private MemberView toMemberView(SkitMemberDO member) {
+        MemberView item = new MemberView();
+        item.setId(member.getId());
+        item.setUserId(member.getId());
+        item.setUsername(member.getMobile());
+        item.setMobile(member.getMobile());
+        item.setNickname(member.getNickname());
+        item.setInviteCode(member.getInviteCode());
+        item.setInviterId(member.getInviterId());
+        item.setParentId(member.getInviterId());
+        item.setParentUserId(member.getInviterId());
+        if (member.getInviterId() != null) {
+            SkitMemberDO parent = memberMapper.selectById(member.getInviterId());
+            item.setParentName(parent == null ? null : parent.getNickname());
+            item.setParentNickname(parent == null ? null : parent.getNickname());
+        }
+        item.setLevel(member.getDepth());
+        item.setDepth(member.getDepth());
+        item.setStatus(member.getStatus());
+        item.setChildCount(memberMapper.selectCountByInviterId(member.getId()));
+        item.setCreateTime(member.getCreateTime());
+        item.setLoginTime(member.getLoginTime());
+        return item;
+    }
+
+    private void revokeSkitMemberTokens(Long memberId) {
+        oauth2TokenService.removeAccessToken(memberId, UserTypeEnum.MEMBER.getValue(),
+                OAuth2ClientConstants.CLIENT_ID_DEFAULT, SKIT_MEMBER_SCOPE);
     }
 
     private void buildClosure(Long memberId, Long inviterId) {
@@ -262,7 +305,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     private void validateMemberTenant(Long tenantId) {
         tenantService.validTenant(tenantId);
         SkitAgentDO agent = agentMapper.selectByTenantId(tenantId);
-        if (agent == null || CommonStatusEnum.isDisable(agent.getStatus())) {
+        if (agent == null) {
             throw exception(MEMBER_DISABLED);
         }
     }
@@ -279,7 +322,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
 
     private InvitationTarget resolveTarget(String inviteCode) {
         SkitAgentDO agent = agentMapper.selectByRootInviteCode(inviteCode);
-        if (agent != null && CommonStatusEnum.isEnable(agent.getStatus())) {
+        if (agent != null) {
             tenantService.validTenant(agent.getTenantId());
             return new InvitationTarget(agent.getTenantId(), null);
         }
@@ -288,7 +331,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
             throw exception(INVITE_CODE_INVALID);
         }
         SkitAgentDO inviterAgent = agentMapper.selectByTenantId(inviter.getTenantId());
-        if (inviterAgent == null || CommonStatusEnum.isDisable(inviterAgent.getStatus())) {
+        if (inviterAgent == null) {
             throw exception(INVITE_CODE_INVALID);
         }
         tenantService.validTenant(inviter.getTenantId());

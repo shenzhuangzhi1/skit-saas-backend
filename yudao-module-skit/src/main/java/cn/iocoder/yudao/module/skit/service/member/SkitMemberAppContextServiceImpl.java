@@ -2,7 +2,6 @@ package cn.iocoder.yudao.module.skit.service.member;
 
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
-import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
@@ -37,7 +36,7 @@ public class SkitMemberAppContextServiceImpl implements SkitMemberAppContextServ
         }
         String normalizedCode = StrUtil.trim(agentCode).toUpperCase(Locale.ROOT);
         SkitAgentDO agent = agentMapper.selectByTenantCode(normalizedCode);
-        if (agent == null || CommonStatusEnum.isDisable(agent.getStatus())) {
+        if (agent == null) {
             throw exception(MEMBER_APP_CONTEXT_INVALID);
         }
         tenantService.validTenant(agent.getTenantId());
@@ -53,6 +52,16 @@ public class SkitMemberAppContextServiceImpl implements SkitMemberAppContextServ
         if (StrUtil.isBlank(tenantId)) {
             throw exception(MEMBER_APP_CONTEXT_INVALID);
         }
-        return Long.valueOf(tenantId);
+        Long parsedTenantId;
+        try {
+            parsedTenantId = Long.valueOf(tenantId);
+        } catch (NumberFormatException ex) {
+            throw exception(MEMBER_APP_CONTEXT_INVALID);
+        }
+        tenantService.validTenant(parsedTenantId);
+        if (agentMapper.selectByTenantId(parsedTenantId) == null) {
+            throw exception(MEMBER_APP_CONTEXT_INVALID);
+        }
+        return parsedTenantId;
     }
 }

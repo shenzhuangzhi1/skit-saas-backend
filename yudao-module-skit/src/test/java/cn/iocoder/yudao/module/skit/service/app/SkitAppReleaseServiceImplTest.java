@@ -1,10 +1,12 @@
 package cn.iocoder.yudao.module.skit.service.app;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.exception.ErrorCode;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.app.SkitAppReleaseProfileMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -14,7 +16,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.when;
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_DISABLE;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_EXPIRE;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_NOT_EXISTS;
+import static org.mockito.Mockito.*;
+
+import java.util.Arrays;
 
 @ExtendWith(MockitoExtension.class)
 class SkitAppReleaseServiceImplTest {
@@ -25,6 +34,8 @@ class SkitAppReleaseServiceImplTest {
     private SkitAppReleaseProfileMapper profileMapper;
     @Mock
     private SkitAgentMapper agentMapper;
+    @Mock
+    private TenantService tenantService;
 
     @Test
     void currentManifestReturnsCompatibleStableBundle() {
@@ -47,6 +58,46 @@ class SkitAppReleaseServiceImplTest {
         SkitAppReleaseService.Manifest manifest = releaseService.current("AGENT42", "2.0.9");
 
         assertFalse(manifest.isUpdateAvailable());
+    }
+
+    @Test
+    void currentManifestUsesCanonicalTenantAndIgnoresLegacyAgentStatus() {
+        when(profileMapper.selectByProfileCode("AGENT42")).thenReturn(enabledProfile());
+        when(agentMapper.selectByTenantId(42L)).thenReturn(enabledAgent()
+                .setStatus(CommonStatusEnum.DISABLE.getStatus()));
+
+        SkitAppReleaseService.Manifest manifest = releaseService.current("AGENT42", "2.2.0");
+
+        assertTrue(manifest.isUpdateAvailable());
+        verify(tenantService).validTenant(42L);
+    }
+
+    @Test
+    void currentManifestRejectsDisabledExpiredAndDeletedTenantBeforeAgentLookup() {
+        when(profileMapper.selectByProfileCode("AGENT42")).thenReturn(enabledProfile());
+        doThrow(exception(TENANT_DISABLE, "agent"),
+                exception(TENANT_EXPIRE, "agent"),
+                exception(TENANT_NOT_EXISTS)).when(tenantService).validTenant(42L);
+
+        for (ErrorCode errorCode : Arrays.asList(TENANT_DISABLE, TENANT_EXPIRE, TENANT_NOT_EXISTS)) {
+            if (errorCode == TENANT_NOT_EXISTS) {
+                assertServiceException(() -> releaseService.current("AGENT42", "2.2.0"), errorCode);
+            } else {
+                assertServiceException(() -> releaseService.current("AGENT42", "2.2.0"), errorCode, "agent");
+            }
+        }
+
+        verifyNoInteractions(agentMapper);
+    }
+
+    @Test
+    void disabledProfileStillValidatesTenantBeforeReturningEmptyManifest() {
+        SkitAppReleaseProfileDO profile = enabledProfile().setStatus(CommonStatusEnum.DISABLE.getStatus());
+        when(profileMapper.selectByProfileCode("AGENT42")).thenReturn(profile);
+        doThrow(exception(TENANT_DISABLE, "disabled-agent")).when(tenantService).validTenant(42L);
+
+        assertServiceException(() -> releaseService.current("AGENT42", "2.2.0"), TENANT_DISABLE,
+                "disabled-agent");
     }
 
     private SkitAppReleaseProfileDO enabledProfile() {

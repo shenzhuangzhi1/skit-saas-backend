@@ -32,6 +32,7 @@ import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception0;
 import static cn.iocoder.yudao.framework.common.util.collection.CollectionUtils.convertSet;
@@ -169,6 +170,35 @@ public class OAuth2TokenServiceImpl implements OAuth2TokenService {
             oauth2RefreshTokenMapper.deleteByRefreshToken(accessToken.getRefreshToken());
             oauth2AccessTokenRedisDAO.delete(accessToken.getRefreshToken());
         });
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void removeAccessToken(Long userId, Integer userType, String clientId, String requiredScope) {
+        List<OAuth2AccessTokenDO> accessTokens =
+                oauth2AccessTokenMapper.selectListByUserIdAndUserTypeAndClientId(userId, userType, clientId);
+        if (CollUtil.isNotEmpty(accessTokens)) {
+            accessTokens.stream()
+                    .filter(accessToken -> Objects.equals(clientId, accessToken.getClientId()))
+                    .filter(accessToken -> accessToken.getScopes() != null
+                            && accessToken.getScopes().contains(requiredScope))
+                    .forEach(accessToken -> {
+                        oauth2AccessTokenMapper.deleteById(accessToken.getId());
+                        oauth2AccessTokenRedisDAO.delete(accessToken.getAccessToken());
+                    });
+        }
+        List<OAuth2RefreshTokenDO> refreshTokens =
+                oauth2RefreshTokenMapper.selectListByUserIdAndUserTypeAndClientId(userId, userType, clientId);
+        if (CollUtil.isNotEmpty(refreshTokens)) {
+            refreshTokens.stream()
+                    .filter(refreshToken -> Objects.equals(clientId, refreshToken.getClientId()))
+                    .filter(refreshToken -> refreshToken.getScopes() != null
+                            && refreshToken.getScopes().contains(requiredScope))
+                    .forEach(refreshToken -> {
+                        oauth2RefreshTokenMapper.deleteByRefreshToken(refreshToken.getRefreshToken());
+                        oauth2AccessTokenRedisDAO.delete(refreshToken.getRefreshToken());
+                    });
+        }
     }
 
     @Override

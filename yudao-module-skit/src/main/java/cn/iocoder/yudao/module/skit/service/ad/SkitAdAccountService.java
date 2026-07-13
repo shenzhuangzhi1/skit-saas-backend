@@ -16,6 +16,9 @@ public interface SkitAdAccountService {
 
     Settings saveSettings(Settings settings);
 
+    /** Deliberately clears one provider's credentials and forces it disabled. */
+    void clearCredentials(String provider);
+
     List<PublicConfig> getEnabledPublicConfigs();
 
     PublicConfig getEnabledPublicConfig(String provider);

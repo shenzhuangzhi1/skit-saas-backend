@@ -4,6 +4,8 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
+import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.validation.InEnum;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
@@ -29,7 +31,11 @@ import org.springframework.format.annotation.DateTimeFormat;
 import javax.annotation.Resource;
 import javax.validation.Valid;
 import javax.validation.constraints.NotEmpty;
+import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
+import javax.validation.constraints.Pattern;
+import javax.validation.constraints.Size;
+import org.hibernate.validator.constraints.Length;
 import java.util.List;
 import java.util.Objects;
 import java.time.LocalDateTime;
@@ -107,6 +113,15 @@ public class SkitTenantBusinessController {
         return success(inTargetTenant(reqVO.getTenantId(), () -> adAccountService.saveSettings(settings)));
     }
 
+    @PutMapping("/ad-account/clear-credentials")
+    @Operation(summary = "显式清除广告平台凭证并停用平台")
+    public CommonResult<Boolean> clearAdAccountCredentials(@Valid @RequestBody AdCredentialClearReqVO reqVO) {
+        return success(inTargetTenant(reqVO.getTenantId(), () -> {
+            adAccountService.clearCredentials(reqVO.getProvider());
+            return true;
+        }));
+    }
+
     @GetMapping("/app-release")
     @PreAuthorize("@ss.hasRole('super_admin')")
     @Operation(summary = "获得代理商 App 发布档案")
@@ -152,8 +167,35 @@ public class SkitTenantBusinessController {
     @GetMapping("/member/page")
     @Operation(summary = "分页查询当前代理商会员")
     public CommonResult<PageResult<SkitMemberService.MemberView>> getMemberPage(@Valid MemberPageReqVO reqVO) {
-        return success(inTargetTenant(reqVO.getTenantId(),
+        return success(inAuditTenant(reqVO.getTenantId(),
                 () -> memberService.getMemberPage(reqVO, reqVO.getKeyword(), reqVO.getStatus())));
+    }
+
+    @GetMapping("/member/get")
+    @Operation(summary = "获得会员详情")
+    public CommonResult<SkitMemberService.MemberView> getMember(
+            @RequestParam("id") @NotNull Long id,
+            @RequestParam(value = "tenantId", required = false) Long tenantId) {
+        return success(inAuditTenant(tenantId, () -> memberService.getMember(id)));
+    }
+
+    @PutMapping("/member/update-status")
+    @Operation(summary = "启用或停用会员")
+    public CommonResult<Boolean> updateMemberStatus(@Valid @RequestBody MemberStatusUpdateReqVO reqVO) {
+        return success(inTargetTenant(reqVO.getTenantId(), () -> {
+            memberService.updateMemberStatus(reqVO.getId(), reqVO.getStatus());
+            return true;
+        }));
+    }
+
+    @PutMapping("/member/reset-password")
+    @ApiAccessLog(sanitizeKeys = {"password"})
+    @Operation(summary = "重置会员密码")
+    public CommonResult<Boolean> resetMemberPassword(@Valid @RequestBody MemberPasswordResetReqVO reqVO) {
+        return success(inTargetTenant(reqVO.getTenantId(), () -> {
+            memberService.resetMemberPassword(reqVO.getId(), reqVO.getPassword());
+            return true;
+        }));
     }
 
     @GetMapping("/ledger/page")
@@ -161,7 +203,7 @@ public class SkitTenantBusinessController {
     public CommonResult<PageResult<SkitRevenueService.LedgerView>> getLedgerPage(@Valid LedgerPageReqVO reqVO) {
         Long beneficiaryUserId = reqVO.getBeneficiaryUserId() != null
                 ? reqVO.getBeneficiaryUserId() : reqVO.getMemberId();
-        return success(inTargetTenant(reqVO.getTenantId(), () -> revenueService.getLedgerPage(
+        return success(inAuditTenant(reqVO.getTenantId(), () -> revenueService.getLedgerPage(
                 reqVO, beneficiaryUserId, reqVO.getBeneficiaryType(), reqVO.getCreateTime())));
     }
 
@@ -176,7 +218,8 @@ public class SkitTenantBusinessController {
         if (!Objects.equals(effectiveTenantId, originalTenantId)) {
             platformAdminGuard.check();
         }
-        if (agentMapper.selectByTenantId(effectiveTenantId) == null || tenantService.getTenant(effectiveTenantId) == null) {
+        tenantService.validTenant(effectiveTenantId);
+        if (agentMapper.selectByTenantId(effectiveTenantId) == null) {
             throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
                     cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS);
         }
@@ -185,6 +228,31 @@ public class SkitTenantBusinessController {
 
     private <T> T inTargetTenant(Long requestedTenantId, Supplier<T> supplier) {
         Long targetTenantId = resolveTargetTenant(requestedTenantId);
+        return executeInTenant(targetTenantId, supplier);
+    }
+
+    private Long resolveAuditTenant(Long requestedTenantId) {
+        LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
+        Long originalTenantId = loginUser == null ? null : loginUser.getTenantId();
+        Long effectiveTenantId = requestedTenantId == null ? originalTenantId : requestedTenantId;
+        if (Objects.equals(effectiveTenantId, originalTenantId)) {
+            return resolveTargetTenant(requestedTenantId);
+        }
+        // Only an original platform administrator can cross tenants for immutable/read-only audit views.
+        platformAdminGuard.check();
+        if (tenantService.getTenant(effectiveTenantId) == null
+                || agentMapper.selectByTenantId(effectiveTenantId) == null) {
+            throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                    cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS);
+        }
+        return effectiveTenantId;
+    }
+
+    private <T> T inAuditTenant(Long requestedTenantId, Supplier<T> supplier) {
+        return executeInTenant(resolveAuditTenant(requestedTenantId), supplier);
+    }
+
+    private <T> T executeInTenant(Long targetTenantId, Supplier<T> supplier) {
         AtomicReference<T> result = new AtomicReference<>();
         TenantUtils.execute(targetTenantId, () -> result.set(supplier.get()));
         return result.get();
@@ -193,17 +261,36 @@ public class SkitTenantBusinessController {
     @Data
     public static class AdAccountSaveReqVO {
         private Long tenantId;
+        @Size(max = 128, message = "穿山甲账号长度不能超过 128 个字符")
         private String pangleUsername;
+        @Size(max = 128, message = "穿山甲 App ID 长度不能超过 128 个字符")
         private String pangleAppId;
+        @Size(max = 2048, message = "穿山甲密钥长度不能超过 2048 个字符")
         private String pangleAppSecret;
+        @Size(max = 128, message = "穿山甲广告位长度不能超过 128 个字符")
         private String panglePlacementId;
+        @NotNull(message = "穿山甲启用状态不能为空")
         private Boolean pangleEnabled;
+        @Size(max = 128, message = "Taku 账号长度不能超过 128 个字符")
         private String takuUsername;
+        @Size(max = 128, message = "Taku App ID 长度不能超过 128 个字符")
         private String takuAppId;
+        @Size(max = 255, message = "Taku App Key 长度不能超过 255 个字符")
         private String takuAppKey;
+        @Size(max = 2048, message = "Taku 服务端密钥长度不能超过 2048 个字符")
         private String takuAppSecret;
+        @Size(max = 128, message = "Taku 广告位长度不能超过 128 个字符")
         private String takuPlacementId;
+        @NotNull(message = "Taku 启用状态不能为空")
         private Boolean takuEnabled;
+    }
+
+    @Data
+    public static class AdCredentialClearReqVO {
+        private Long tenantId;
+        @NotBlank(message = "广告平台不能为空")
+        @Pattern(regexp = "(?i)PANGLE|TAKU", message = "广告平台仅支持 PANGLE 或 TAKU")
+        private String provider;
     }
 
     @Data
@@ -233,8 +320,30 @@ public class SkitTenantBusinessController {
     @EqualsAndHashCode(callSuper = true)
     public static class MemberPageReqVO extends PageParam {
         private Long tenantId;
+        @Size(max = 64, message = "会员搜索关键字长度不能超过 64 个字符")
         private String keyword;
+        @InEnum(value = CommonStatusEnum.class, message = "会员状态必须是 {value}")
         private Integer status;
+    }
+
+    @Data
+    public static class MemberStatusUpdateReqVO {
+        private Long tenantId;
+        @NotNull(message = "会员编号不能为空")
+        private Long id;
+        @NotNull(message = "会员状态不能为空")
+        @InEnum(value = CommonStatusEnum.class, message = "会员状态必须是 {value}")
+        private Integer status;
+    }
+
+    @Data
+    public static class MemberPasswordResetReqVO {
+        private Long tenantId;
+        @NotNull(message = "会员编号不能为空")
+        private Long id;
+        @NotBlank(message = "新密码不能为空")
+        @Length(min = 6, max = 32, message = "会员密码长度为 6 到 32 位")
+        private String password;
     }
 
     @Data

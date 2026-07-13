@@ -24,6 +24,12 @@ public interface SkitMemberService {
 
     PageResult<MemberView> getMemberPage(PageParam pageParam, String keyword, Integer status);
 
+    MemberView getMember(Long memberId);
+
+    void updateMemberStatus(Long memberId, Integer status);
+
+    void resetMemberPassword(Long memberId, String password);
+
     @Data
     class RegisterCommand {
         private Long tenantId;

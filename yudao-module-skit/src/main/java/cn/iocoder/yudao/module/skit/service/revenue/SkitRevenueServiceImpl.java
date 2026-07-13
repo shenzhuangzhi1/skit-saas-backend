@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberClosureDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
@@ -17,6 +18,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitCommissionLedgerMapper
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionCalculator;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
@@ -48,6 +50,8 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
     private SkitAdAccountService adAccountService;
     @Resource
     private SkitCommissionService commissionService;
+    @Resource
+    private TenantService tenantService;
 
     private final SkitCommissionCalculator calculator = new SkitCommissionCalculator();
     private final SkitRevenueReportValidator reportValidator = new SkitRevenueReportValidator();
@@ -55,6 +59,7 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ReportResult report(Long sourceMemberId, ReportCommand command) {
+        tenantService.validTenant(TenantContextHolder.getRequiredTenantId());
         SkitMemberDO sourceMember = memberMapper.selectById(sourceMemberId);
         if (sourceMember == null || CommonStatusEnum.isDisable(sourceMember.getStatus())) {
             throw exception(MEMBER_NOT_EXISTS);

@@ -2,6 +2,9 @@ package cn.iocoder.yudao.module.skit.controller.admin.tenant;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
+import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
@@ -17,17 +20,27 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import javax.validation.ConstraintViolationException;
+import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.PLATFORM_ADMIN_REQUIRED;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_DISABLE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -67,6 +80,40 @@ class SkitTenantBusinessControllerTest {
 
         verify(platformAdminGuard).check();
         verifyNoInteractions(adAccountService, agentMapper, tenantService);
+    }
+
+    @Test
+    void authorizedTargetIsValidatedBeforeAgentLookupAndTenantContextSwitch() {
+        authenticate(10L);
+        TenantContextHolder.setTenantId(10L);
+        when(agentMapper.selectByTenantId(10L)).thenReturn(SkitAgentDO.builder()
+                .tenantId(10L).tenantCode("AGENT10").build());
+        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
+        when(adAccountService.getSettings()).thenAnswer(invocation -> {
+            assertEquals(10L, TenantContextHolder.getRequiredTenantId());
+            return settings;
+        });
+
+        controller.getAdAccount(null);
+
+        InOrder order = inOrder(tenantService, agentMapper, adAccountService);
+        order.verify(tenantService).validTenant(10L);
+        order.verify(agentMapper).selectByTenantId(10L);
+        order.verify(adAccountService).getSettings();
+    }
+
+    @Test
+    void invalidTargetTenantStopsBeforeAgentLookupAndTenantContextSwitch() {
+        authenticate(10L);
+        TenantContextHolder.setTenantId(10L);
+        doThrow(exception(TENANT_DISABLE, "disabled-agent"))
+                .when(tenantService).validTenant(10L);
+
+        assertServiceException(() -> controller.getAdAccount(null), TENANT_DISABLE, "disabled-agent");
+
+        verify(tenantService).validTenant(10L);
+        verifyNoInteractions(agentMapper, adAccountService);
+        assertEquals(10L, TenantContextHolder.getRequiredTenantId());
     }
 
     @Test
@@ -124,6 +171,132 @@ class SkitTenantBusinessControllerTest {
         assertEquals(1L, TenantContextHolder.getRequiredTenantId(),
                 "跨租户调用结束后必须恢复平台租户上下文");
         verify(platformAdminGuard).check();
+    }
+
+    @Test
+    void platformAdminCanAuditArchivedAgentMembersWithoutCanonicalAvailabilityBypassForWrites() {
+        authenticate(1L);
+        TenantContextHolder.setTenantId(1L);
+        when(agentMapper.selectByTenantId(20L)).thenReturn(SkitAgentDO.builder()
+                .tenantId(20L).tenantCode("AGENT20").build());
+        when(tenantService.getTenant(20L)).thenReturn(new TenantDO().setId(20L)
+                .setStatus(CommonStatusEnum.DISABLE.getStatus()));
+        when(memberService.getMemberPage(any(), isNull(), isNull())).thenAnswer(invocation -> {
+            assertEquals(20L, TenantContextHolder.getRequiredTenantId());
+            return new PageResult<>(Collections.emptyList(), 0L);
+        });
+        SkitTenantBusinessController.MemberPageReqVO reqVO =
+                new SkitTenantBusinessController.MemberPageReqVO();
+        reqVO.setTenantId(20L);
+
+        controller.getMemberPage(reqVO);
+
+        verify(platformAdminGuard).check();
+        verify(tenantService, never()).validTenant(20L);
+        verify(memberService).getMemberPage(reqVO, null, null);
+        assertEquals(1L, TenantContextHolder.getRequiredTenantId());
+    }
+
+    @Test
+    void platformAdminCanAuditArchivedAgentLedgerWithoutMutatingHistory() {
+        authenticate(1L);
+        TenantContextHolder.setTenantId(1L);
+        when(agentMapper.selectByTenantId(20L)).thenReturn(SkitAgentDO.builder()
+                .tenantId(20L).tenantCode("AGENT20").build());
+        when(tenantService.getTenant(20L)).thenReturn(new TenantDO().setId(20L)
+                .setStatus(CommonStatusEnum.DISABLE.getStatus()));
+        when(revenueService.getLedgerPage(any(), isNull(), isNull(), isNull())).thenAnswer(invocation -> {
+            assertEquals(20L, TenantContextHolder.getRequiredTenantId());
+            return new PageResult<>(Collections.emptyList(), 0L);
+        });
+        SkitTenantBusinessController.LedgerPageReqVO reqVO =
+                new SkitTenantBusinessController.LedgerPageReqVO();
+        reqVO.setTenantId(20L);
+
+        controller.getLedgerPage(reqVO);
+
+        verify(platformAdminGuard).check();
+        verify(tenantService, never()).validTenant(20L);
+        verify(revenueService).getLedgerPage(reqVO, null, null, null);
+    }
+
+    @Test
+    void tenantAdminCannotUseAuditReadToBypassInvalidOwnTenant() {
+        authenticate(20L);
+        TenantContextHolder.setTenantId(99L);
+        doThrow(exception(TENANT_DISABLE, "archived-agent")).when(tenantService).validTenant(20L);
+        SkitTenantBusinessController.MemberPageReqVO reqVO =
+                new SkitTenantBusinessController.MemberPageReqVO();
+        reqVO.setTenantId(20L);
+
+        assertServiceException(() -> controller.getMemberPage(reqVO), TENANT_DISABLE, "archived-agent");
+
+        verify(platformAdminGuard, never()).check();
+        verifyNoInteractions(memberService, agentMapper);
+    }
+
+    @Test
+    void memberAdminEndpointsExposeDetailStatusAndPasswordResetButNoCreateOrDelete() throws Exception {
+        Set<String> methodNames = Arrays.stream(SkitTenantBusinessController.class.getDeclaredMethods())
+                .map(Method::getName).collect(Collectors.toSet());
+        assertTrue(methodNames.contains("getMember"));
+        assertTrue(methodNames.contains("updateMemberStatus"));
+        assertTrue(methodNames.contains("resetMemberPassword"));
+        assertFalse(methodNames.contains("createMember"));
+        assertFalse(methodNames.contains("deleteMember"));
+
+        Method resetMethod = SkitTenantBusinessController.class.getDeclaredMethod("resetMemberPassword",
+                SkitTenantBusinessController.MemberPasswordResetReqVO.class);
+        ApiAccessLog accessLog = resetMethod.getAnnotation(ApiAccessLog.class);
+        assertTrue(Arrays.asList(accessLog.sanitizeKeys()).contains("password"));
+    }
+
+    @Test
+    void memberAdminRequestContractsRejectInvalidStatusAndPasswordLength() {
+        SkitTenantBusinessController.MemberStatusUpdateReqVO statusReq =
+                new SkitTenantBusinessController.MemberStatusUpdateReqVO();
+        statusReq.setTenantId(20L);
+        statusReq.setId(8L);
+        statusReq.setStatus(99);
+        assertThrows(ConstraintViolationException.class, () -> ValidationUtils.validate(statusReq));
+
+        SkitTenantBusinessController.MemberPasswordResetReqVO passwordReq =
+                new SkitTenantBusinessController.MemberPasswordResetReqVO();
+        passwordReq.setTenantId(20L);
+        passwordReq.setId(8L);
+        passwordReq.setPassword("short");
+        assertThrows(ConstraintViolationException.class, () -> ValidationUtils.validate(passwordReq));
+    }
+
+    @Test
+    void adSaveContractRejectsOversizedMetadataAndMissingEnableFlags() {
+        SkitTenantBusinessController.AdAccountSaveReqVO reqVO =
+                new SkitTenantBusinessController.AdAccountSaveReqVO();
+        reqVO.setTenantId(20L);
+        reqVO.setPangleUsername(String.join("", Collections.nCopies(129, "x")));
+        assertThrows(ConstraintViolationException.class, () -> ValidationUtils.validate(reqVO));
+
+        reqVO.setPangleUsername("pangle-user");
+        reqVO.setPangleEnabled(false);
+        assertThrows(ConstraintViolationException.class, () -> ValidationUtils.validate(reqVO),
+                "TAKU enabled flag must also be explicit");
+    }
+
+    @Test
+    void explicitCredentialClearRunsInsideOperationalTenantContext() {
+        authenticate(20L);
+        TenantContextHolder.setTenantId(99L);
+        mockExistingAgent(20L);
+        SkitTenantBusinessController.AdCredentialClearReqVO reqVO =
+                new SkitTenantBusinessController.AdCredentialClearReqVO();
+        reqVO.setTenantId(20L);
+        reqVO.setProvider("PANGLE");
+
+        controller.clearAdAccountCredentials(reqVO);
+
+        verify(tenantService).validTenant(20L);
+        verify(adAccountService).clearCredentials("PANGLE");
+        assertEquals(99L, TenantContextHolder.getRequiredTenantId());
     }
 
     private void authenticate(Long tenantId) {

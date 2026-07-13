@@ -6,6 +6,7 @@ import cn.iocoder.yudao.framework.common.biz.system.oauth2.dto.OAuth2AccessToken
 import cn.iocoder.yudao.framework.common.biz.system.oauth2.dto.OAuth2AccessTokenRespDTO;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.enums.UserTypeEnum;
+import cn.iocoder.yudao.framework.common.exception.ErrorCode;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberClosureDO;
@@ -14,6 +15,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.system.enums.oauth2.OAuth2ClientConstants;
+import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -31,7 +33,12 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_APP_CONTEXT_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_PASSWORD_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_TOKEN_SCOPE_INVALID;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_DISABLE;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_EXPIRE;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_NOT_EXISTS;
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -59,6 +66,8 @@ class SkitMemberServiceImplTest {
     private PasswordEncoder passwordEncoder;
     @Mock
     private OAuth2TokenCommonApi oauth2TokenApi;
+    @Mock
+    private OAuth2TokenService oauth2TokenService;
 
     @AfterEach
     void clearTenantContext() {
@@ -259,6 +268,28 @@ class SkitMemberServiceImplTest {
     }
 
     @Test
+    void loginRejectsDisabledExpiredAndDeletedTenantBeforeMemberOrPasswordWork() {
+        SkitMemberService.LoginCommand command = new SkitMemberService.LoginCommand();
+        command.setTenantId(TENANT_ID);
+        command.setMobile("13800000006");
+        command.setPassword("secret123");
+        doThrow(exception(TENANT_DISABLE, "agent"),
+                exception(TENANT_EXPIRE, "agent"),
+                exception(TENANT_NOT_EXISTS)).when(tenantService).validTenant(TENANT_ID);
+
+        for (ErrorCode errorCode : Arrays.asList(TENANT_DISABLE, TENANT_EXPIRE, TENANT_NOT_EXISTS)) {
+            if (errorCode == TENANT_NOT_EXISTS) {
+                assertServiceException(() -> memberService.login(command), errorCode);
+            } else {
+                assertServiceException(() -> memberService.login(command), errorCode, "agent");
+            }
+        }
+
+        verify(tenantService, times(3)).validTenant(TENANT_ID);
+        verifyNoInteractions(memberMapper, passwordEncoder, oauth2TokenApi, agentMapper);
+    }
+
+    @Test
     void refreshTokenRequiresSkitMemberScopeAndRevokesInvalidAccessToken() {
         OAuth2AccessTokenRespDTO refreshed = token(MEMBER_ID);
         OAuth2AccessTokenCheckRespDTO checked = new OAuth2AccessTokenCheckRespDTO()
@@ -298,6 +329,158 @@ class SkitMemberServiceImplTest {
         assertEquals("INVITE88", result.getInviteCode());
         assertNull(TenantContextHolder.getTenantId());
         verify(oauth2TokenApi, never()).removeAccessToken(anyString());
+    }
+
+    @Test
+    void agentInvitationUsesCanonicalTenantAndIgnoresLegacyAgentStatus() {
+        SkitAgentDO legacyDisabledAgent = SkitAgentDO.builder().tenantId(TENANT_ID)
+                .tenantCode("AGENT42").rootInviteCode("ROOT42")
+                .status(CommonStatusEnum.DISABLE.getStatus()).build();
+        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(legacyDisabledAgent);
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(legacyDisabledAgent);
+
+        SkitMemberService.InvitationView result = memberService.resolveInvitation("root42");
+
+        assertTrue(result.getValid());
+        assertEquals(TENANT_ID, result.getTenantId());
+        assertEquals("AGENT42", result.getTenantCode());
+        verify(tenantService).validTenant(TENANT_ID);
+        verify(memberMapper, never()).selectByInviteCode(anyString());
+    }
+
+    @Test
+    void agentInvitationRejectsDisabledExpiredAndDeletedTenant() {
+        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(enabledAgent());
+        doThrow(exception(TENANT_DISABLE, "agent"),
+                exception(TENANT_EXPIRE, "agent"),
+                exception(TENANT_NOT_EXISTS)).when(tenantService).validTenant(TENANT_ID);
+
+        for (ErrorCode errorCode : Arrays.asList(TENANT_DISABLE, TENANT_EXPIRE, TENANT_NOT_EXISTS)) {
+            if (errorCode == TENANT_NOT_EXISTS) {
+                assertServiceException(() -> memberService.resolveInvitation("root42"), errorCode);
+            } else {
+                assertServiceException(() -> memberService.resolveInvitation("root42"), errorCode, "agent");
+            }
+        }
+
+        verify(tenantService, times(3)).validTenant(TENANT_ID);
+        verify(memberMapper, never()).selectByInviteCode(anyString());
+    }
+
+    @Test
+    void refreshRejectsDisabledExpiredAndDeletedTenantAndRevokesNewTokenPair() {
+        OAuth2AccessTokenRespDTO refreshed = token(MEMBER_ID);
+        OAuth2AccessTokenCheckRespDTO checked = new OAuth2AccessTokenCheckRespDTO()
+                .setUserType(UserTypeEnum.MEMBER.getValue()).setTenantId(TENANT_ID)
+                .setScopes(Collections.singletonList("skit_member"));
+        when(oauth2TokenApi.refreshAccessToken("refresh-token", OAuth2ClientConstants.CLIENT_ID_DEFAULT))
+                .thenReturn(refreshed);
+        when(oauth2TokenApi.checkAccessToken("access-token")).thenReturn(checked);
+        doThrow(exception(TENANT_DISABLE, "agent"),
+                exception(TENANT_EXPIRE, "agent"),
+                exception(TENANT_NOT_EXISTS)).when(tenantService).validTenant(TENANT_ID);
+
+        for (ErrorCode errorCode : Arrays.asList(TENANT_DISABLE, TENANT_EXPIRE, TENANT_NOT_EXISTS)) {
+            if (errorCode == TENANT_NOT_EXISTS) {
+                assertServiceException(() -> memberService.refreshToken("refresh-token"), errorCode);
+            } else {
+                assertServiceException(() -> memberService.refreshToken("refresh-token"), errorCode, "agent");
+            }
+        }
+
+        verify(oauth2TokenApi, times(3)).removeAccessToken("access-token");
+        verifyNoInteractions(memberMapper);
+    }
+
+    @Test
+    void refreshUsesCanonicalTenantAndIgnoresLegacyAgentStatus() {
+        SkitMemberDO member = enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88");
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(SkitAgentDO.builder().tenantId(TENANT_ID)
+                .tenantCode("AGENT42").status(CommonStatusEnum.DISABLE.getStatus()).build());
+        OAuth2AccessTokenRespDTO refreshed = token(MEMBER_ID);
+        OAuth2AccessTokenCheckRespDTO checked = new OAuth2AccessTokenCheckRespDTO()
+                .setUserType(UserTypeEnum.MEMBER.getValue()).setTenantId(TENANT_ID)
+                .setScopes(Collections.singletonList("skit_member"));
+        when(oauth2TokenApi.refreshAccessToken("refresh-token", OAuth2ClientConstants.CLIENT_ID_DEFAULT))
+                .thenReturn(refreshed);
+        when(oauth2TokenApi.checkAccessToken("access-token")).thenReturn(checked);
+        when(memberMapper.selectById(MEMBER_ID)).thenReturn(member);
+
+        SkitMemberService.AuthResult result = memberService.refreshToken("refresh-token");
+
+        assertEquals(MEMBER_ID, result.getUserId());
+        verify(tenantService).validTenant(TENANT_ID);
+        verify(oauth2TokenApi, never()).removeAccessToken(anyString());
+    }
+
+    @Test
+    void adminCanReadMemberDetailInsideCurrentTenant() {
+        TenantContextHolder.setTenantId(TENANT_ID);
+        SkitMemberDO member = enabledMember(MEMBER_ID, TENANT_ID, 2, "INVITE88");
+        when(memberMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(memberMapper.selectCountByInviterId(MEMBER_ID)).thenReturn(3L);
+
+        SkitMemberService.MemberView result = memberService.getMember(MEMBER_ID);
+
+        assertEquals(MEMBER_ID, result.getId());
+        assertEquals("13800000000", result.getMobile());
+        assertEquals(3L, result.getChildCount());
+    }
+
+    @Test
+    void disablingMemberRevokesOnlyCurrentTenantDefaultClientSkitMemberTokens() {
+        TenantContextHolder.setTenantId(TENANT_ID);
+        when(memberMapper.selectById(MEMBER_ID)).thenReturn(
+                enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88"));
+
+        memberService.updateMemberStatus(MEMBER_ID, CommonStatusEnum.DISABLE.getStatus());
+
+        ArgumentCaptor<SkitMemberDO> captor = ArgumentCaptor.forClass(SkitMemberDO.class);
+        verify(memberMapper).updateById(captor.capture());
+        assertEquals(MEMBER_ID, captor.getValue().getId());
+        assertEquals(CommonStatusEnum.DISABLE.getStatus(), captor.getValue().getStatus());
+        verify(oauth2TokenService).removeAccessToken(MEMBER_ID, UserTypeEnum.MEMBER.getValue(),
+                OAuth2ClientConstants.CLIENT_ID_DEFAULT, "skit_member");
+    }
+
+    @Test
+    void enablingMemberDoesNotRevokeTokens() {
+        TenantContextHolder.setTenantId(TENANT_ID);
+        SkitMemberDO member = enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88")
+                .setStatus(CommonStatusEnum.DISABLE.getStatus());
+        when(memberMapper.selectById(MEMBER_ID)).thenReturn(member);
+
+        memberService.updateMemberStatus(MEMBER_ID, CommonStatusEnum.ENABLE.getStatus());
+
+        verify(memberMapper).updateById(any(SkitMemberDO.class));
+        verifyNoInteractions(oauth2TokenService);
+    }
+
+    @Test
+    void resettingMemberPasswordEncodesPasswordAndRevokesOnlySkitMemberTokens() {
+        TenantContextHolder.setTenantId(TENANT_ID);
+        when(memberMapper.selectById(MEMBER_ID)).thenReturn(
+                enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88"));
+        when(passwordEncoder.encode("new-secret-123")).thenReturn("new-hash");
+
+        memberService.resetMemberPassword(MEMBER_ID, "new-secret-123");
+
+        ArgumentCaptor<SkitMemberDO> captor = ArgumentCaptor.forClass(SkitMemberDO.class);
+        verify(memberMapper).updateById(captor.capture());
+        assertEquals(MEMBER_ID, captor.getValue().getId());
+        assertEquals("new-hash", captor.getValue().getPassword());
+        verify(oauth2TokenService).removeAccessToken(MEMBER_ID, UserTypeEnum.MEMBER.getValue(),
+                OAuth2ClientConstants.CLIENT_ID_DEFAULT, "skit_member");
+    }
+
+    @Test
+    void resettingMemberPasswordRejectsBlankValueBeforeMemberLookup() {
+        TenantContextHolder.setTenantId(TENANT_ID);
+
+        assertServiceException(() -> memberService.resetMemberPassword(MEMBER_ID, "      "),
+                MEMBER_PASSWORD_INVALID);
+
+        verifyNoInteractions(memberMapper, passwordEncoder, oauth2TokenService);
     }
 
     private SkitMemberDO enabledMember(Long id, Long tenantId, Integer depth, String inviteCode) {

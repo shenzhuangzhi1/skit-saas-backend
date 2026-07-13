@@ -16,6 +16,8 @@ import java.util.*;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_CONFIG_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_NOT_EXISTS;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PROVIDER_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_PANGLE;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_TAKU;
 
@@ -63,12 +65,33 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Settings saveSettings(Settings settings) {
+        validateSettings(settings);
         ensureDefaultAccounts();
         saveProvider(PROVIDER_PANGLE, settings.getPangleUsername(), settings.getPangleAppId(), null,
                 settings.getPangleAppSecret(), settings.getPanglePlacementId(), settings.getPangleEnabled());
         saveProvider(PROVIDER_TAKU, settings.getTakuUsername(), settings.getTakuAppId(), settings.getTakuAppKey(),
                 settings.getTakuAppSecret(), settings.getTakuPlacementId(), settings.getTakuEnabled());
         return getSettings();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void clearCredentials(String provider) {
+        if (StrUtil.isBlank(provider)) {
+            throw exception(AD_PROVIDER_INVALID);
+        }
+        String normalizedProvider = StrUtil.trim(provider).toUpperCase(Locale.ROOT);
+        if (!PROVIDER_PANGLE.equals(normalizedProvider) && !PROVIDER_TAKU.equals(normalizedProvider)) {
+            throw exception(AD_PROVIDER_INVALID);
+        }
+        if (accountMapper.selectByProvider(normalizedProvider) == null) {
+            throw exception(AD_ACCOUNT_NOT_EXISTS);
+        }
+        if (PROVIDER_PANGLE.equals(normalizedProvider)) {
+            accountMapper.clearPangleCredentials();
+        } else {
+            accountMapper.clearTakuCredentials();
+        }
     }
 
     @Override
@@ -116,9 +139,12 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     private void saveProvider(String provider, String username, String appId, String appKey, String appSecret,
                               String placementId, Boolean enabled) {
         SkitAdAccountDO account = accountMapper.selectByProvider(provider);
-        account.setAccountName(StrUtil.nullToEmpty(username));
-        account.setAppId(StrUtil.nullToEmpty(appId));
-        account.setConfigData(writePlacementId(StrUtil.nullToEmpty(placementId)));
+        String normalizedUsername = trimToEmpty(username);
+        String normalizedAppId = trimToEmpty(appId);
+        String normalizedPlacementId = trimToEmpty(placementId);
+        account.setAccountName(normalizedUsername);
+        account.setAppId(normalizedAppId);
+        account.setConfigData(writePlacementId(normalizedPlacementId));
         // 空值表示保留已经配置的凭证，避免编辑页面回显凭证。
         if (StrUtil.isNotBlank(appKey)) {
             account.setAppKey(appKey);
@@ -129,7 +155,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         if (Boolean.TRUE.equals(enabled)) {
             boolean credentialReady = PROVIDER_TAKU.equals(provider)
                     ? StrUtil.isNotBlank(account.getAppKey()) : StrUtil.isNotBlank(account.getSecret());
-            if (!StrUtil.isAllNotBlank(account.getAccountName(), account.getAppId(), placementId)
+            if (!StrUtil.isAllNotBlank(account.getAccountName(), account.getAppId(), normalizedPlacementId)
                     || !credentialReady) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
                         provider + " 启用前必须完整配置账号、App ID、广告位和凭证");
@@ -138,6 +164,34 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         account.setStatus(Boolean.TRUE.equals(enabled)
                 ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus());
         accountMapper.updateById(account);
+    }
+
+    private void validateSettings(Settings settings) {
+        if (settings == null) {
+            throw exception(AD_ACCOUNT_CONFIG_INVALID, "广告账号配置不能为空");
+        }
+        if (settings.getPangleEnabled() == null || settings.getTakuEnabled() == null) {
+            throw exception(AD_ACCOUNT_CONFIG_INVALID, "广告平台启用状态不能为空");
+        }
+        validateLength(settings.getPangleUsername(), 128, "PANGLE 账号最长 128 个字符");
+        validateLength(settings.getPangleAppId(), 128, "PANGLE App ID 最长 128 个字符");
+        validateLength(settings.getPangleAppSecret(), 2048, "PANGLE 密钥最长 2048 个字符");
+        validateLength(settings.getPanglePlacementId(), 128, "PANGLE 广告位最长 128 个字符");
+        validateLength(settings.getTakuUsername(), 128, "TAKU 账号最长 128 个字符");
+        validateLength(settings.getTakuAppId(), 128, "TAKU App ID 最长 128 个字符");
+        validateLength(settings.getTakuAppKey(), 255, "TAKU App Key 最长 255 个字符");
+        validateLength(settings.getTakuAppSecret(), 2048, "TAKU 服务端密钥最长 2048 个字符");
+        validateLength(settings.getTakuPlacementId(), 128, "TAKU 广告位最长 128 个字符");
+    }
+
+    private void validateLength(String value, int maximum, String message) {
+        if (value != null && value.length() > maximum) {
+            throw exception(AD_ACCOUNT_CONFIG_INVALID, message);
+        }
+    }
+
+    private String trimToEmpty(String value) {
+        return StrUtil.nullToEmpty(StrUtil.trim(value));
     }
 
     private void fillSettings(Settings result, SkitAdAccountDO account) {

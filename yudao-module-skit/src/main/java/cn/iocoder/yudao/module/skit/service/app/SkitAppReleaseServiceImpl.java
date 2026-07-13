@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.app.SkitAppReleaseProfileMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
@@ -22,6 +23,8 @@ public class SkitAppReleaseServiceImpl implements SkitAppReleaseService {
     private SkitAppReleaseProfileMapper profileMapper;
     @Resource
     private SkitAgentMapper agentMapper;
+    @Resource
+    private TenantService tenantService;
 
     @Override
     public Manifest current(String profileCode, String nativeVersion) {
@@ -31,14 +34,16 @@ public class SkitAppReleaseServiceImpl implements SkitAppReleaseService {
             return result;
         }
         SkitAppReleaseProfileDO profile = profileMapper.selectByProfileCode(normalizedCode);
-        if (profile == null || CommonStatusEnum.isDisable(profile.getStatus())
-                || StrUtil.isBlank(profile.getHotVersion()) || StrUtil.isBlank(profile.getHotBundleUrl())
-                || StrUtil.isBlank(profile.getHotBundleSha256())) {
+        if (profile == null) {
+            return result;
+        }
+        tenantService.validTenant(profile.getTenantId());
+        if (CommonStatusEnum.isDisable(profile.getStatus()) || StrUtil.isBlank(profile.getHotVersion())
+                || StrUtil.isBlank(profile.getHotBundleUrl()) || StrUtil.isBlank(profile.getHotBundleSha256())) {
             return result;
         }
         SkitAgentDO agent = agentMapper.selectByTenantId(profile.getTenantId());
-        if (agent == null || CommonStatusEnum.isDisable(agent.getStatus())
-                || !normalizedCode.equalsIgnoreCase(agent.getTenantCode())) {
+        if (agent == null || !normalizedCode.equalsIgnoreCase(agent.getTenantCode())) {
             return result;
         }
         if (compareVersions(nativeVersion, profile.getMinNativeVersion()) < 0) {

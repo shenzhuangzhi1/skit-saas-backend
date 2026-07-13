@@ -24,6 +24,8 @@ public interface ErrorCodeConstants {
     ErrorCode MEMBER_NOT_EXISTS = new ErrorCode(1_030_003_004, "会员不存在");
     ErrorCode MEMBER_APP_CONTEXT_INVALID = new ErrorCode(1_030_003_005, "请从代理商 App 入口进入");
     ErrorCode MEMBER_TOKEN_SCOPE_INVALID = new ErrorCode(1_030_003_006, "会员令牌不属于短剧会员认证域");
+    ErrorCode MEMBER_STATUS_INVALID = new ErrorCode(1_030_003_007, "会员状态不正确");
+    ErrorCode MEMBER_PASSWORD_INVALID = new ErrorCode(1_030_003_008, "会员密码长度必须为 6 到 32 位");
 
     ErrorCode COMMISSION_RULE_INVALID = new ErrorCode(1_030_004_000, "分成规则不合法：{}");
     ErrorCode COMMISSION_PLAN_NOT_EXISTS = new ErrorCode(1_030_004_001, "当前租户尚未配置分成规则");

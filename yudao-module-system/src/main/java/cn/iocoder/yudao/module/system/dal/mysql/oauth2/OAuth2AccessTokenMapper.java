@@ -39,6 +39,15 @@ public interface OAuth2AccessTokenMapper extends BaseMapperX<OAuth2AccessTokenDO
                 OAuth2AccessTokenDO::getUserType, userType);
     }
 
+    /** Uses the active tenant context in addition to user type and client id. */
+    default List<OAuth2AccessTokenDO> selectListByUserIdAndUserTypeAndClientId(
+            Long userId, Integer userType, String clientId) {
+        return selectList(new LambdaQueryWrapperX<OAuth2AccessTokenDO>()
+                .eq(OAuth2AccessTokenDO::getUserId, userId)
+                .eq(OAuth2AccessTokenDO::getUserType, userType)
+                .eq(OAuth2AccessTokenDO::getClientId, clientId));
+    }
+
     /**
      * 物理删除指定过期时间之前的访问令牌
      *

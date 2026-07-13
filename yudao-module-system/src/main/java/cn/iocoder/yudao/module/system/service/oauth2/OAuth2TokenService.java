@@ -81,6 +81,16 @@ public interface OAuth2TokenService {
     void removeAccessToken(Long userId, Integer userType);
 
     /**
+     * 移除当前租户下、指定客户端和授权范围的访问/刷新令牌。
+     *
+     * @param userId 用户编号
+     * @param userType 用户类型
+     * @param clientId 客户端编号
+     * @param requiredScope 必须包含的授权范围
+     */
+    void removeAccessToken(Long userId, Integer userType, String clientId, String requiredScope);
+
+    /**
      * 获得访问令牌分页
      *
      * @param reqVO 请求

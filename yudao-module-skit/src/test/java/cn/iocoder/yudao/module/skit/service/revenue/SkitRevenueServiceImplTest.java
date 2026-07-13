@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.service.revenue;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.exception.ErrorCode;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberClosureDO;
@@ -14,6 +15,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitCommissionLedgerMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,7 +35,11 @@ import java.util.Collections;
 import java.util.List;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.REVENUE_EVENT_CONFLICT;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_DISABLE;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_EXPIRE;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_NOT_EXISTS;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -67,6 +73,8 @@ class SkitRevenueServiceImplTest {
     private SkitAdAccountService adAccountService;
     @Mock
     private SkitCommissionService commissionService;
+    @Mock
+    private TenantService tenantService;
 
     @BeforeEach
     void setTenantContext() {
@@ -154,6 +162,27 @@ class SkitRevenueServiceImplTest {
 
         verify(eventMapper, never()).insert(any(SkitAdRevenueEventDO.class));
         verifyNoInteractions(ledgerMapper, closureMapper, adAccountService, commissionService);
+    }
+
+    @Test
+    void reportRejectsDisabledExpiredAndDeletedTenantAsFirstBusinessOperationWithZeroWrites() {
+        doThrow(exception(TENANT_DISABLE, "agent"),
+                exception(TENANT_EXPIRE, "agent"),
+                exception(TENANT_NOT_EXISTS)).when(tenantService).validTenant(TENANT_ID);
+
+        for (ErrorCode errorCode : Arrays.asList(TENANT_DISABLE, TENANT_EXPIRE, TENANT_NOT_EXISTS)) {
+            if (errorCode == TENANT_NOT_EXISTS) {
+                assertServiceException(() -> revenueService.report(SOURCE_MEMBER_ID, reportCommand("event-100")),
+                        errorCode);
+            } else {
+                assertServiceException(() -> revenueService.report(SOURCE_MEMBER_ID, reportCommand("event-100")),
+                        errorCode, "agent");
+            }
+        }
+
+        verify(tenantService, times(3)).validTenant(TENANT_ID);
+        verifyNoInteractions(memberMapper, accountMapper, eventMapper, ledgerMapper, closureMapper,
+                adAccountService, commissionService);
     }
 
     private void mockCurrentMemberAndAccount() {
