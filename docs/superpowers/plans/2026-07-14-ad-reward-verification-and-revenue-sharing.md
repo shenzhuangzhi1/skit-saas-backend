@@ -17,11 +17,12 @@
 - Callback controllers ignore the normal tenant context. They hash the path `callbackKey`, resolve exactly one ad account and tenant globally, and then enter only that derived tenant context. Request headers, query parameters, bodies, and visit-tenant values cannot select a tenant.
 - `tenant_admin` is permanently scoped to the tenant bound to its original login. Only `super_admin` can select another tenant, and only explicitly listed delegated commands are writable.
 - Taku `SIGNED_REWARD` is the only phase-one authority for content entitlement and member/upstream commission. `UNSIGNED_PROVIDER_OBSERVATION`, client callbacks, eCPM, local storage, and bridge events never grant entitlement or available money.
+- Taku reward and impression S2S are GET callbacks. Reward MD5 authenticates only the documented ordered core (`trans_id`, `placement_id`, `adsource_id`, `reward_amount`, `reward_name`, secret, and exact decoded `ilrd` when configured); top-level `user_id`, `extra_data`, `network_firm_id`, scenario, package, and platform fields are never promoted to signed facts.
 - Every ad session locks the active commission plan, inviter chain, eligibility, provider account, placement, and immutable unlock scope in one transaction.
 - Revenue and commission rows are append-only. No controller exposes update/delete endpoints for callbacks, reports, events, grants, entitlements, reconciliation revisions, or ledger entries.
 - All money uses integer `amount_units` plus `amount_scale` and ISO currency. Cross-currency totals are not silently combined.
 - Production rollout remains `OFF` until account secrets, dedicated placement, callback placeholders, real signed reward, real impression, report permission, current APK, minimum native version, and old-client revocation are all verified for that tenant.
-- Phase-one unlock traffic is restricted to Taku ADX/direct/cross-promotion network firm IDs `66/67/35`. A third-party ADN such as Pangle cannot enter the unlock traffic group until its own authoritative S2S callback implementation and tests exist; Taku evidence alone cannot authorize those rewards.
+- Phase-one unlock traffic is restricted to Taku ADX/direct/cross-promotion network firm IDs `66/67/35`. The authority gate requires a valid reward MD5 that includes exact signed ILRD, strict ILRD parsing and cross-checks, plus an enabled tenant/account capability; an unsigned top-level network ID is insufficient. A third-party ADN such as Pangle cannot enter the unlock traffic group until its own authoritative S2S callback implementation and tests exist.
 - Each session stores `callback_key_version` and `reward_secret_version`. A rotated credential can finish only sessions created with that version and only through their recorded `reward_accept_until`; old credentials always reject new sessions.
 - An accepted callback is durable work, not merely durable input: canonical inbox rows are claimed with a lease, retried with bounded exponential backoff, recovered on startup, and dead-lettered with an alert only after exhausting attempts.
 
@@ -170,10 +171,10 @@
 
 **Steps:**
 
-1. Write official-vector and tamper tests for field order, URL decoding, missing/duplicate parameters, invalid encoding, overlong values, test placeholders, and constant-time signature comparison.
-2. Parse from a fixed allow-list into immutable normalized values; reject ambiguous duplicate security fields rather than taking first/last.
-3. Implement Taku MD5 signature generation in the documented order and compare decoded bytes in constant time.
-4. Classify callbacks as `SIGNED_REWARD`, `UNSIGNED_PROVIDER_OBSERVATION`, or health-test probe; a probe cannot enter business processing.
+1. Write official-vector and tamper tests for raw GET query decoding, documented field order, missing/duplicate parameters, invalid encoding, overlong values, test placeholders, and constant-time signature comparison.
+2. Parse the untouched raw query from a fixed allow-list into immutable lexical values; reject ambiguous duplicate security fields rather than taking first/last, and preserve the exact decoded `ilrd` string used by the signature.
+3. Implement Taku MD5 over exactly `trans_id + placement_id + adsource_id + reward_amount + reward_name + secret [+ ilrd]` in that order and compare decoded bytes in constant time. Prove that changing an unsigned top-level field does not change the MD5 input and never grants that field signed provenance.
+4. Strictly parse signed ILRD as network-classification evidence, cross-check network/adsource/ad-unit/show identifiers when present, and keep ILRD out of reward/revenue amount authority. Classify callbacks as `SIGNED_REWARD`, `UNSIGNED_PROVIDER_OBSERVATION`, or health-test probe; a probe cannot enter business processing.
 5. Run focused tests; commit with `feat(skit): verify taku callbacks`.
 
 ### Task 7: Route callbacks to exactly one tenant and persist a concurrent inbox
@@ -190,7 +191,6 @@
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/callback/SkitCallbackIngressService.java`
 - Reuse: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/SkitAdCredentialVersionService.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/framework/web/SkitCallbackSecretSanitizingFilter.java`
-- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/job/SkitCallbackRetentionJob.java`
 - Create: `yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/apilog/core/ApiRequestUrlResolver.java`
 - Modify: `yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/apilog/core/interceptor/ApiAccessLogInterceptor.java`
 - Modify: `yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/apilog/core/filter/ApiAccessLogFilter.java`
@@ -202,14 +202,14 @@
 
 **Steps:**
 
-1. Write failing tests that inject false tenant headers/body/query values, unknown/rotated keys, duplicate key generation, old-key/new-session use, same ID across tenants, same key/different payload, over-size/method/rate abuse, secret leakage to logs/errors/MDC, retention expiry, and twenty simultaneous identical deliveries.
+1. Write failing tests that inject false tenant headers/body/query values, unknown/rotated keys, duplicate key generation, old-key/new-session use, same ID across tenants, same key/different payload, over-size/method/rate abuse, secret leakage to logs/errors/MDC, and twenty simultaneous identical deliveries.
 2. Mark the public controller tenant-ignored; hash the route key, resolve exactly one account/tenant/key-version through global `UNIQUE(callback_key_hash)`, and enter only `TenantUtils.execute(derivedTenantId)` for business work. Also enforce `(tenant_id, ad_account_id, key_version)` uniqueness. Store each encrypted reward secret in an immutable version row with `UNIQUE(tenant_id, ad_account_id, secret_version)`, `active`, `revoked_at`, and bounded `accept_until`; rotation creates a row instead of overwriting the prior secret.
 3. Unknown keys write only a platform edge-attempt containing a one-way hash and minimal request metadata; this non-business security telemetry may have nullable tenant/account. Once routing succeeds, persist a tenant-bound attempt append-only. Acquire the canonical row with `INSERT ... ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`, then `SELECT ... FOR UPDATE` and constant-time payload-hash comparison.
 4. Use `(tenant_id, ad_account_id, callback_type, idempotency_key)` uniqueness. Reward idempotency is `trans_id`; impression idempotency is normalized `req_id + adsource_id`.
 5. Return 200 only after durable success/idempotency, 601 for invalid signature, 602 for deterministic rejection, and propagate transient infrastructure failure for platform retry.
-6. Enforce POST-only, small request/parameter limits, per-IP plus hashed-key rate limits, and 90-day encrypted payload/180-day attempt cleanup. The framework exposes a generic sanitized-request-URL request attribute/resolver without depending on Skit; the Skit filter sets only that attribute while leaving the original URI untouched for Spring routing. `ApiAccessLogInterceptor`, `ApiAccessLogFilter`, errors, and MDC read the sanitized value first. Prove the raw key never appears in captured logs or the API-access-log record and routing still resolves the original path.
+6. Enforce GET-only and pass the untouched raw query string to Task 6; reject POST and every other method. Apply small request/parameter limits and per-IP plus hashed-key rate limits. The framework exposes a generic sanitized-request-URL request attribute/resolver without depending on Skit; the Skit filter sets only that attribute while leaving the original URI and query untouched for Spring routing and signature verification. `ApiAccessLogInterceptor`, `ApiAccessLogFilter`, errors, and MDC read the sanitized value first and suppress callback parameters. Prove the raw key/query never appears in captured logs or the API-access-log record and routing still resolves the original path.
 7. Add deployment verification that proxy/container access logs never record the callback-key path; document provider URLs as secrets.
-8. Run controller, log-safety, retention, and MySQL concurrency tests; commit with `feat(skit): add tenant-routed callback inbox`.
+8. Run controller, raw-query, log-safety, and MySQL concurrency tests; commit with `feat(skit): add tenant-routed callback inbox`. Lease/retry/dead-letter and 90/180-day cleanup belong to Task 8 so delivery attempts never increment processor attempts.
 
 ### Task 8: Process reward and impression callbacks into entitlement and frozen revenue
 
@@ -219,6 +219,7 @@
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/callback/SkitAdCallbackProcessorImpl.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/callback/SkitAdCallbackInboxDrainService.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/job/SkitAdCallbackInboxDrainJob.java`
+- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/job/SkitCallbackRetentionJob.java`
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/revenue/SkitAdRevenueEventDO.java`
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/revenue/SkitCommissionLedgerDO.java`
 - Modify corresponding revenue mappers/services
@@ -229,12 +230,12 @@
 
 1. Write failing tests for reward-before-impression, impression-before-reward, client-close-before-S2S, duplicated and conflicting IDs, `trans_id != providerShowId`, wrong user/token/placement/account, forged inbox tenant/account mismatch, two-tenant concurrent drain, expired sessions, archived tenants, old credential/new session, crashed worker recovery, lease expiry, retry/dead-letter, and unsupported network firms.
 2. Allow signed reward only when callback key/secret versions equal the session snapshot and the callback is inside that session's reward window. A pre-archive session may then atomically mark reward verified, bind transaction/show IDs, append one grant, and upsert current entitlements.
-3. Treat impression as unsigned observation: match only `show_custom_ext == sessionId`, create one frozen estimate, and never grant content.
+3. Treat impression as unsigned observation: match only `show_custom_ext == sessionId`, convert documented `adsource_price` eCPM to one-impression estimate by dividing by 1000 with integer-safe precision, create one frozen estimate, and never grant content.
 4. At reward-window expiry route matched nonrewarded impression income 100% to agent and create no member/upstream entries.
-5. Hard-allow only network firm IDs `66/67/35` for phase-one unlock; preserve other network evidence for audit but reject reward authority and readiness until an independent third-party S2S implementation is shipped.
+5. Hard-allow only network firm IDs `66/67/35` for phase-one unlock, and derive that classification only from verified signed ILRD (or a separately trusted server-side signed adsource mapping) plus enabled tenant/account capability. Preserve unsigned top-level network evidence for comparison, but never use it as authority; reject other networks until an independent third-party S2S implementation is shipped.
 6. In global tenant-ignore context claim only immutable inbox routing metadata with `SKIP LOCKED`/lease ownership. Revalidate the compound `(tenant_id, ad_account_id)` relationship, then process each item inside `TenantUtils.execute(derivedTenantId)`; job parameters can never select a tenant. Use bounded exponential backoff, startup recovery, and dead-letter alerts. Processing is end-to-end idempotent so an ACK followed by process death still converges exactly once and two tenants draining concurrently cannot cross-read.
 7. Keep reward, entitlement, revenue, and client lifecycle statuses orthogonal and converge under any callback order with CAS/row locks.
-8. Run unit and MySQL crash/concurrency tests; commit with `feat(skit): process verified ad rewards`.
+8. Add the retention job here: erase encrypted callback payloads after 90 days while preserving immutable hashes/status, retain delivery attempts for 180 days, and keep financial/entitlement facts long-term. Run unit and MySQL crash/concurrency/cleanup tests; commit with `feat(skit): process verified ad rewards`.
 
 ### Task 9: Permanently downgrade the legacy client revenue endpoint
 
@@ -249,7 +250,7 @@
 **Steps:**
 
 1. Write failing tests proving forged completion/eCPM, foreign tenant/member/session, and repeated calls cannot create a revenue event, entitlement, estimate, or ledger entry.
-2. Preserve the old route for compatibility but map it only to bounded client telemetry marked `LEGACY_UNVERIFIED` and return `deprecated: true` plus the new session flow hint.
+2. Preserve the old route for compatibility as an authenticated, rate-limited acknowledgement only. Return `deprecated: true`, `status: LEGACY_UNVERIFIED`, `financialEffect: false`, and the new session-flow hint, but write no ad session, client event, entitlement, estimate, revenue event, or ledger row. Observe migration only through sanitized access logs and low-cardinality metrics; the legacy payload has no authoritative session identity and must never weaken the tenant compound foreign keys or trigger a synthetic session.
 3. Delete every service branch that accepts client amount or completed status as financial truth.
 4. Run focused and callback regressions; commit with `fix(skit): retire client trusted ad revenue`.
 
@@ -257,7 +258,9 @@
 
 **Files:**
 
+- Add a new Task 10 migration for versioned AEAD Taku reporting credentials, account report timezone/currency/scale and cross-node pull lease/rate state; never edit the released Task 2 checksum.
 - Create report/reconciliation DOs and mappers under `dal/dataobject/reconciliation` and `dal/mysql/reconciliation`
+- Create a write-only reporting-credential DO/mapper/service and `skit_ad_reconciliation_allocation` for per-revision event/beneficiary cumulative targets.
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/reconciliation/TakuReportingClient.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/reconciliation/SkitAdReportPullService.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/reconciliation/SkitReconciliationAllocator.java`
@@ -270,13 +273,14 @@
 **Steps:**
 
 1. Write failing tests for `N=K`, `0<K<N`, `K>N`, missing N, `E=0/A>0`, mixed placement, zero income, multi-currency, duplicate revision, D+2 down-adjustment, and partial task retry.
-2. In global tenant-ignore context enumerate every account with unsettled pre-archive events, including archived tenants; then process one account at a time inside `TenantUtils.execute(derivedTenantId)` with encrypted write-only credentials, account timezone, bounded dates, response hashes, rate limits, and no secret logging.
-3. Define bucket key from tenant/account/App/report-date/timezone/dedicated placement/network/adsource/currency; reject mixed or insufficient dimensions to suspense.
-4. Attribute `A*K/N` with integer floor; allocate matched events proportionally to estimate with stable-ID remainder distribution. `K-R` goes 100% to agent; unmatched residual stays `SUSPENSE`.
-5. Append exactly one `ESTIMATE_RELEASE`, then `SETTLEMENT`; later report revisions append `target_current - target_previous` as `ADJUSTMENT`. Reserve `REVERSAL` for independent fraud/platform withdrawal.
-6. Enforce tenant-leading ledger uniqueness including normalized `revision_no=0` so MySQL NULL semantics cannot duplicate entries.
-7. Test that an archived tenant continues D+1/D+2 reconciliation without reading another tenant's credentials or facts.
-8. Run unit and MySQL integration tests; commit with `feat(skit): reconcile official ad revenue`.
+2. Treat the Taku Publisher Key as a separate reporting credential from SDK App Key and reward secret. Store immutable versions with the Task 2 AEAD seam, expose only configured/version metadata, and use POST `/v2/fullreport` with bounded date queries; never reuse `EncryptTypeHandler` or return/log the Publisher Key.
+3. In global tenant-ignore context enumerate every account with unsettled pre-archive events, including archived tenants; then process one account at a time in stable serial order inside `TenantUtils.execute(derivedTenantId)` with account timezone, cross-node lease/rate limits, response hashes, and no secret logging. Never use `@TenantJob` or a job-supplied tenant selector.
+4. Define the authoritative report query/bucket dimensions as tenant/account/App/report-date/timezone/dedicated placement/ad format/network/adsource/currency. Use report `revenue` as actual amount and `impression_api` as N; reject mixed or insufficient dimensions to suspense.
+5. Attribute `A*K/N` with integer floor; allocate matched events proportionally to estimate with stable-ID remainder distribution. `K-R` goes 100% to agent; unmatched residual stays `SUSPENSE`.
+6. Append exactly one `ESTIMATE_RELEASE`, then `SETTLEMENT`; later report revisions append `target_current - target_previous` as `ADJUSTMENT`. Persist per-revision event/beneficiary cumulative targets so partial retry is deterministic. Reserve `REVERSAL` for independent fraud/platform withdrawal.
+7. Enforce tenant-leading ledger/allocation uniqueness including normalized `revision_no=0` so MySQL NULL semantics cannot duplicate entries.
+8. Test that an archived tenant continues D+1/D+2 reconciliation only for facts created before archival, without calling active-tenant validation or reading another tenant's credentials/facts.
+9. Run unit and MySQL integration tests; commit with `feat(skit): reconcile official ad revenue`.
 
 ### Task 11: Expose tenant-scoped management and audit APIs
 
@@ -285,6 +289,7 @@
 - Create controllers: `SkitAdAnalyticsController.java`, `SkitAdEventController.java`, `SkitReconciliationController.java`, `SkitCommissionPlanController.java`, `SkitMemberTreeController.java` under `controller/admin/tenant`
 - Create corresponding VOs under `controller/admin/tenant/vo`
 - Create services under `service/analytics`, `service/reconciliation`, `service/commission`, and `service/member`
+- Create durable tenant-bound management-command audit and asynchronous export-task DOs/mappers/services; exports capture the requester's immutable tenant/scope and expire downloads after 24 hours.
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/controller/admin/tenant/SkitTenantBusinessController.java`
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/enums/ErrorCodeConstants.java`
 - Create focused controller tests for each controller under `src/test/java/.../controller/admin/tenant`
@@ -293,9 +298,9 @@
 
 1. Write failing tests for tenant-admin scope locking, super-admin explicit target selection, cross-tenant row IDs, immutable-resource method denial, stable pagination, currency grouping, and optimistic commission publish.
 2. Add overview/timeseries, event detail, reconciliation difference, current/history/preview plan, ledger, children/ancestors/subtree, and readiness endpoints.
-3. Derive tenant-admin scope exclusively from original-login tenant. Permit super-admin target tenant only through the shared guard and audit every delegated write with target tenant and reason.
+3. Derive tenant-admin scope exclusively from original-login tenant. Permit only an original system-tenant `super_admin` to select a target through one shared guard. Execute delegated writes from an explicit command whitelist with a required reason and append a durable audit fact in the same transaction; asynchronous API/operation logs are not the authority.
 4. Keep callback/report/event/entitlement/ledger endpoints read-only; expose only bounded task retry and explicit audited security revocation to super-admin.
-5. Return stable enums, `asOf`, timezone, ISO currency, decimal strings, and server-side filters/pagination.
+5. Return stable enums, fixed `asOf`, timezone, ISO currency, decimal strings, and keyset server-side filters/pagination. Large exports use durable tasks and short-lived downloads, never a synchronous current-page export.
 6. Run all controller/security tests; commit with `feat(skit): expose tenant ad operations`.
 
 ### Task 12: Add tenant readiness and atomic rollout gates
