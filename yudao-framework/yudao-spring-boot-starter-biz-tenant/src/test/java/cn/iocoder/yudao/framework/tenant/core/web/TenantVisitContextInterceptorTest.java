@@ -44,7 +44,6 @@ class TenantVisitContextInterceptorTest {
     void tenantAdministratorCannotVisitAnotherTenantEvenWithLegacyPermission() {
         authenticate(42L);
         TenantContextHolder.setTenantId(42L);
-        when(securityFrameworkService.hasRole("super_admin")).thenReturn(false);
         MockHttpServletRequest request = visitRequest(43L);
         TenantVisitContextInterceptor interceptor = interceptor();
 
