@@ -20,6 +20,7 @@ import javax.annotation.Resource;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.*;
@@ -32,6 +33,8 @@ import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.*;
 @Service
 @Validated
 public class TenantPackageServiceImpl implements TenantPackageService {
+
+    private static final String STANDARD_AGENT_PACKAGE_CODE = "SKIT_AGENT_STANDARD";
 
     @Resource
     private TenantPackageMapper tenantPackageMapper;
@@ -56,6 +59,7 @@ public class TenantPackageServiceImpl implements TenantPackageService {
     public void updateTenantPackage(TenantPackageSaveReqVO updateReqVO) {
         // 校验存在
         TenantPackageDO tenantPackage = validateTenantPackageExists(updateReqVO.getId());
+        validateNotSystemManaged(tenantPackage);
         // 校验套餐名是否重复
         validateTenantPackageNameUnique(updateReqVO.getId(), updateReqVO.getName());
         // 更新
@@ -71,7 +75,8 @@ public class TenantPackageServiceImpl implements TenantPackageService {
     @Override
     public void deleteTenantPackage(Long id) {
         // 校验存在
-        validateTenantPackageExists(id);
+        TenantPackageDO tenantPackage = validateTenantPackageExists(id);
+        validateNotSystemManaged(tenantPackage);
         // 校验正在使用
         validateTenantUsed(id);
         // 删除
@@ -82,6 +87,8 @@ public class TenantPackageServiceImpl implements TenantPackageService {
     public void deleteTenantPackageList(List<Long> ids) {
         // 1. 校验是否有租户正在使用该套餐
         for (Long id : ids) {
+            TenantPackageDO tenantPackage = validateTenantPackageExists(id);
+            validateNotSystemManaged(tenantPackage);
             if (tenantService.getTenantCountByPackageId(id) > 0) {
                 throw exception(TENANT_PACKAGE_USED);
             }
@@ -97,6 +104,12 @@ public class TenantPackageServiceImpl implements TenantPackageService {
             throw exception(TENANT_PACKAGE_NOT_EXISTS);
         }
         return tenantPackage;
+    }
+
+    private void validateNotSystemManaged(TenantPackageDO tenantPackage) {
+        if (Objects.equals(STANDARD_AGENT_PACKAGE_CODE, tenantPackage.getCode())) {
+            throw exception(TENANT_PACKAGE_SYSTEM_MANAGED);
+        }
     }
 
     private void validateTenantUsed(Long id) {

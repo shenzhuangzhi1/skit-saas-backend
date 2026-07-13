@@ -115,6 +115,7 @@ public interface ErrorCodeConstants {
     ErrorCode TENANT_PACKAGE_USED = new ErrorCode(1_002_016_001, "租户正在使用该套餐，请给租户重新设置套餐后再尝试删除");
     ErrorCode TENANT_PACKAGE_DISABLE = new ErrorCode(1_002_016_002, "名字为【{}】的租户套餐已被禁用");
     ErrorCode TENANT_PACKAGE_NAME_DUPLICATE = new ErrorCode(1_002_016_003, "已经存在该名字的租户套餐");
+    ErrorCode TENANT_PACKAGE_SYSTEM_MANAGED = new ErrorCode(1_002_016_004, "系统内置租户套餐不允许修改或删除");
 
     // ========== 社交用户 1-002-018-000 ==========
     ErrorCode SOCIAL_USER_AUTH_FAILURE = new ErrorCode(1_002_018_000, "社交授权失败，原因是：{}");

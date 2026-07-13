@@ -100,6 +100,18 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
     }
 
     @Test
+    public void testUpdateTenantPackage_systemManaged() {
+        TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class,
+                o -> o.setCode("SKIT_AGENT_STANDARD"));
+        tenantPackageMapper.insert(dbTenantPackage);
+        TenantPackageSaveReqVO reqVO = randomPojo(TenantPackageSaveReqVO.class,
+                o -> o.setId(dbTenantPackage.getId()));
+
+        assertServiceException(() -> tenantPackageService.updateTenantPackage(reqVO),
+                TENANT_PACKAGE_SYSTEM_MANAGED);
+    }
+
+    @Test
     public void testDeleteTenantPackage_success() {
         // mock 数据
         TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class);
@@ -136,6 +148,31 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
 
         // 调用, 并断言异常
         assertServiceException(() -> tenantPackageService.deleteTenantPackage(id), TENANT_PACKAGE_USED);
+    }
+
+    @Test
+    public void testDeleteTenantPackage_systemManaged() {
+        TenantPackageDO dbTenantPackage = randomPojo(TenantPackageDO.class,
+                o -> o.setCode("SKIT_AGENT_STANDARD"));
+        tenantPackageMapper.insert(dbTenantPackage);
+
+        assertServiceException(() -> tenantPackageService.deleteTenantPackage(dbTenantPackage.getId()),
+                TENANT_PACKAGE_SYSTEM_MANAGED);
+        assertNotNull(tenantPackageMapper.selectById(dbTenantPackage.getId()));
+    }
+
+    @Test
+    public void testDeleteTenantPackageList_systemManaged() {
+        TenantPackageDO ordinary = randomPojo(TenantPackageDO.class);
+        tenantPackageMapper.insert(ordinary);
+        TenantPackageDO managed = randomPojo(TenantPackageDO.class,
+                o -> o.setCode("SKIT_AGENT_STANDARD"));
+        tenantPackageMapper.insert(managed);
+
+        assertServiceException(() -> tenantPackageService.deleteTenantPackageList(
+                asList(ordinary.getId(), managed.getId())), TENANT_PACKAGE_SYSTEM_MANAGED);
+        assertNotNull(tenantPackageMapper.selectById(ordinary.getId()));
+        assertNotNull(tenantPackageMapper.selectById(managed.getId()));
     }
 
     @Test
