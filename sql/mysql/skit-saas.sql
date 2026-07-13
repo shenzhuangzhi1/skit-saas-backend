@@ -74,9 +74,12 @@ CREATE TABLE IF NOT EXISTS `skit_app_release_profile` (
   `status` tinyint NOT NULL DEFAULT 0,
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
+  `active_tenant_id` bigint GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' THEN `tenant_id` ELSE NULL END) STORED,
+  PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_app_release_profile_code` (`profile_code`),
-  UNIQUE KEY `uk_skit_app_release_profile_tenant_channel` (`tenant_id`,`channel`)
+  UNIQUE KEY `uk_skit_app_release_profile_tenant_channel` (`tenant_id`,`channel`),
+  UNIQUE KEY `uk_skit_app_release_profile_active_tenant` (`active_tenant_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理商白标 App 发布档案';
 
 CREATE TABLE IF NOT EXISTS `skit_ad_account` (
@@ -101,7 +104,8 @@ CREATE TABLE IF NOT EXISTS `skit_member` (
   `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_member_tenant_mobile` (`tenant_id`,`mobile`),
   UNIQUE KEY `uk_skit_member_invite_code` (`invite_code`),
-  KEY `idx_skit_member_tenant_inviter` (`tenant_id`,`inviter_id`)
+  KEY `idx_skit_member_tenant_inviter` (`tenant_id`,`inviter_id`),
+  KEY `idx_skit_member_tenant_status_id` (`tenant_id`,`status`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧独立会员';
 
 CREATE TABLE IF NOT EXISTS `skit_member_closure` (
@@ -119,9 +123,13 @@ CREATE TABLE IF NOT EXISTS `skit_commission_plan` (
   `status` tinyint NOT NULL, `published_time` datetime NOT NULL,
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
+  `active_tenant_id` bigint GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' AND `status` = 0 THEN `tenant_id` ELSE NULL END) STORED,
+  PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_commission_plan_version` (`tenant_id`,`version`),
-  KEY `idx_skit_commission_plan_status` (`tenant_id`,`status`)
+  UNIQUE KEY `uk_skit_commission_plan_active_tenant` (`active_tenant_id`),
+  KEY `idx_skit_commission_plan_status` (`tenant_id`,`status`),
+  KEY `idx_skit_commission_plan_status_version` (`tenant_id`,`status`,`version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='版本化分成方案';
 
 CREATE TABLE IF NOT EXISTS `skit_commission_rule` (
@@ -144,7 +152,8 @@ CREATE TABLE IF NOT EXISTS `skit_ad_revenue_event` (
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_revenue_event_external` (`tenant_id`,`provider`,`external_event_id`),
-  KEY `idx_skit_revenue_event_member` (`tenant_id`,`source_member_id`,`create_time`)
+  KEY `idx_skit_revenue_event_member` (`tenant_id`,`source_member_id`,`create_time`),
+  KEY `idx_skit_revenue_provider_time_id` (`tenant_id`,`provider`,`occurred_time`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='广告收益幂等事件';
 
 CREATE TABLE IF NOT EXISTS `skit_commission_ledger` (
@@ -156,5 +165,7 @@ CREATE TABLE IF NOT EXISTS `skit_commission_ledger` (
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_ledger_beneficiary` (`tenant_id`,`event_id`,`beneficiary_type`,`beneficiary_member_id`,`level_no`),
-  KEY `idx_skit_ledger_member_time` (`tenant_id`,`beneficiary_member_id`,`create_time`)
+  KEY `idx_skit_ledger_member_time` (`tenant_id`,`beneficiary_member_id`,`create_time`),
+  KEY `idx_skit_ledger_member_type_time_id` (`tenant_id`,`beneficiary_member_id`,`beneficiary_type`,`create_time`,`id`),
+  KEY `idx_skit_ledger_beneficiary_time_id` (`tenant_id`,`beneficiary_type`,`create_time`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='广告分成不可变账本';

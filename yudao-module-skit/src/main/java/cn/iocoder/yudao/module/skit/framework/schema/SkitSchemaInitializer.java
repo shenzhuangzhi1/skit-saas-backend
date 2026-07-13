@@ -56,6 +56,14 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             "SELECT `mobile` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
                     + "AS `duplicate_ids` FROM `system_users` WHERE `deleted` = b'0' AND `mobile` IS NOT NULL "
                     + "AND TRIM(`mobile`) <> '' GROUP BY `mobile` HAVING COUNT(*) > 1 ORDER BY `mobile`";
+    private static final String DUPLICATE_ACTIVE_APP_RELEASE_PROFILES_QUERY =
+            "SELECT `tenant_id` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
+                    + "AS `duplicate_ids` FROM `skit_app_release_profile` WHERE `deleted` = b'0' "
+                    + "GROUP BY `tenant_id` HAVING COUNT(*) > 1 ORDER BY `tenant_id`";
+    private static final String DUPLICATE_ACTIVE_COMMISSION_PLANS_QUERY =
+            "SELECT `tenant_id` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
+                    + "AS `duplicate_ids` FROM `skit_commission_plan` WHERE `deleted` = b'0' AND `status` = 0 "
+                    + "GROUP BY `tenant_id` HAVING COUNT(*) > 1 ORDER BY `tenant_id`";
     private static final String SEED_STANDARD_AGENT_PACKAGE_SQL =
             "INSERT INTO `system_tenant_package` (`code`, `name`, `status`, `menu_ids`) "
                     + "VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), "
@@ -165,6 +173,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 activeUserIdentitySteps()));
         result.add(migrationFromSteps(2026071303, "seed standard agent package",
                 Collections.singletonList(seedStandardAgentPackageStep())));
+        result.add(migrationFromSteps(2026071304, "enforce domain singleton integrity and query indexes",
+                domainIntegritySteps()));
         return sortedMigrations(result);
     }
 
@@ -502,6 +512,36 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 addIndexStep("system_users", "uk_system_users_active_mobile", "`active_mobile`", true));
     }
 
+    void migrateDomainIntegrityConstraints() {
+        executeSteps(domainIntegritySteps());
+    }
+
+    private List<SchemaStep> domainIntegritySteps() {
+        return Arrays.asList(schemaStep("validate-domain-singletons",
+                        this::validateNoActiveDomainSingletonDuplicates,
+                        DUPLICATE_ACTIVE_APP_RELEASE_PROFILES_QUERY, DUPLICATE_ACTIVE_COMMISSION_PLANS_QUERY),
+                addColumnStep("skit_app_release_profile", "active_tenant_id",
+                        "bigint GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' THEN `tenant_id` ELSE NULL END) "
+                                + "STORED COMMENT '有效租户发布档案唯一键'"),
+                addIndexStep("skit_app_release_profile", "uk_skit_app_release_profile_active_tenant",
+                        "`active_tenant_id`", true),
+                addColumnStep("skit_commission_plan", "active_tenant_id",
+                        "bigint GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' AND `status` = 0 "
+                                + "THEN `tenant_id` ELSE NULL END) STORED COMMENT '生效分成方案租户唯一键'"),
+                addIndexStep("skit_commission_plan", "uk_skit_commission_plan_active_tenant",
+                        "`active_tenant_id`", true),
+                addIndexStep("skit_member", "idx_skit_member_tenant_status_id",
+                        "`tenant_id`,`status`,`id`", false),
+                addIndexStep("skit_commission_plan", "idx_skit_commission_plan_status_version",
+                        "`tenant_id`,`status`,`version`", false),
+                addIndexStep("skit_commission_ledger", "idx_skit_ledger_member_type_time_id",
+                        "`tenant_id`,`beneficiary_member_id`,`beneficiary_type`,`create_time`,`id`", false),
+                addIndexStep("skit_commission_ledger", "idx_skit_ledger_beneficiary_time_id",
+                        "`tenant_id`,`beneficiary_type`,`create_time`,`id`", false),
+                addIndexStep("skit_ad_revenue_event", "idx_skit_revenue_provider_time_id",
+                        "`tenant_id`,`provider`,`occurred_time`,`id`", false));
+    }
+
     void seedStandardAgentPackage() {
         seedStandardAgentPackageStep().execute();
     }
@@ -520,6 +560,19 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         throw new IllegalStateException("Cannot create global active system user identity indexes. "
                 + "Duplicate usernames=" + describeDuplicates(duplicateUsernames) + ", duplicate mobiles="
                 + describeDuplicates(duplicateMobiles) + ". Resolve the duplicates in system_users before restarting.");
+    }
+
+    void validateNoActiveDomainSingletonDuplicates() {
+        List<Map<String, Object>> duplicateProfiles =
+                jdbcTemplate.queryForList(DUPLICATE_ACTIVE_APP_RELEASE_PROFILES_QUERY);
+        List<Map<String, Object>> duplicateCommissionPlans =
+                jdbcTemplate.queryForList(DUPLICATE_ACTIVE_COMMISSION_PLANS_QUERY);
+        if (duplicateProfiles.isEmpty() && duplicateCommissionPlans.isEmpty()) {
+            return;
+        }
+        throw new IllegalStateException("Cannot enforce short-drama domain singleton constraints. "
+                + "App release profiles=" + describeDuplicates(duplicateProfiles) + ", active commission plans="
+                + describeDuplicates(duplicateCommissionPlans) + ". Resolve the duplicate rows before restarting.");
     }
 
     private static String describeDuplicates(List<Map<String, Object>> duplicates) {

@@ -254,6 +254,50 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
+    void shouldRefuseDomainSingletonIndexesWhenActiveDuplicatesExist() {
+        when(jdbcTemplate.queryForList(contains("FROM `skit_app_release_profile`")))
+                .thenReturn(Collections.singletonList(duplicateIdentity("20", "7,11")));
+        when(jdbcTemplate.queryForList(contains("FROM `skit_commission_plan`")))
+                .thenReturn(Collections.singletonList(duplicateIdentity("20", "8,12")));
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                initializer::migrateDomainIntegrityConstraints);
+
+        assertTrue(exception.getMessage().contains("App release profiles"));
+        assertTrue(exception.getMessage().contains("commission plans"));
+        assertTrue(exception.getMessage().contains("7,11"));
+        assertTrue(exception.getMessage().contains("8,12"));
+        verify(jdbcTemplate, never()).execute(contains("uk_skit_app_release_profile_active_tenant"));
+        verify(jdbcTemplate, never()).execute(contains("uk_skit_commission_plan_active_tenant"));
+    }
+
+    @Test
+    void shouldCreateDomainSingletonConstraintsAndQueryIndexes() {
+        when(jdbcTemplate.queryForList(contains("FROM `skit_app_release_profile`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("FROM `skit_commission_plan`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForObject(contains("information_schema.COLUMNS"), eq(Integer.class),
+                anyString(), anyString())).thenReturn(0);
+        when(jdbcTemplate.queryForObject(contains("information_schema.STATISTICS"), eq(Integer.class),
+                anyString(), anyString())).thenReturn(0);
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.migrateDomainIntegrityConstraints();
+
+        verify(jdbcTemplate).execute(contains("ALTER TABLE `skit_app_release_profile` ADD COLUMN `active_tenant_id`"));
+        verify(jdbcTemplate).execute(contains("UNIQUE INDEX `uk_skit_app_release_profile_active_tenant`"));
+        verify(jdbcTemplate).execute(contains("ALTER TABLE `skit_commission_plan` ADD COLUMN `active_tenant_id`"));
+        verify(jdbcTemplate).execute(contains("UNIQUE INDEX `uk_skit_commission_plan_active_tenant`"));
+        verify(jdbcTemplate).execute(contains("INDEX `idx_skit_member_tenant_status_id`"));
+        verify(jdbcTemplate).execute(contains("INDEX `idx_skit_commission_plan_status_version`"));
+        verify(jdbcTemplate).execute(contains("INDEX `idx_skit_ledger_member_type_time_id`"));
+        verify(jdbcTemplate).execute(contains("INDEX `idx_skit_ledger_beneficiary_time_id`"));
+        verify(jdbcTemplate).execute(contains("INDEX `idx_skit_revenue_provider_time_id`"));
+    }
+
+    @Test
     void shouldExposeAgentArchiveAuditFieldsOnModel() {
         LocalDateTime archivedTime = LocalDateTime.of(2026, 7, 13, 12, 30);
         SkitAgentDO agent = new SkitAgentDO();
