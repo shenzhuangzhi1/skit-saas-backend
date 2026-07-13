@@ -68,15 +68,23 @@
 - Create: `yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/integration/SkitAdSchemaMigrationMySqlIT.java`
 - Modify: `sql/mysql/skit-saas.sql`
 - Modify: `sql/mysql/ruoyi-vue-pro.sql`
+- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdCallbackKeyDO.java`
+- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdRewardSecretVersionDO.java`
+- Create corresponding mappers under `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/mysql/ad`
+- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/SkitAdCredentialVersionService.java`
+- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/SkitAdCredentialVersionServiceImpl.java`
+- Create: `yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/service/ad/SkitAdCredentialVersionServiceImplTest.java`
 
 **Steps:**
 
 1. Write failing unit/integration tests for ordered migration, checksum protection, restart idempotency, tenant-leading unique keys, compound tenant consistency, and failure on duplicate legacy invite codes.
-2. Add versioned migrations and bootstrap DDL for policy snapshots, ad sessions, client events, globally unique callback-key hashes, callback edge-attempts, tenant callback inbox/attempts, network capabilities, current entitlements/grants, report pulls, reconciliation buckets/revisions, tenant rollout capability, native player grants, and the global invite registry.
+2. Add versioned migrations and bootstrap DDL for policy snapshots, ad sessions, client events, globally unique callback-key hashes, encrypted reward-secret versions, callback edge-attempts, tenant callback inbox/attempts, network capabilities, current entitlements/grants, report pulls, reconciliation buckets/revisions, tenant rollout capability, native player grants, and the global invite registry.
 3. Extend revenue events and commission ledger with session/source/match/reconciliation fields, integer money, immutable event references, normalized revision number, tenant-leading idempotency indexes, `(tenant_id,id)` candidate keys, and all compound foreign keys listed in the global constraints.
 4. Mark existing client-created estimated events `LEGACY_UNVERIFIED`; never migrate them to available balances.
 5. Add preflight diagnostics that stop startup before partial application when invite collisions, invalid currencies, incompatible tenant references, or checksum changes exist.
-6. Run schema unit tests and `SkitAdSchemaMigrationMySqlIT`; commit with `feat(skit): migrate verified ad schema`.
+6. Add the credential-version primitives before any session code: generate/hash globally unique callback keys; encrypt reward secrets; create immutable monotonically versioned rows; resolve active versions by tenant/account; rotate by creating a new version while preserving a bounded prior-version acceptance window. Read methods never return raw secret/key values outside the internal verifier boundary.
+7. Write focused tests for tenant/account scope, global key collision, monotonic versioning, write-only response behavior, and old-version bounded lookup.
+8. Run schema, credential-service, and `SkitAdSchemaMigrationMySqlIT` tests; commit with `feat(skit): migrate verified ad schema`.
 
 ### Task 3: Make invite-code ownership globally unique and transactional
 
@@ -142,9 +150,9 @@
 
 **Steps:**
 
-1. Write failing tests for login-derived tenant/member, server-selected account/placement, inactive tenant/member/account rejection, existing entitlement, same-scope reuse, expiry, CAS state transitions, token hashing, and cross-tenant IDs.
+1. Write failing tests for login-derived tenant/member, server-selected account/placement, inactive tenant/member/account rejection, existing entitlement, same-scope reuse, twenty concurrent same-scope creates, expiry, CAS state transitions, token hashing, and cross-tenant IDs.
 2. Generate global `sessionId`, 128-bit base64url `customData`, pseudonymous SDK user ID, five-minute load expiry, and twenty-minute reward window; store only token hashes.
-3. Snapshot the commission policy, normalized unlock scope, `callback_key_version`, and `reward_secret_version` in the creation transaction; enforce at most one active same-member/same-scope session.
+3. Snapshot the commission policy, normalized unlock scope, `callback_key_version`, and `reward_secret_version` in the creation transaction. Store a deterministic `active_scope_hash` only while the session is active and enforce `UNIQUE(tenant_id, member_id, active_scope_hash)`; clear it on terminal expiry/consumption so MySQL NULL semantics permit later sessions. On duplicate insert, lock and return the existing active session. Prove twenty concurrent creates yield one session.
 4. Implement strict versioned client event ingestion that updates only client lifecycle/telemetry and never grants entitlement or money.
 5. Implement current per-episode entitlements plus append-only grants; implement short-lived player grant scoped to one tenant/member/drama and content access checks.
 6. Run unit and MySQL tests; commit with `feat(skit): add server ad sessions and entitlements`.
@@ -172,15 +180,18 @@
 
 **Files:**
 
-- Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdCallbackKeyDO.java`
+- Reuse: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdCallbackKeyDO.java`
+- Reuse: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdRewardSecretVersionDO.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdCallbackEdgeAttemptDO.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdCallbackInboxDO.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/ad/SkitAdCallbackAttemptDO.java`
-- Create corresponding mappers under `dal/mysql/ad`
+- Reuse credential mappers from Task 2; create callback edge/inbox/attempt mappers under `dal/mysql/ad`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/callback/SkitCallbackRoutingService.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/callback/SkitCallbackIngressService.java`
+- Reuse: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/ad/SkitAdCredentialVersionService.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/framework/web/SkitCallbackSecretSanitizingFilter.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/job/SkitCallbackRetentionJob.java`
+- Create: `yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/apilog/core/ApiRequestUrlResolver.java`
 - Modify: `yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/apilog/core/interceptor/ApiAccessLogInterceptor.java`
 - Modify: `yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/apilog/core/filter/ApiAccessLogFilter.java`
 - Create: `yudao-framework/yudao-spring-boot-starter-web/src/test/java/cn/iocoder/yudao/framework/apilog/core/CallbackSecretRedactionTest.java`
@@ -192,11 +203,11 @@
 **Steps:**
 
 1. Write failing tests that inject false tenant headers/body/query values, unknown/rotated keys, duplicate key generation, old-key/new-session use, same ID across tenants, same key/different payload, over-size/method/rate abuse, secret leakage to logs/errors/MDC, retention expiry, and twenty simultaneous identical deliveries.
-2. Mark the public controller tenant-ignored; hash the route key, resolve exactly one account/tenant/key-version through global `UNIQUE(callback_key_hash)`, and enter only `TenantUtils.execute(derivedTenantId)` for business work. Also enforce `(tenant_id, ad_account_id, key_version)` uniqueness.
+2. Mark the public controller tenant-ignored; hash the route key, resolve exactly one account/tenant/key-version through global `UNIQUE(callback_key_hash)`, and enter only `TenantUtils.execute(derivedTenantId)` for business work. Also enforce `(tenant_id, ad_account_id, key_version)` uniqueness. Store each encrypted reward secret in an immutable version row with `UNIQUE(tenant_id, ad_account_id, secret_version)`, `active`, `revoked_at`, and bounded `accept_until`; rotation creates a row instead of overwriting the prior secret.
 3. Unknown keys write only a platform edge-attempt containing a one-way hash and minimal request metadata; this non-business security telemetry may have nullable tenant/account. Once routing succeeds, persist a tenant-bound attempt append-only. Acquire the canonical row with `INSERT ... ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`, then `SELECT ... FOR UPDATE` and constant-time payload-hash comparison.
 4. Use `(tenant_id, ad_account_id, callback_type, idempotency_key)` uniqueness. Reward idempotency is `trans_id`; impression idempotency is normalized `req_id + adsource_id`.
 5. Return 200 only after durable success/idempotency, 601 for invalid signature, 602 for deterministic rejection, and propagate transient infrastructure failure for platform retry.
-6. Enforce POST-only, small request/parameter limits, per-IP plus hashed-key rate limits, and 90-day encrypted payload/180-day attempt cleanup. Redact the callback-key path segment before `ApiAccessLogInterceptor` logs it and before `ApiAccessLogFilter` persists `requestUrl`; apply the same sanitizer to errors/MDC and prove the raw key never appears in captured logs or the API-access-log record.
+6. Enforce POST-only, small request/parameter limits, per-IP plus hashed-key rate limits, and 90-day encrypted payload/180-day attempt cleanup. The framework exposes a generic sanitized-request-URL request attribute/resolver without depending on Skit; the Skit filter sets only that attribute while leaving the original URI untouched for Spring routing. `ApiAccessLogInterceptor`, `ApiAccessLogFilter`, errors, and MDC read the sanitized value first. Prove the raw key never appears in captured logs or the API-access-log record and routing still resolves the original path.
 7. Add deployment verification that proxy/container access logs never record the callback-key path; document provider URLs as secrets.
 8. Run controller, log-safety, retention, and MySQL concurrency tests; commit with `feat(skit): add tenant-routed callback inbox`.
 
@@ -216,12 +227,12 @@
 
 **Steps:**
 
-1. Write failing tests for reward-before-impression, impression-before-reward, client-close-before-S2S, duplicated and conflicting IDs, `trans_id != providerShowId`, wrong user/token/placement/account, expired sessions, archived tenants, old credential/new session, crashed worker recovery, lease expiry, retry/dead-letter, and unsupported network firms.
+1. Write failing tests for reward-before-impression, impression-before-reward, client-close-before-S2S, duplicated and conflicting IDs, `trans_id != providerShowId`, wrong user/token/placement/account, forged inbox tenant/account mismatch, two-tenant concurrent drain, expired sessions, archived tenants, old credential/new session, crashed worker recovery, lease expiry, retry/dead-letter, and unsupported network firms.
 2. Allow signed reward only when callback key/secret versions equal the session snapshot and the callback is inside that session's reward window. A pre-archive session may then atomically mark reward verified, bind transaction/show IDs, append one grant, and upsert current entitlements.
 3. Treat impression as unsigned observation: match only `show_custom_ext == sessionId`, create one frozen estimate, and never grant content.
 4. At reward-window expiry route matched nonrewarded impression income 100% to agent and create no member/upstream entries.
 5. Hard-allow only network firm IDs `66/67/35` for phase-one unlock; preserve other network evidence for audit but reject reward authority and readiness until an independent third-party S2S implementation is shipped.
-6. Claim durable inbox work with `SKIP LOCKED`/lease ownership, bounded exponential backoff, startup recovery, and dead-letter alerts. Processing is end-to-end idempotent so an ACK followed by process death still converges exactly once.
+6. In global tenant-ignore context claim only immutable inbox routing metadata with `SKIP LOCKED`/lease ownership. Revalidate the compound `(tenant_id, ad_account_id)` relationship, then process each item inside `TenantUtils.execute(derivedTenantId)`; job parameters can never select a tenant. Use bounded exponential backoff, startup recovery, and dead-letter alerts. Processing is end-to-end idempotent so an ACK followed by process death still converges exactly once and two tenants draining concurrently cannot cross-read.
 7. Keep reward, entitlement, revenue, and client lifecycle statuses orthogonal and converge under any callback order with CAS/row locks.
 8. Run unit and MySQL crash/concurrency tests; commit with `feat(skit): process verified ad rewards`.
 
@@ -508,4 +519,4 @@
 - Tenant admin cannot read/write another tenant even with forged IDs/headers; super admin can audit all tenants only through explicit guarded scope.
 - The App cannot reward locally, reuse an ad across sessions, expose bridges to external pages, accept unsigned hot updates, or let an old client access protected content after enforcement.
 - Home and “短剧 SaaS” are the only top-level product menus and display only real, freshness-labelled data.
-- Code, CI, deployment, and shadow verification can be completed without provider credentials, but production `ENFORCED` is never claimed until external Taku/Pangle/DJX callbacks, reports, new APK, and old-client revocation are verified per tenant.
+- Code, CI, deployment, and shadow verification can be completed without provider credentials, but production `ENFORCED` is never claimed until the tenant's Taku signed reward/impression callbacks and reports, new APK, Pangle/DJX content capability, and old Taku/Pangle/DJX credential revocation are verified. Pangle reward S2S is not a phase-one prerequisite because Pangle and every other third-party ADN remain excluded from the unlock traffic group.
