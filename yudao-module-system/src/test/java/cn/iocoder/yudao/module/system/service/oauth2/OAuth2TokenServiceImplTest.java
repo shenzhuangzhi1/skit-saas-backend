@@ -213,8 +213,11 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
                 .setExpiresTime(LocalDateTime.now().plusDays(1))
                 .setUserId(1L).setUserType(UserTypeEnum.ADMIN.getValue()).setTenantId(42L));
         oauth2RefreshTokenMapper.insert(refreshTokenDO);
-        when(adminUserService.getUserIgnoreTenant(1L)).thenReturn(
-                randomPojo(AdminUserDO.class, o -> o.setId(1L).setTenantId(42L).setStatus(1)));
+        when(adminUserService.getUserIgnoreTenant(1L)).thenReturn(randomPojo(AdminUserDO.class, o -> {
+            o.setId(1L);
+            o.setTenantId(42L);
+            o.setStatus(1);
+        }));
 
         assertServiceException(() -> oauth2TokenService.refreshAccessToken(refreshToken, clientId),
                 cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.AUTH_LOGIN_USER_DISABLED);
