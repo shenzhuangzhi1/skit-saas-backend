@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.system.dal.mysql.tenant.TenantPackageMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import javax.annotation.Resource;
 import java.util.List;
@@ -225,6 +226,22 @@ public class TenantPackageServiceImplTest extends BaseDbUnitTest {
         TenantPackageDO result = tenantPackageService.getTenantPackageByCode("SKIT_AGENT_STANDARD");
 
         assertPojoEquals(dbTenantPackage, result);
+    }
+
+    @Test
+    public void testTenantPackageCodeUniqueOnlyForActiveRows() {
+        TenantPackageDO first = randomPojo(TenantPackageDO.class,
+                o -> o.setCode("SKIT_AGENT_STANDARD"));
+        tenantPackageMapper.insert(first);
+        TenantPackageDO duplicate = cloneIgnoreId(first,
+                o -> o.setName(first.getName() + "-duplicate"));
+
+        assertThrows(DataIntegrityViolationException.class, () -> tenantPackageMapper.insert(duplicate));
+
+        tenantPackageMapper.deleteById(first.getId());
+        TenantPackageDO replacement = cloneIgnoreId(first,
+                o -> o.setName(first.getName() + "-replacement"));
+        assertDoesNotThrow(() -> tenantPackageMapper.insert(replacement));
     }
 
     @Test

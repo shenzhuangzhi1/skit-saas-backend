@@ -415,7 +415,11 @@ CREATE TABLE IF NOT EXISTS "system_tenant_package" (
     "updater" varchar(64) DEFAULT '',
     "update_time" datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     "deleted" bit NOT NULL DEFAULT FALSE,
-    PRIMARY KEY ("id")
+    "active_code" varchar(64) GENERATED ALWAYS AS (
+        CASE WHEN "deleted" = FALSE AND "code" IS NOT NULL AND TRIM("code") <> '' THEN "code" ELSE NULL END
+    ),
+    PRIMARY KEY ("id"),
+    CONSTRAINT "uk_system_tenant_package_active_code" UNIQUE ("active_code")
 ) COMMENT '租户套餐表';
 
 CREATE TABLE IF NOT EXISTS "system_oauth2_client" (

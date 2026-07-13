@@ -19,13 +19,20 @@ class TenantPackageControllerTest {
     }
 
     @Test
-    void shouldPreserveExistingEndpointPermissionChecks() throws Exception {
-        assertPermission("createTenantPackage", "@ss.hasPermission('system:tenant-package:create')");
-        assertPermission("updateTenantPackage", "@ss.hasPermission('system:tenant-package:update')");
-        assertPermission("deleteTenantPackage", "@ss.hasPermission('system:tenant-package:delete')");
-        assertPermission("deleteTenantPackageList", "@ss.hasPermission('system:tenant-package:delete')");
-        assertPermission("getTenantPackage", "@ss.hasPermission('system:tenant-package:query')");
-        assertPermission("getTenantPackagePage", "@ss.hasPermission('system:tenant-package:query')");
+    void shouldRequireSuperAdminAndPreserveEndpointPermissionChecks() throws Exception {
+        assertPermission("createTenantPackage",
+                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:create')");
+        assertPermission("updateTenantPackage",
+                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:update')");
+        assertPermission("deleteTenantPackage",
+                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:delete')");
+        assertPermission("deleteTenantPackageList",
+                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:delete')");
+        assertPermission("getTenantPackage",
+                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:query')");
+        assertPermission("getTenantPackagePage",
+                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:query')");
+        assertPermission("getTenantPackageList", "@ss.hasRole('super_admin')");
     }
 
     private static void assertPermission(String methodName, String expected) throws Exception {

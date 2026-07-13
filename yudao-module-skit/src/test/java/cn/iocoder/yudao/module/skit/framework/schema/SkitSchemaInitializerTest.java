@@ -3,8 +3,12 @@ package cn.iocoder.yudao.module.skit.framework.schema;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -14,8 +18,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
@@ -27,10 +33,33 @@ import static org.mockito.Mockito.when;
 class SkitSchemaInitializerTest {
 
     private JdbcTemplate jdbcTemplate;
+    private Connection lockConnection;
+    private PreparedStatement acquireLockStatement;
+    private PreparedStatement releaseLockStatement;
+    private ResultSet acquireLockResult;
+    private ResultSet releaseLockResult;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         jdbcTemplate = mock(JdbcTemplate.class);
+        lockConnection = mock(Connection.class);
+        acquireLockStatement = mock(PreparedStatement.class);
+        releaseLockStatement = mock(PreparedStatement.class);
+        acquireLockResult = mock(ResultSet.class);
+        releaseLockResult = mock(ResultSet.class);
+        when(lockConnection.prepareStatement("SELECT GET_LOCK(?, ?)")).thenReturn(acquireLockStatement);
+        when(lockConnection.prepareStatement("SELECT RELEASE_LOCK(?)")).thenReturn(releaseLockStatement);
+        when(acquireLockStatement.executeQuery()).thenReturn(acquireLockResult);
+        when(releaseLockStatement.executeQuery()).thenReturn(releaseLockResult);
+        when(acquireLockResult.next()).thenReturn(true);
+        when(acquireLockResult.getInt(1)).thenReturn(1);
+        when(releaseLockResult.next()).thenReturn(true);
+        when(releaseLockResult.getInt(1)).thenReturn(1);
+        when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.emptyList());
+        when(jdbcTemplate.execute(any(ConnectionCallback.class))).thenAnswer(invocation -> {
+            ConnectionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInConnection(lockConnection);
+        });
     }
 
     @Test
@@ -44,6 +73,56 @@ class SkitSchemaInitializerTest {
         new SkitSchemaInitializer(jdbcTemplate, Arrays.asList(third, first, second)).run(null);
 
         assertEquals(Arrays.asList("first", "second", "third"), executionOrder);
+    }
+
+    @Test
+    void shouldAcquireAndReleaseAdvisoryLockAroundMigrations() throws Exception {
+        List<String> events = new ArrayList<>();
+        when(acquireLockStatement.executeQuery()).thenAnswer(invocation -> {
+            events.add("acquire");
+            return acquireLockResult;
+        });
+        when(releaseLockStatement.executeQuery()).thenAnswer(invocation -> {
+            events.add("release");
+            return releaseLockResult;
+        });
+        SkitSchemaInitializer.Migration migration = migration(1, "apply", events);
+
+        new SkitSchemaInitializer(jdbcTemplate, Collections.singletonList(migration)).run(null);
+
+        assertEquals(Arrays.asList("acquire", "apply", "release"), events);
+        verify(acquireLockStatement).setString(1, "skit_schema_migration");
+        verify(acquireLockStatement).setInt(2, 10);
+        verify(releaseLockStatement).setString(1, "skit_schema_migration");
+    }
+
+    @Test
+    void shouldReleaseAdvisoryLockWhenMigrationFails() throws Exception {
+        SkitSchemaInitializer.Migration migration = new SkitSchemaInitializer.Migration(
+                1, "fails", Collections.singletonList("SQL:migration-fails"), () -> {
+            throw new IllegalStateException("migration failed");
+        });
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new SkitSchemaInitializer(jdbcTemplate, Collections.singletonList(migration)).run(null));
+
+        assertEquals("migration failed", exception.getMessage());
+        verify(releaseLockStatement).executeQuery();
+    }
+
+    @Test
+    void shouldStopImmediatelyWhenAdvisoryLockCannotBeAcquired() throws Exception {
+        when(acquireLockResult.getInt(1)).thenReturn(0);
+        List<String> executionOrder = new ArrayList<>();
+        SkitSchemaInitializer.Migration migration = migration(1, "must-not-run", executionOrder);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new SkitSchemaInitializer(jdbcTemplate, Collections.singletonList(migration)).run(null));
+
+        assertTrue(exception.getMessage().contains("Could not acquire"));
+        assertTrue(executionOrder.isEmpty());
+        verify(jdbcTemplate, never()).execute(contains("CREATE TABLE IF NOT EXISTS `skit_schema_migration`"));
+        verify(releaseLockStatement, never()).executeQuery();
     }
 
     @Test
@@ -72,6 +151,27 @@ class SkitSchemaInitializerTest {
         assertTrue(exception.getMessage().contains("version 1"));
         assertTrue(exception.getMessage().contains("stored-checksum"));
         assertTrue(exception.getMessage().contains(migration.getChecksum()));
+        assertTrue(executionOrder.isEmpty());
+    }
+
+    @Test
+    void shouldDetectChecksumMismatchWhenMigrationManifestChanges() {
+        List<String> executionOrder = new ArrayList<>();
+        SkitSchemaInitializer.Migration installed = new SkitSchemaInitializer.Migration(
+                1, "same description", Arrays.asList("SQL:SELECT 1", "PARAM:String:first"),
+                () -> executionOrder.add("installed"));
+        SkitSchemaInitializer.Migration changed = new SkitSchemaInitializer.Migration(
+                1, "same description", Arrays.asList("SQL:SELECT 2", "PARAM:String:first"),
+                () -> executionOrder.add("changed"));
+        when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.singletonList(
+                appliedMigration(installed.getVersion(), installed.getChecksum())));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new SkitSchemaInitializer(jdbcTemplate, Collections.singletonList(changed)).run(null));
+
+        assertNotEquals(installed.getChecksum(), changed.getChecksum());
+        assertThrows(UnsupportedOperationException.class, () -> installed.getManifest().add("SQL:SELECT 3"));
+        assertTrue(exception.getMessage().contains("checksum mismatch"));
         assertTrue(executionOrder.isEmpty());
     }
 
@@ -167,7 +267,8 @@ class SkitSchemaInitializerTest {
 
     private static SkitSchemaInitializer.Migration migration(int version, String description,
                                                                List<String> executionOrder) {
-        return new SkitSchemaInitializer.Migration(version, description, description + "-v1",
+        return new SkitSchemaInitializer.Migration(version, description,
+                Collections.singletonList("EVENT:" + description),
                 () -> executionOrder.add(description));
     }
 
