@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * <p>Maven Failsafe explicitly includes this foundation smoke test alongside
  * the later {@code *MySqlIT} integration tests.</p>
  */
-public class SkitMySqlIntegrationSmokeTest extends SkitMySqlIntegrationTestBase {
+public abstract class SkitMySqlIntegrationSmokeTest extends SkitMySqlIntegrationTestBase {
 
     @Test
     void usesRepeatableReadTransactionIsolation() {
@@ -45,4 +45,10 @@ public class SkitMySqlIntegrationSmokeTest extends SkitMySqlIntegrationTestBase 
         });
     }
 
+}
+
+/**
+ * Failsafe-discoverable concrete form of the shared smoke contract.
+ */
+final class SkitMySqlIntegrationSmokeMySqlIT extends SkitMySqlIntegrationSmokeTest {
 }
