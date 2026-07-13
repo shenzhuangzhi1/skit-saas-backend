@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.lang.reflect.Field;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -14,17 +15,21 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -60,6 +65,31 @@ class SkitSchemaInitializerTest {
             ConnectionCallback<?> callback = invocation.getArgument(0);
             return callback.doInConnection(lockConnection);
         });
+    }
+
+    @Test
+    void shouldKeepPreviouslyReleasedMigrationChecksumsStable() throws Exception {
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate);
+        Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<SkitSchemaInitializer.Migration> migrations =
+                (List<SkitSchemaInitializer.Migration>) field.get(initializer);
+        Map<Integer, String> expected = new HashMap<>();
+        expected.put(2026071201, "bddb923e2d6f5b5d1def6ff115499d2cc32b59aa68959a11ae04caf2af916651");
+        expected.put(2026071301, "b507341e6fbd47d275fba15494723510e7c3d410f4a6d1146ac1c594df0ce220");
+        expected.put(2026071302, "18cdd108bae5ed0d8700aa31d2483b5030d8a7ac4143b18fa7d8310818f6c6c4");
+        expected.put(2026071303, "ece068f30e1b6abe5344f1e6f1f179c55cae0a93c6e3e23bd8f511b7522a5a21");
+        expected.put(2026071304, "666a0061892df38cb1cf0e4762d223580703e5f5682eb784775f53fe37f4f0ef");
+
+        Set<Integer> verifiedVersions = new HashSet<>();
+        for (SkitSchemaInitializer.Migration migration : migrations) {
+            if (expected.containsKey(migration.getVersion())) {
+                assertEquals(expected.get(migration.getVersion()), migration.getChecksum());
+                verifiedVersions.add(migration.getVersion());
+            }
+        }
+        assertEquals(expected.keySet(), verifiedVersions);
     }
 
     @Test
@@ -139,6 +169,19 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
+    void shouldApplyMissingMigrationBelowAlreadyAppliedVersion() {
+        List<String> executionOrder = new ArrayList<>();
+        SkitSchemaInitializer.Migration compatibility = migration(1250, "compatibility", executionOrder);
+        SkitSchemaInitializer.Migration newer = migration(1301, "newer", executionOrder);
+        when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.singletonList(
+                appliedMigration(newer.getVersion(), newer.getChecksum())));
+
+        new SkitSchemaInitializer(jdbcTemplate, Arrays.asList(newer, compatibility)).run(null);
+
+        assertEquals(Collections.singletonList("compatibility"), executionOrder);
+    }
+
+    @Test
     void shouldFailBeforeExecutionWhenAppliedChecksumDiffers() {
         List<String> executionOrder = new ArrayList<>();
         SkitSchemaInitializer.Migration migration = migration(1, "first", executionOrder);
@@ -191,6 +234,235 @@ class SkitSchemaInitializerTest {
         assertTrue(exception.getMessage().contains("13800138000"));
         assertTrue(exception.getMessage().contains("8,12"));
         assertTrue(exception.getMessage().contains("Resolve the duplicates"));
+    }
+
+    @Test
+    void shouldNormalizeProductionLegacyIdentitiesWhileKeepingPlatformSuperAdmin() {
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`username`"))).thenReturn(Arrays.asList(
+                identityMember(104L, 104L, 1L, "test"), identityMember(104L, 111L, 121L, "test")));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`mobile`"))).thenReturn(Arrays.asList(
+                identityMember(100L, 100L, 1L, "15601691300"),
+                identityMember(100L, 107L, 118L, "15601691300"),
+                identityMember(100L, 108L, 119L, "15601691300"),
+                identityMember(100L, 109L, 120L, "15601691300"),
+                identityMember(100L, 110L, 121L, "15601691300"),
+                identityMember(100L, 113L, 122L, "15601691300")));
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`")))
+                .thenReturn(Collections.singletonList(userIdentity(100L, null)));
+        when(jdbcTemplate.queryForList(contains("SELECT DISTINCT `u`.`id` FROM `skit_agent`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForObject(contains("AND `username` = ?"), eq(Integer.class), anyString()))
+                .thenReturn(0);
+        stubIdentityRepairUpdates();
+        when(jdbcTemplate.update(contains("UPDATE `system_users` SET `mobile` = NULL"),
+                anyLong(), anyString())).thenReturn(1);
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.normalizeLegacyActiveUserIdentities();
+
+        verify(jdbcTemplate).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                eq(2026071250), eq("USERNAME"), eq(111L), eq(121L), eq(104L), eq("LOWEST_ID"),
+                eq("test"), eq("legacy111"));
+        verify(jdbcTemplate).update(contains("UPDATE `system_users` SET `username`"),
+                eq("legacy111"), eq(111L), eq("test"));
+        verify(jdbcTemplate).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                eq(2026071250), eq("MOBILE"), eq(107L), eq(118L), eq(100L),
+                eq("PLATFORM_SUPER_ADMIN"), eq("15601691300"), isNull());
+        verify(jdbcTemplate).update(contains("UPDATE `system_users` SET `mobile` = NULL"),
+                eq(107L), eq("15601691300"));
+        verify(jdbcTemplate, never()).update(contains("UPDATE `system_users` SET `mobile` = NULL"),
+                eq(100L), anyString());
+    }
+
+    @Test
+    void shouldKeepLowestIdWhenDuplicateGroupHasNoProtectedIdentity() {
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`username`"))).thenReturn(Arrays.asList(
+                identityMember(7L, 7L, 1L, "test"), identityMember(7L, 11L, 1L, "test")));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`mobile`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`"))).thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("SELECT DISTINCT `u`.`id` FROM `skit_agent`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForObject(contains("AND `username` = ?"), eq(Integer.class), anyString()))
+                .thenReturn(0);
+        stubIdentityRepairUpdates();
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.normalizeLegacyActiveUserIdentities();
+
+        verify(jdbcTemplate).update(contains("UPDATE `system_users` SET `username`"),
+                eq("legacy11"), eq(11L), eq("test"));
+        verify(jdbcTemplate, never()).update(contains("UPDATE `system_users` SET `username`"),
+                anyString(), eq(7L), anyString());
+    }
+
+    @Test
+    void shouldFreeAgentContactMobileFromLegacyHolderAndRecordReason() {
+        when(jdbcTemplate.queryForList(contains("AS `contact_mobile`,`u`.`username`")))
+                .thenReturn(Collections.singletonList(agentBinding(200L, 12L, "13800138000",
+                        "13800138000", "13800138000")));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`username`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`mobile`"))).thenReturn(Arrays.asList(
+                identityMember(7L, 7L, 1L, "13800138000"),
+                identityMember(7L, 12L, 200L, "13800138000")));
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`"))).thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("AND `username` = ?"), eq("13800138000")))
+                .thenReturn(Collections.singletonList(identityHolder(12L, 200L, "13800138000")));
+        when(jdbcTemplate.queryForList(contains("AND `mobile` = ?"), eq("13800138000")))
+                .thenReturn(Arrays.asList(identityHolder(7L, 1L, "13800138000"),
+                        identityHolder(12L, 200L, "13800138000")));
+        stubIdentityRepairUpdates();
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.normalizeLegacyActiveUserIdentities();
+
+        verify(jdbcTemplate).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                eq(2026071250), eq("MOBILE"), eq(7L), eq(1L), eq(12L),
+                eq("AGENT_CONTACT_PHONE_TARGET"), eq("13800138000"), isNull());
+    }
+
+    @Test
+    void shouldUseAlphanumericSuffixWhenLegacyUsernameCollidesUnderDatabaseCollation() {
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`username`"))).thenReturn(Arrays.asList(
+                identityMember(7L, 7L, 1L, "test"), identityMember(7L, 11L, 1L, "test")));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`mobile`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`"))).thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("SELECT DISTINCT `u`.`id` FROM `skit_agent`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForObject(contains("AND `username` = ?"), eq(Integer.class), eq("legacy11")))
+                .thenReturn(1);
+        when(jdbcTemplate.queryForObject(contains("AND `username` = ?"), eq(Integer.class), eq("legacy11x1")))
+                .thenReturn(0);
+        stubIdentityRepairUpdates();
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.normalizeLegacyActiveUserIdentities();
+
+        verify(jdbcTemplate).update(contains("UPDATE `system_users` SET `username`"),
+                eq("legacy11x1"), eq(11L), eq("test"));
+    }
+
+    @Test
+    void shouldRejectDuplicateProtectedIdentitiesBeforeChangingAnyUser() {
+        when(jdbcTemplate.queryForList(contains("AS `contact_mobile`,`u`.`username`")))
+                .thenReturn(Collections.singletonList(agentBinding(200L, 12L, "13800138000",
+                        "13900139000", "13900139000")));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`username`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`mobile`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`")))
+                .thenReturn(Collections.singletonList(userIdentity(8L, null)));
+        when(jdbcTemplate.queryForList(contains("AND `username` = ?"), eq("13800138000")))
+                .thenReturn(Collections.singletonList(identityHolder(8L, 1L, "13800138000")));
+        when(jdbcTemplate.queryForList(contains("AND `mobile` = ?"), eq("13800138000")))
+                .thenReturn(Collections.emptyList());
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                initializer::normalizeLegacyActiveUserIdentities);
+
+        assertTrue(exception.getMessage().contains("Protected duplicate identities"));
+        assertTrue(exception.getMessage().contains("13800138000"));
+        assertTrue(exception.getMessage().contains("12,8"));
+        verify(jdbcTemplate, never()).update(contains("UPDATE `system_users`"), any(Object[].class));
+        verify(jdbcTemplate, never()).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                any(Object[].class));
+    }
+
+    @Test
+    void shouldFailClosedForInvalidAgentAdministratorBinding() {
+        Map<String, Object> invalidBinding = new HashMap<>();
+        invalidBinding.put("agent_id", 9L);
+        invalidBinding.put("tenant_id", 200L);
+        invalidBinding.put("contact_user_id", 12L);
+        invalidBinding.put("user_tenant_id", 201L);
+        when(jdbcTemplate.queryForList(contains("LEFT JOIN `system_tenant`")))
+                .thenReturn(Collections.singletonList(invalidBinding));
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                initializer::normalizeLegacyActiveUserIdentities);
+
+        assertTrue(exception.getMessage().contains("incomplete or cross-tenant"));
+        assertTrue(exception.getMessage().contains("agent_id=9"));
+        verify(jdbcTemplate, never()).update(contains("UPDATE `system_users`"), any(Object[].class));
+    }
+
+    @Test
+    void shouldSynchronizeUniqueLegacyAgentIdentityToTenantContactMobile() {
+        when(jdbcTemplate.queryForList(contains("AS `contact_mobile`,`u`.`username`")))
+                .thenReturn(Collections.singletonList(agentBinding(200L, 12L, "13800138000",
+                        "legacyAgent", "13900139000")));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`username`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`,`mobile`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`"))).thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("AND `username` = ?"), eq("13800138000")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("AND `mobile` = ?"), eq("13800138000")))
+                .thenReturn(Collections.emptyList());
+        stubIdentityRepairUpdates();
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.normalizeLegacyActiveUserIdentities();
+
+        verify(jdbcTemplate).update(contains("UPDATE `system_users` SET `username`"),
+                eq("13800138000"), eq(12L), eq("legacyAgent"));
+        verify(jdbcTemplate).update(contains("UPDATE `system_users` SET `mobile` = ?"),
+                eq("13800138000"), eq(12L), eq("13900139000"));
+        verify(jdbcTemplate).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                eq(2026071250), eq("USERNAME"), eq(12L), eq(200L), eq(12L),
+                eq("AGENT_CONTACT_PHONE_SYNC"), eq("legacyAgent"), eq("13800138000"));
+    }
+
+    @Test
+    void shouldSynchronizeNullAgentMobileWithNullSafeGuard() {
+        when(jdbcTemplate.queryForList(contains("AS `contact_mobile`,`u`.`username`")))
+                .thenReturn(Collections.singletonList(agentBinding(200L, 12L, "13800138000",
+                        "13800138000", null)));
+        when(jdbcTemplate.queryForList(contains("MIN(`id`) AS `group_id`")))
+                .thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("JOIN `system_user_role`"))).thenReturn(Collections.emptyList());
+        when(jdbcTemplate.queryForList(contains("AND `username` = ?"), eq("13800138000")))
+                .thenReturn(Collections.singletonList(identityHolder(12L, 200L, "13800138000")));
+        when(jdbcTemplate.queryForList(contains("AND `mobile` = ?"), eq("13800138000")))
+                .thenReturn(Collections.emptyList());
+        stubIdentityRepairUpdates();
+        when(jdbcTemplate.update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                eq(2026071250), eq("MOBILE"), eq(12L), eq(200L), eq(12L),
+                eq("AGENT_CONTACT_PHONE_SYNC"), isNull(), eq("13800138000"))).thenReturn(1);
+        when(jdbcTemplate.update(contains("AND `mobile` <=> ?"),
+                eq("13800138000"), eq(12L), isNull())).thenReturn(1);
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        initializer.normalizeLegacyActiveUserIdentities();
+
+        verify(jdbcTemplate).update(contains("AND `mobile` <=> ?"),
+                eq("13800138000"), eq(12L), isNull());
+        verify(jdbcTemplate).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                eq(2026071250), eq("MOBILE"), eq(12L), eq(200L), eq(12L),
+                eq("AGENT_CONTACT_PHONE_SYNC"), isNull(), eq("13800138000"));
+    }
+
+    @Test
+    void shouldRejectTwoAgentsSharingOneContactMobileBeforeWrites() {
+        when(jdbcTemplate.queryForList(contains("AS `contact_mobile`,`u`.`username`"))).thenReturn(Arrays.asList(
+                agentBinding(200L, 12L, "13800138000", "agent12", "13900139000"),
+                agentBinding(201L, 13L, "13800138000", "agent13", "13700137000")));
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                initializer::normalizeLegacyActiveUserIdentities);
+
+        assertTrue(exception.getMessage().contains("same login mobile"));
+        assertTrue(exception.getMessage().contains("12,13"));
+        verify(jdbcTemplate, never()).update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                any(Object[].class));
+        verify(jdbcTemplate, never()).update(contains("UPDATE `system_users`"), any(Object[].class));
     }
 
     @Test
@@ -328,6 +600,54 @@ class SkitSchemaInitializerTest {
         row.put("duplicate_value", value);
         row.put("duplicate_ids", ids);
         return row;
+    }
+
+    private static Map<String, Object> userIdentity(Long id, String username) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", id);
+        if (username != null) {
+            row.put("username", username);
+        }
+        return row;
+    }
+
+    private static Map<String, Object> identityMember(Long groupId, Long id, Long tenantId, String value) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("group_id", groupId);
+        row.put("id", id);
+        row.put("tenant_id", tenantId);
+        row.put("identity_value", value);
+        return row;
+    }
+
+    private static Map<String, Object> agentBinding(Long tenantId, Long userId, String contactMobile,
+                                                    String username, String mobile) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("tenant_id", tenantId);
+        row.put("user_id", userId);
+        row.put("contact_mobile", contactMobile);
+        row.put("username", username);
+        row.put("mobile", mobile);
+        return row;
+    }
+
+    private static Map<String, Object> identityHolder(Long id, Long tenantId, String value) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", id);
+        row.put("tenant_id", tenantId);
+        row.put("identity_value", value);
+        return row;
+    }
+
+    private void stubIdentityRepairUpdates() {
+        when(jdbcTemplate.update(contains("INSERT INTO `skit_identity_migration_audit`"),
+                any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        when(jdbcTemplate.update(contains("UPDATE `system_users` SET `username`"),
+                any(), any(), any())).thenReturn(1);
+        when(jdbcTemplate.update(contains("UPDATE `system_users` SET `mobile` = NULL"),
+                anyLong(), anyString())).thenReturn(1);
+        when(jdbcTemplate.update(contains("UPDATE `system_users` SET `mobile` = ?"),
+                any(), any(), any())).thenReturn(1);
     }
 
 }

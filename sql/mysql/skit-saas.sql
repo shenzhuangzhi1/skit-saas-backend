@@ -8,6 +8,22 @@ CREATE TABLE IF NOT EXISTS `skit_schema_migration` (
   PRIMARY KEY (`version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧 SaaS 数据库迁移记录';
 
+CREATE TABLE IF NOT EXISTS `skit_identity_migration_audit` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
+  `migration_version` int NOT NULL COMMENT '迁移版本',
+  `identity_type` varchar(16) NOT NULL COMMENT '身份类型',
+  `changed_user_id` bigint NOT NULL COMMENT '被修复用户',
+  `changed_tenant_id` bigint NOT NULL COMMENT '被修复用户原租户',
+  `retained_user_id` bigint NOT NULL COMMENT '保留身份用户',
+  `retained_reason` varchar(64) NOT NULL COMMENT '保留原因',
+  `old_value` varchar(64) DEFAULT NULL COMMENT '原身份值',
+  `new_value` varchar(64) DEFAULT NULL COMMENT '修复后身份值',
+  `repaired_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '修复时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_identity_migration_target` (`migration_version`,`identity_type`,`changed_user_id`),
+  KEY `idx_skit_identity_migration_value` (`migration_version`,`identity_type`,`old_value`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史管理端身份修复审计';
+
 CREATE TABLE IF NOT EXISTS `skit_admin_record` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户编号',

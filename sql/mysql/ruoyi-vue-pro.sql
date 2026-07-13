@@ -30,6 +30,26 @@ CREATE TABLE `skit_schema_migration`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '短剧 SaaS 数据库迁移记录';
 
 -- ----------------------------
+-- Table structure for skit_identity_migration_audit
+-- ----------------------------
+DROP TABLE IF EXISTS `skit_identity_migration_audit`;
+CREATE TABLE `skit_identity_migration_audit`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
+  `migration_version` int NOT NULL COMMENT '迁移版本',
+  `identity_type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '身份类型',
+  `changed_user_id` bigint NOT NULL COMMENT '被修复用户',
+  `changed_tenant_id` bigint NOT NULL COMMENT '被修复用户原租户',
+  `retained_user_id` bigint NOT NULL COMMENT '保留身份用户',
+  `retained_reason` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '保留原因',
+  `old_value` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '原身份值',
+  `new_value` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '修复后身份值',
+  `repaired_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '修复时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_skit_identity_migration_target`(`migration_version` ASC, `identity_type` ASC, `changed_user_id` ASC) USING BTREE,
+  INDEX `idx_skit_identity_migration_value`(`migration_version` ASC, `identity_type` ASC, `old_value` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '历史管理端身份修复审计';
+
+-- ----------------------------
 -- Table structure for infra_api_access_log
 -- ----------------------------
 DROP TABLE IF EXISTS `infra_api_access_log`;

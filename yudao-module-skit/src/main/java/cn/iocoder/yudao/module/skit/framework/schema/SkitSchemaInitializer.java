@@ -1,13 +1,18 @@
 package cn.iocoder.yudao.module.skit.framework.schema;
 
+import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentCreateReqVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -21,8 +26,11 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -56,6 +64,80 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             "SELECT `mobile` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
                     + "AS `duplicate_ids` FROM `system_users` WHERE `deleted` = b'0' AND `mobile` IS NOT NULL "
                     + "AND TRIM(`mobile`) <> '' GROUP BY `mobile` HAVING COUNT(*) > 1 ORDER BY `mobile`";
+    private static final int LEGACY_IDENTITY_MIGRATION_VERSION = 2026071250;
+    private static final String LEGACY_IDENTITY_ALGORITHM = "repair-legacy-active-user-identities-v1";
+    private static final String CREATE_IDENTITY_MIGRATION_AUDIT_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_identity_migration_audit` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`migration_version` int NOT NULL,"
+                    + "`identity_type` varchar(16) NOT NULL,`changed_user_id` bigint NOT NULL,"
+                    + "`changed_tenant_id` bigint NOT NULL,`retained_user_id` bigint NOT NULL,"
+                    + "`retained_reason` varchar(64) NOT NULL,`old_value` varchar(64) DEFAULT NULL,"
+                    + "`new_value` varchar(64) DEFAULT NULL,`repaired_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                    + "PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_identity_migration_target` "
+                    + "(`migration_version`,`identity_type`,`changed_user_id`),"
+                    + "KEY `idx_skit_identity_migration_value` (`migration_version`,`identity_type`,`old_value`))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String DUPLICATE_ACTIVE_USERNAME_MEMBERS_QUERY =
+            "SELECT `d`.`group_id`,`u`.`id`,`u`.`tenant_id`,`u`.`username` AS `identity_value` "
+                    + "FROM `system_users` `u` JOIN (SELECT MIN(`id`) AS `group_id`,`username` "
+                    + "FROM `system_users` WHERE `deleted` = b'0' GROUP BY `username` HAVING COUNT(*) > 1) `d` "
+                    + "ON `d`.`username` = `u`.`username` WHERE `u`.`deleted` = b'0' "
+                    + "ORDER BY `d`.`group_id`,`u`.`id`";
+    private static final String DUPLICATE_ACTIVE_MOBILE_MEMBERS_QUERY =
+            "SELECT `d`.`group_id`,`u`.`id`,`u`.`tenant_id`,`u`.`mobile` AS `identity_value` "
+                    + "FROM `system_users` `u` JOIN (SELECT MIN(`id`) AS `group_id`,`mobile` "
+                    + "FROM `system_users` WHERE `deleted` = b'0' AND `mobile` IS NOT NULL "
+                    + "AND TRIM(`mobile`) <> '' GROUP BY `mobile` HAVING COUNT(*) > 1) `d` "
+                    + "ON `d`.`mobile` = `u`.`mobile` WHERE `u`.`deleted` = b'0' "
+                    + "ORDER BY `d`.`group_id`,`u`.`id`";
+    private static final String INVALID_AGENT_ADMIN_BINDINGS_QUERY =
+            "SELECT `a`.`id` AS `agent_id`,`a`.`tenant_id`,`t`.`contact_user_id`,`u`.`id` AS `user_id`,"
+                    + "`u`.`tenant_id` AS `user_tenant_id` FROM `skit_agent` `a` "
+                    + "LEFT JOIN `system_tenant` `t` ON `t`.`id` = `a`.`tenant_id` "
+                    + "LEFT JOIN `system_users` `u` ON `u`.`id` = `t`.`contact_user_id` "
+                    + "WHERE `a`.`deleted` = b'0' AND (`t`.`id` IS NULL OR `t`.`deleted` <> b'0' "
+                    + "OR `t`.`contact_user_id` IS NULL OR `u`.`id` IS NULL OR `u`.`deleted` <> b'0' "
+                    + "OR `u`.`tenant_id` <> `a`.`tenant_id`) ORDER BY `a`.`id`";
+    private static final String PROTECTED_PLATFORM_ADMIN_IDS_QUERY =
+            "SELECT DISTINCT `u`.`id` FROM `system_users` `u` JOIN `system_tenant` `pt` "
+                    + "ON `pt`.`id` = `u`.`tenant_id` AND `pt`.`package_id` = 0 AND `pt`.`deleted` = b'0' "
+                    + "JOIN `system_user_role` `ur` "
+                    + "ON `ur`.`user_id` = `u`.`id` AND `ur`.`tenant_id` = `u`.`tenant_id` "
+                    + "AND `ur`.`deleted` = b'0' JOIN `system_role` `r` ON `r`.`id` = `ur`.`role_id` "
+                    + "AND `r`.`tenant_id` = `u`.`tenant_id` AND `r`.`deleted` = b'0' "
+                    + "AND `r`.`code` = 'super_admin' WHERE `u`.`deleted` = b'0' ORDER BY `u`.`id`";
+    private static final String AGENT_ADMIN_BINDINGS_QUERY =
+            "SELECT `a`.`tenant_id`,`t`.`contact_user_id` AS `user_id`,"
+                    + "`t`.`contact_mobile` AS `contact_mobile`,`u`.`username`,`u`.`mobile` "
+                    + "FROM `skit_agent` `a` JOIN `system_tenant` `t` ON `t`.`id` = `a`.`tenant_id` "
+                    + "AND `t`.`deleted` = b'0' JOIN `system_users` `u` ON `u`.`id` = `t`.`contact_user_id` "
+                    + "AND `u`.`tenant_id` = `t`.`id` AND `u`.`deleted` = b'0' "
+                    + "WHERE `a`.`deleted` = b'0' ORDER BY `a`.`tenant_id`";
+    private static final String ACTIVE_USERNAME_HOLDERS_QUERY =
+            "SELECT `id`,`tenant_id`,`username` AS `identity_value` FROM `system_users` "
+                    + "WHERE `deleted` = b'0' AND `username` = ? ORDER BY `id`";
+    private static final String ACTIVE_MOBILE_HOLDERS_QUERY =
+            "SELECT `id`,`tenant_id`,`mobile` AS `identity_value` FROM `system_users` "
+                    + "WHERE `deleted` = b'0' AND `mobile` = ? ORDER BY `id`";
+    private static final String ACTIVE_USERNAME_EXISTS_QUERY =
+            "SELECT COUNT(*) FROM `system_users` WHERE `deleted` = b'0' AND `username` = ?";
+    private static final String INSERT_IDENTITY_MIGRATION_AUDIT_SQL =
+            "INSERT INTO `skit_identity_migration_audit` (`migration_version`,`identity_type`,"
+                    + "`changed_user_id`,`changed_tenant_id`,`retained_user_id`,`retained_reason`,"
+                    + "`old_value`,`new_value`,`repaired_on`) VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)";
+    private static final String UPDATE_LEGACY_USERNAME_SQL =
+            "UPDATE `system_users` SET `username` = ?,`updater` = 'skit-migration-2026071250',"
+                    + "`update_time` = CURRENT_TIMESTAMP WHERE `id` = ? AND `deleted` = b'0' AND `username` = ?";
+    private static final String CLEAR_LEGACY_MOBILE_SQL =
+            "UPDATE `system_users` SET `mobile` = NULL,`updater` = 'skit-migration-2026071250',"
+                    + "`update_time` = CURRENT_TIMESTAMP WHERE `id` = ? AND `deleted` = b'0' AND `mobile` = ?";
+    private static final String UPDATE_AGENT_MOBILE_SQL =
+            "UPDATE `system_users` SET `mobile` = ?,`updater` = 'skit-migration-2026071250',"
+                    + "`update_time` = CURRENT_TIMESTAMP WHERE `id` = ? AND `deleted` = b'0' AND `mobile` <=> ?";
+    private static final String UPDATE_TENANT_CONTACT_MOBILE_SQL =
+            "UPDATE `system_tenant` SET `contact_mobile` = ?,`updater` = 'skit-migration-2026071250',"
+                    + "`update_time` = CURRENT_TIMESTAMP WHERE `id` = ? AND `deleted` = b'0' "
+                    + "AND `contact_user_id` = ? AND `contact_mobile` <=> ?";
     private static final String DUPLICATE_ACTIVE_APP_RELEASE_PROFILES_QUERY =
             "SELECT `tenant_id` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
                     + "AS `duplicate_ids` FROM `skit_app_release_profile` WHERE `deleted` = b'0' "
@@ -167,6 +249,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         baselineSteps.addAll(domainColumnSteps());
         baselineSteps.addAll(domainIndexSteps());
         result.add(migrationFromSteps(2026071201, "baseline short-drama SaaS schema", baselineSteps));
+        result.add(migrationFromSteps(LEGACY_IDENTITY_MIGRATION_VERSION,
+                "repair legacy duplicate active system user identities", legacyIdentityRepairSteps()));
         result.add(migrationFromSteps(2026071301, "add package code and agent archive fields",
                 lifecycleColumnSteps()));
         result.add(migrationFromSteps(2026071302, "enforce global active system user identities",
@@ -510,6 +594,367 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         + "AND TRIM(`mobile`) <> '' THEN `mobile` ELSE NULL END) STORED COMMENT '有效手机号唯一键'"),
                 addIndexStep("system_users", "uk_system_users_active_username", "`active_username`", true),
                 addIndexStep("system_users", "uk_system_users_active_mobile", "`active_mobile`", true));
+    }
+
+    private List<SchemaStep> legacyIdentityRepairSteps() {
+        return Arrays.asList(executeSqlStep(CREATE_IDENTITY_MIGRATION_AUDIT_TABLE_SQL),
+                schemaStep(LEGACY_IDENTITY_ALGORITHM, this::normalizeLegacyActiveUserIdentities,
+                        LEGACY_IDENTITY_ALGORITHM, DUPLICATE_ACTIVE_USERNAME_MEMBERS_QUERY,
+                        DUPLICATE_ACTIVE_MOBILE_MEMBERS_QUERY, INVALID_AGENT_ADMIN_BINDINGS_QUERY,
+                        PROTECTED_PLATFORM_ADMIN_IDS_QUERY, AGENT_ADMIN_BINDINGS_QUERY,
+                        ACTIVE_USERNAME_HOLDERS_QUERY, ACTIVE_MOBILE_HOLDERS_QUERY,
+                        ACTIVE_USERNAME_EXISTS_QUERY, INSERT_IDENTITY_MIGRATION_AUDIT_SQL,
+                        UPDATE_LEGACY_USERNAME_SQL, CLEAR_LEGACY_MOBILE_SQL, UPDATE_AGENT_MOBILE_SQL,
+                        UPDATE_TENANT_CONTACT_MOBILE_SQL, "legacy<userId>x<base36Counter>"));
+    }
+
+    void normalizeLegacyActiveUserIdentities() {
+        DataSource dataSource = jdbcTemplate.getDataSource();
+        if (dataSource == null) { // Isolated unit tests use a mock JdbcTemplate without a DataSource.
+            normalizeLegacyActiveUserIdentitiesInCurrentTransaction();
+            return;
+        }
+        TransactionTemplate transactionTemplate =
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        transactionTemplate.execute(status -> {
+            normalizeLegacyActiveUserIdentitiesInCurrentTransaction();
+            return null;
+        });
+    }
+
+    private void normalizeLegacyActiveUserIdentitiesInCurrentTransaction() {
+        List<Map<String, Object>> invalidBindings = jdbcTemplate.queryForList(INVALID_AGENT_ADMIN_BINDINGS_QUERY);
+        if (!invalidBindings.isEmpty()) {
+            throw new IllegalStateException("Cannot repair legacy identities because agent administrator bindings "
+                    + "are incomplete or cross-tenant: " + invalidBindings);
+        }
+        Map<Long, AgentIdentityBinding> agentBindings = loadAgentIdentityBindings(
+                jdbcTemplate.queryForList(AGENT_ADMIN_BINDINGS_QUERY));
+        Map<Long, List<IdentityMember>> usernameGroups = loadIdentityGroups(
+                jdbcTemplate.queryForList(DUPLICATE_ACTIVE_USERNAME_MEMBERS_QUERY));
+        Map<Long, List<IdentityMember>> mobileGroups = loadIdentityGroups(
+                jdbcTemplate.queryForList(DUPLICATE_ACTIVE_MOBILE_MEMBERS_QUERY));
+        if (usernameGroups.isEmpty() && mobileGroups.isEmpty() && agentBindings.isEmpty()) {
+            return;
+        }
+
+        Set<Long> platformAdmins = loadUserIds(jdbcTemplate.queryForList(PROTECTED_PLATFORM_ADMIN_IDS_QUERY));
+        Map<String, IdentityRepair> legacyRepairMap = new LinkedHashMap<>();
+        List<String> protectedConflicts = new ArrayList<>();
+        planAgentTargetRepairs(agentBindings, platformAdmins, legacyRepairMap, protectedConflicts);
+        planIdentityRepairs("USERNAME", usernameGroups, platformAdmins, agentBindings,
+                legacyRepairMap, protectedConflicts);
+        planIdentityRepairs("MOBILE", mobileGroups, platformAdmins, agentBindings,
+                legacyRepairMap, protectedConflicts);
+        if (!protectedConflicts.isEmpty()) {
+            throw new IllegalStateException("Protected duplicate identities require manual resolution before "
+                    + "migration: " + protectedConflicts);
+        }
+
+        Set<String> plannedUsernames = new HashSet<>();
+        for (IdentityRepair repair : legacyRepairMap.values()) {
+            if ("USERNAME".equals(repair.identityType)) {
+                repair.newValue = generateLegacyUsername(repair.changedUserId, plannedUsernames);
+            }
+        }
+        for (IdentityRepair repair : legacyRepairMap.values()) {
+            applyIdentityRepair(repair);
+        }
+        for (AgentIdentityBinding binding : agentBindings.values()) {
+            synchronizeAgentIdentity(binding);
+        }
+        validateNoActiveUserIdentityDuplicates();
+    }
+
+    private Map<Long, AgentIdentityBinding> loadAgentIdentityBindings(List<Map<String, Object>> rows) {
+        Map<Long, AgentIdentityBinding> result = new LinkedHashMap<>();
+        Map<String, Long> targetOwners = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long tenantId = requiredLong(row, "tenant_id");
+            Long userId = requiredLong(row, "user_id");
+            String rawContactMobile = row.get("contact_mobile") == null ? null
+                    : row.get("contact_mobile").toString();
+            String targetMobile = SkitAgentCreateReqVO.normalizeMobile(rawContactMobile);
+            if (!ValidationUtils.isMobile(targetMobile)) {
+                throw new IllegalStateException("Agent tenant " + tenantId
+                        + " has an invalid contact mobile and cannot migrate its login identity: "
+                        + rawContactMobile);
+            }
+            AgentIdentityBinding binding = new AgentIdentityBinding(tenantId, userId, rawContactMobile,
+                    targetMobile, String.valueOf(row.get("username")),
+                    row.get("mobile") == null ? null : row.get("mobile").toString());
+            AgentIdentityBinding previousBinding = result.put(userId, binding);
+            if (previousBinding != null) {
+                throw new IllegalStateException("Agent administrator user " + userId
+                        + " is bound to multiple tenants: " + previousBinding.tenantId + "," + tenantId);
+            }
+            Long previousOwner = targetOwners.put(targetMobile, userId);
+            if (previousOwner != null && !previousOwner.equals(userId)) {
+                throw new IllegalStateException("Multiple agent administrators require the same login mobile "
+                        + targetMobile + ": users=" + previousOwner + "," + userId);
+            }
+        }
+        return result;
+    }
+
+    private Map<Long, List<IdentityMember>> loadIdentityGroups(List<Map<String, Object>> rows) {
+        Map<Long, List<IdentityMember>> groups = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long groupId = requiredLong(row, "group_id");
+            IdentityMember member = new IdentityMember(requiredLong(row, "id"),
+                    requiredLong(row, "tenant_id"), String.valueOf(row.get("identity_value")));
+            groups.computeIfAbsent(groupId, key -> new ArrayList<>()).add(member);
+        }
+        return groups;
+    }
+
+    private static Set<Long> loadUserIds(List<Map<String, Object>> rows) {
+        Set<Long> result = new LinkedHashSet<>();
+        for (Map<String, Object> row : rows) {
+            result.add(requiredLong(row, "id"));
+        }
+        return result;
+    }
+
+    private static Long requiredLong(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        if (!(value instanceof Number)) {
+            throw new IllegalStateException("Identity migration query returned invalid " + key + ": " + row);
+        }
+        return ((Number) value).longValue();
+    }
+
+    private void planAgentTargetRepairs(Map<Long, AgentIdentityBinding> agentBindings,
+                                        Set<Long> platformAdmins,
+                                        Map<String, IdentityRepair> repairs,
+                                        List<String> protectedConflicts) {
+        for (AgentIdentityBinding binding : agentBindings.values()) {
+            planAgentTargetHolders("USERNAME", binding,
+                    jdbcTemplate.queryForList(ACTIVE_USERNAME_HOLDERS_QUERY, binding.targetMobile),
+                    platformAdmins, agentBindings, repairs, protectedConflicts);
+            planAgentTargetHolders("MOBILE", binding,
+                    jdbcTemplate.queryForList(ACTIVE_MOBILE_HOLDERS_QUERY, binding.targetMobile),
+                    platformAdmins, agentBindings, repairs, protectedConflicts);
+        }
+    }
+
+    private static void planAgentTargetHolders(String identityType,
+                                               AgentIdentityBinding binding,
+                                               List<Map<String, Object>> holderRows,
+                                               Set<Long> platformAdmins,
+                                               Map<Long, AgentIdentityBinding> agentBindings,
+                                               Map<String, IdentityRepair> repairs,
+                                               List<String> protectedConflicts) {
+        for (Map<String, Object> row : holderRows) {
+            IdentityMember holder = new IdentityMember(requiredLong(row, "id"),
+                    requiredLong(row, "tenant_id"), row.get("identity_value") == null
+                    ? null : row.get("identity_value").toString());
+            if (holder.userId.equals(binding.userId)) {
+                continue;
+            }
+            if (platformAdmins.contains(holder.userId) || agentBindings.containsKey(holder.userId)) {
+                protectedConflicts.add(identityType + "=" + binding.targetMobile + " (ids="
+                        + binding.userId + "," + holder.userId + ")");
+                continue;
+            }
+            addRepair(repairs, new IdentityRepair(identityType, holder, binding.userId,
+                    "AGENT_CONTACT_PHONE_TARGET"));
+        }
+    }
+
+    private static void planIdentityRepairs(String identityType,
+                                            Map<Long, List<IdentityMember>> groups,
+                                            Set<Long> platformAdmins,
+                                            Map<Long, AgentIdentityBinding> agentBindings,
+                                            Map<String, IdentityRepair> repairs,
+                                            List<String> protectedConflicts) {
+        for (List<IdentityMember> members : groups.values()) {
+            List<IdentityMember> protectedMembers = new ArrayList<>();
+            for (IdentityMember member : members) {
+                AgentIdentityBinding agentBinding = agentBindings.get(member.userId);
+                if (platformAdmins.contains(member.userId)
+                        || agentRetainsIdentity(agentBinding, member.identityValue)) {
+                    protectedMembers.add(member);
+                }
+            }
+            if (protectedMembers.size() > 1) {
+                protectedConflicts.add(identityType + "=" + members.get(0).identityValue + " (ids="
+                        + memberIds(protectedMembers) + ")");
+                continue;
+            }
+            IdentityMember retained = protectedMembers.isEmpty()
+                    ? firstLegacyMember(members, agentBindings) : protectedMembers.get(0);
+            if (retained == null) {
+                continue; // Every current holder is an agent administrator moving to its contact mobile.
+            }
+            String retainedReason = platformAdmins.contains(retained.userId) ? "PLATFORM_SUPER_ADMIN"
+                    : agentRetainsIdentity(agentBindings.get(retained.userId), retained.identityValue)
+                    ? "AGENT_CONTACT" : "LOWEST_ID";
+            for (IdentityMember member : members) {
+                if (!member.userId.equals(retained.userId) && !agentBindings.containsKey(member.userId)) {
+                    addRepair(repairs, new IdentityRepair(identityType, member,
+                            retained.userId, retainedReason));
+                }
+            }
+        }
+    }
+
+    private static boolean agentRetainsIdentity(AgentIdentityBinding binding, String identityValue) {
+        return binding != null && Objects.equals(binding.targetMobile, identityValue);
+    }
+
+    private static IdentityMember firstLegacyMember(List<IdentityMember> members,
+                                                     Map<Long, AgentIdentityBinding> agentBindings) {
+        for (IdentityMember member : members) {
+            if (!agentBindings.containsKey(member.userId)) {
+                return member;
+            }
+        }
+        return null;
+    }
+
+    private static void addRepair(Map<String, IdentityRepair> repairs, IdentityRepair repair) {
+        String key = repair.identityType + ":" + repair.changedUserId;
+        IdentityRepair previous = repairs.get(key);
+        if (previous == null) {
+            repairs.put(key, repair);
+            return;
+        }
+        if (!Objects.equals(previous.oldValue, repair.oldValue)) {
+            throw new IllegalStateException("Conflicting identity repair plans for user "
+                    + repair.changedUserId + " (" + repair.identityType + ")");
+        }
+    }
+
+    private static String memberIds(List<IdentityMember> members) {
+        List<Long> ids = new ArrayList<>();
+        for (IdentityMember member : members) {
+            ids.add(member.userId);
+        }
+        return ids.toString().replace(" ", "");
+    }
+
+    private String generateLegacyUsername(Long userId, Set<String> plannedUsernames) {
+        String base = "legacy" + userId;
+        for (int attempt = 0; attempt < 100000; attempt++) {
+            String suffix = attempt == 0 ? "" : "x" + Integer.toString(attempt, 36);
+            int maxBaseLength = 30 - suffix.length();
+            String candidate = (base.length() <= maxBaseLength ? base : base.substring(0, maxBaseLength)) + suffix;
+            Integer existing = jdbcTemplate.queryForObject(ACTIVE_USERNAME_EXISTS_QUERY, Integer.class, candidate);
+            if ((existing == null || existing == 0) && plannedUsernames.add(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("Could not allocate a unique legacy username for user " + userId);
+    }
+
+    private void synchronizeAgentIdentity(AgentIdentityBinding binding) {
+        if (!Objects.equals(binding.username, binding.targetMobile)) {
+            IdentityRepair usernameRepair = new IdentityRepair("USERNAME",
+                    new IdentityMember(binding.userId, binding.tenantId, binding.username),
+                    binding.userId, "AGENT_CONTACT_PHONE_SYNC");
+            usernameRepair.newValue = binding.targetMobile;
+            applyIdentityRepair(usernameRepair);
+        }
+        if (!Objects.equals(binding.mobile, binding.targetMobile)) {
+            IdentityRepair mobileRepair = new IdentityRepair("MOBILE",
+                    new IdentityMember(binding.userId, binding.tenantId, binding.mobile),
+                    binding.userId, "AGENT_CONTACT_PHONE_SYNC");
+            mobileRepair.newValue = binding.targetMobile;
+            applyIdentityRepair(mobileRepair);
+        }
+        if (!Objects.equals(binding.rawContactMobile, binding.targetMobile)) {
+            IdentityRepair tenantMobileRepair = new IdentityRepair("TENANT_MOBILE",
+                    new IdentityMember(binding.userId, binding.tenantId, binding.rawContactMobile),
+                    binding.userId, "AGENT_CONTACT_PHONE_NORMALIZED");
+            tenantMobileRepair.newValue = binding.targetMobile;
+            applyIdentityRepair(tenantMobileRepair);
+        }
+    }
+
+    private void applyIdentityRepair(IdentityRepair repair) {
+        int auditRows = jdbcTemplate.update(INSERT_IDENTITY_MIGRATION_AUDIT_SQL,
+                LEGACY_IDENTITY_MIGRATION_VERSION, repair.identityType, repair.changedUserId,
+                repair.changedTenantId, repair.retainedUserId, repair.retainedReason,
+                repair.oldValue, repair.newValue);
+        if (auditRows != 1) {
+            throw new IllegalStateException("Could not audit identity repair for user " + repair.changedUserId);
+        }
+        int changedRows;
+        if ("USERNAME".equals(repair.identityType)) {
+            changedRows = jdbcTemplate.update(UPDATE_LEGACY_USERNAME_SQL,
+                    repair.newValue, repair.changedUserId, repair.oldValue);
+        } else if ("TENANT_MOBILE".equals(repair.identityType)) {
+            changedRows = jdbcTemplate.update(UPDATE_TENANT_CONTACT_MOBILE_SQL,
+                    repair.newValue, repair.changedTenantId, repair.changedUserId, repair.oldValue);
+        } else if (repair.newValue != null) {
+            changedRows = jdbcTemplate.update(UPDATE_AGENT_MOBILE_SQL,
+                    repair.newValue, repair.changedUserId, repair.oldValue);
+        } else {
+            changedRows = jdbcTemplate.update(CLEAR_LEGACY_MOBILE_SQL,
+                    repair.changedUserId, repair.oldValue);
+        }
+        if (changedRows != 1) {
+            throw new IllegalStateException("Identity changed while migration was planning repair for user "
+                    + repair.changedUserId + " (" + repair.identityType + ")");
+        }
+    }
+
+    private static final class IdentityMember {
+
+        private final Long userId;
+        private final Long tenantId;
+        private final String identityValue;
+
+        private IdentityMember(Long userId, Long tenantId, String identityValue) {
+            this.userId = userId;
+            this.tenantId = tenantId;
+            this.identityValue = identityValue;
+        }
+
+    }
+
+    private static final class AgentIdentityBinding {
+
+        private final Long tenantId;
+        private final Long userId;
+        private final String rawContactMobile;
+        private final String targetMobile;
+        private final String username;
+        private final String mobile;
+
+        private AgentIdentityBinding(Long tenantId, Long userId, String rawContactMobile,
+                                     String targetMobile, String username, String mobile) {
+            this.tenantId = tenantId;
+            this.userId = userId;
+            this.rawContactMobile = rawContactMobile;
+            this.targetMobile = targetMobile;
+            this.username = username;
+            this.mobile = mobile;
+        }
+
+    }
+
+    private static final class IdentityRepair {
+
+        private final String identityType;
+        private final Long changedUserId;
+        private final Long changedTenantId;
+        private final Long retainedUserId;
+        private final String retainedReason;
+        private final String oldValue;
+        private String newValue;
+
+        private IdentityRepair(String identityType, IdentityMember changed, Long retainedUserId,
+                               String retainedReason) {
+            this.identityType = identityType;
+            this.changedUserId = changed.userId;
+            this.changedTenantId = changed.tenantId;
+            this.retainedUserId = retainedUserId;
+            this.retainedReason = retainedReason;
+            this.oldValue = changed.identityValue;
+        }
+
     }
 
     void migrateDomainIntegrityConstraints() {
