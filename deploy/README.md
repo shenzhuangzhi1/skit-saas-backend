@@ -30,12 +30,15 @@ releases reuse it automatically. To use a managed key instead, inject
 `SKIT_AD_ENCRYPTION_KEY` before the first backend activation. Never rotate it without
 first re-encrypting or clearing saved advertising credentials.
 
-On the first secured upgrade from the legacy repository key, activation stops the
-backend, clears the old encrypted `app_key`/`secret` values, disables those providers,
-and then records a one-time bootstrap marker. Public advertising account metadata,
-members, revenue events, commission rules, and ledgers are preserved. Re-enter the
-provider credentials after that upgrade if the old installation had any configured.
-Subsequent releases reuse the persisted key and never repeat this cleanup.
+Activation never infers from a missing local marker that database credentials are
+legacy ciphertext, so ordinary releases and disaster recovery cannot silently clear
+valid credentials. If an operator has confirmed that a database still contains values
+encrypted with the old repository key, run one activation with
+`SKIT_CLEAR_LEGACY_AD_CREDENTIALS=1`. That explicit maintenance action stops the
+backend, clears only encrypted `app_key`/`secret` values, and disables those providers;
+public advertising account metadata, members, revenue events, commission rules, and
+ledgers remain intact. Re-enter provider credentials after that action, then omit the
+switch from all normal releases.
 
 Optional secrets:
 
