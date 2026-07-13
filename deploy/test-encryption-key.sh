@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compose_file="${repo_root}/deploy/docker-compose.prod.yml"
+activation_script="${repo_root}/deploy/activate-backend.sh"
+base_config="${repo_root}/yudao-server/src/main/resources/application.yaml"
+local_config="${repo_root}/yudao-server/src/main/resources/application-local.yaml"
+dev_config="${repo_root}/yudao-server/src/main/resources/application-dev.yaml"
+
+if MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY= \
+    docker compose -f "${compose_file}" config >/dev/null 2>&1; then
+  echo "FAIL: production Compose accepted an empty advertising encryption key" >&2
+  exit 1
+fi
+
+MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY=test-only-key-000000000000000001 \
+  docker compose -f "${compose_file}" config >/dev/null
+
+if ! grep -q 'upsert_env SKIT_AD_ENCRYPTION_KEY' "${activation_script}"; then
+  echo "FAIL: activation does not persist the generated or injected encryption key" >&2
+  exit 1
+fi
+if ! grep -q 'openssl rand -hex 16' "${activation_script}"; then
+  echo "FAIL: generated AES key must contain 32 single-byte characters" >&2
+  exit 1
+fi
+
+encryptor_value="$(sed -n '/^  encryptor:/,/^[^ ]/p' "${base_config}" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p')"
+if [[ "${encryptor_value}" != '${SKIT_AD_ENCRYPTION_KEY:}' ]]; then
+  echo "FAIL: base configuration must not contain a usable advertising encryption key" >&2
+  exit 1
+fi
+
+for profile_config in "${local_config}" "${dev_config}"; do
+  profile_value="$(sed -n '/^mybatis-plus:/,/^---/p' "${profile_config}" \
+    | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)"
+  profile_default="${profile_value#'${SKIT_AD_ENCRYPTION_KEY:'}"
+  profile_default="${profile_default%'}'}"
+  case "${#profile_default}" in
+    16|24|32) ;;
+    *)
+      echo "FAIL: non-production AES default in ${profile_config} has an invalid length" >&2
+      exit 1
+      ;;
+  esac
+done
+
+echo "PASS: production advertising encryption key is external and persistent"

@@ -112,7 +112,29 @@ if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
   fi
 fi
 
+# Generate the advertising credential key once, then reuse the persisted value on every release.
+# An operator may inject SKIT_AD_ENCRYPTION_KEY before the first deployment to use a managed Secret.
+if [ -z "${SKIT_AD_ENCRYPTION_KEY:-}" ]; then
+  if command -v openssl >/dev/null 2>&1; then
+    SKIT_AD_ENCRYPTION_KEY="$(openssl rand -hex 16)"
+  else
+    SKIT_AD_ENCRYPTION_KEY="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+fi
+case "${#SKIT_AD_ENCRYPTION_KEY}" in
+  16|24|32) ;;
+  *)
+    echo "SKIT_AD_ENCRYPTION_KEY must contain exactly 16, 24, or 32 single-byte characters."
+    exit 1
+    ;;
+esac
+if [[ ! "${SKIT_AD_ENCRYPTION_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+  echo "SKIT_AD_ENCRYPTION_KEY contains unsafe characters for server-side environment persistence."
+  exit 1
+fi
+
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
+upsert_env SKIT_AD_ENCRYPTION_KEY "${SKIT_AD_ENCRYPTION_KEY}"
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"

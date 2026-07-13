@@ -52,6 +52,7 @@ services:
       - "${BACKEND_PORT:-48080}:48080"
     environment:
       SPRING_PROFILES_ACTIVE: local
+      SKIT_AD_ENCRYPTION_KEY: ${SKIT_AD_ENCRYPTION_KEY:?SKIT_AD_ENCRYPTION_KEY is required}
       JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx512m -Djava.security.egd=file:/dev/./urandom}
       ARGS: >-
         --spring.datasource.dynamic.datasource.master.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-skit_saas}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true

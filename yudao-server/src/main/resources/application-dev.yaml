@@ -63,6 +63,11 @@ spring:
     database: 1 # 数据库索引
 #    password: 123456 # 密码，建议生产环境开启
 
+# 仅用于开发环境。生产 Compose 必须注入并持久化 SKIT_AD_ENCRYPTION_KEY。
+mybatis-plus:
+  encryptor:
+    password: ${SKIT_AD_ENCRYPTION_KEY:skit-dev-only-key-00000000000000}
+
 --- #################### 定时任务相关配置 ####################
 
 # Quartz 配置项，对应 QuartzProperties 配置类

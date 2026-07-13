@@ -10,5 +10,6 @@ if grep -Eq '^    depends_on:' <<<"${frontend_service}"; then
   exit 1
 fi
 
-MYSQL_ROOT_PASSWORD=test docker compose -f "${compose_file}" config >/dev/null
+MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY=test-only-key-000000000000000001 \
+  docker compose -f "${compose_file}" config >/dev/null
 echo "PASS: frontend Compose topology is independent"
