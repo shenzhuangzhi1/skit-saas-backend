@@ -10,6 +10,8 @@ public interface ErrorCodeConstants {
     ErrorCode PLATFORM_ADMIN_REQUIRED = new ErrorCode(1_030_001_000, "仅平台超级管理员可执行该操作");
     ErrorCode AGENT_NOT_EXISTS = new ErrorCode(1_030_001_001, "代理商不存在");
     ErrorCode AGENT_CODE_EXISTS = new ErrorCode(1_030_001_002, "代理商编码已存在");
+    ErrorCode AGENT_ARCHIVED = new ErrorCode(1_030_001_003, "代理商已归档，请先恢复后再启用");
+    ErrorCode AGENT_NOT_ARCHIVED = new ErrorCode(1_030_001_004, "代理商尚未归档，不能执行恢复操作");
 
     ErrorCode AD_ACCOUNT_NOT_EXISTS = new ErrorCode(1_030_002_000, "广告账号不存在");
     ErrorCode AD_PROVIDER_INVALID = new ErrorCode(1_030_002_001, "广告平台仅支持 PANGLE 或 TAKU");

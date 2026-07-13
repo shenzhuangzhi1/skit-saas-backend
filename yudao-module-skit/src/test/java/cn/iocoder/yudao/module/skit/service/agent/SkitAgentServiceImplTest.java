@@ -37,6 +37,8 @@ import javax.validation.ConstraintViolationException;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_ARCHIVED;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_ARCHIVED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.PLATFORM_ADMIN_REQUIRED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_MOBILE_EXISTS;
@@ -122,7 +124,7 @@ class SkitAgentServiceImplTest {
     @Test
     void createAgentRejectsAdministratorUsernameAlreadyBoundToAnotherTenant() {
         when(adminUserService.getUserListByUsernameIgnoreTenant("13800000000"))
-                .thenReturn(Collections.singletonList(new AdminUserDO()));
+                .thenReturn(Collections.singletonList(new AdminUserDO().setId(999L)));
 
         assertServiceException(() -> agentService.createAgent(createRequest()), USER_USERNAME_EXISTS);
 
@@ -190,6 +192,44 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
+    void updateAgentDisablesBoundAdministratorWithTenant() {
+        mockExistingAgent();
+        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
+        SkitAgentUpdateReqVO request = updateRequest();
+        request.setStatus(CommonStatusEnum.DISABLE.getStatus());
+
+        agentService.updateAgent(request);
+
+        verify(adminUserService).updateUserStatus(420L, CommonStatusEnum.DISABLE.getStatus());
+    }
+
+    @Test
+    void updateAgentEnablesBoundAdministratorWithTenant() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
+        when(tenantService.getTenant(42L)).thenReturn(new TenantDO().setId(42L).setName("Agent 42")
+                .setContactName("Agent 42").setContactMobile("13800000000")
+                .setContactUserId(420L).setStatus(CommonStatusEnum.DISABLE.getStatus())
+                .setPackageId(7L).setExpireTime(LocalDateTime.now().plusDays(30)).setAccountCount(1));
+        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
+
+        agentService.updateAgent(updateRequest());
+
+        verify(adminUserService).updateUserStatus(420L, CommonStatusEnum.ENABLE.getStatus());
+    }
+
+    @Test
+    void updateAgentCannotEnableArchivedAgent() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").archivedTime(LocalDateTime.now()).build());
+
+        assertServiceException(() -> agentService.updateAgent(updateRequest()), AGENT_ARCHIVED);
+
+        verify(tenantService, never()).updateTenant(any());
+        verify(adminUserService, never()).updateUserStatus(anyLong(), anyInt());
+    }
+
+    @Test
     void mobileRebindRejectsGlobalMobileDuplicate() {
         mockExistingAgent();
         when(adminUserService.getUserListByMobileIgnoreTenant("13900000000"))
@@ -233,7 +273,12 @@ class SkitAgentServiceImplTest {
 
     @Test
     void archiveAndRestoreKeepRegistryRowAndToggleBoundIdentity() {
-        mockExistingAgent();
+        SkitAgentDO activeAgent = SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build();
+        SkitAgentDO archivedAgent = SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").archivedTime(LocalDateTime.now()).build();
+        when(agentMapper.selectByTenantId(42L)).thenReturn(activeAgent, archivedAgent);
+        when(tenantService.getTenant(42L)).thenReturn(new TenantDO().setId(42L).setContactUserId(420L));
 
         agentService.archiveAgent(42L);
         verify(agentMapper).updateArchiveState(eq(42L), any(LocalDateTime.class), any());
@@ -248,6 +293,31 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
+    void archiveAlreadyArchivedReassertsDisabledStateWithoutReplacingMetadata() {
+        LocalDateTime archivedTime = LocalDateTime.now().minusDays(1);
+        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").archivedTime(archivedTime).archivedBy(88L).build());
+        when(tenantService.getTenant(42L)).thenReturn(new TenantDO().setId(42L).setContactUserId(420L));
+
+        agentService.archiveAgent(42L);
+
+        verify(agentMapper, never()).updateArchiveState(anyLong(), any(), any());
+        verify(tenantService).updateTenantStatus(42L, CommonStatusEnum.DISABLE.getStatus());
+        verify(adminUserService).updateUserStatus(420L, CommonStatusEnum.DISABLE.getStatus());
+    }
+
+    @Test
+    void restoreRejectsAgentThatIsNotArchived() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").build());
+
+        assertServiceException(() -> agentService.restoreAgent(42L), AGENT_NOT_ARCHIVED);
+
+        verify(agentMapper, never()).clearArchiveState(anyLong());
+        verify(tenantService, never()).updateTenantStatus(anyLong(), anyInt());
+    }
+
+    @Test
     void rootInviteRotationUsesCollisionProtectedGenerator() {
         when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
                 .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
@@ -258,6 +328,36 @@ class SkitAgentServiceImplTest {
 
         assertTrue(inviteCode.startsWith("A"));
         verify(agentMapper).updateRootInviteCode(42L, inviteCode);
+    }
+
+    @Test
+    void rootInviteRotationRetriesAfterAgentCollision() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
+        when(agentMapper.selectByRootInviteCode(anyString()))
+                .thenReturn(SkitAgentDO.builder().id(99L).tenantId(99L).build(), (SkitAgentDO) null);
+        when(memberMapper.selectByInviteCode(anyString())).thenReturn(null);
+
+        String inviteCode = agentService.rotateRootInviteCode(42L);
+
+        verify(agentMapper, times(2)).selectByRootInviteCode(anyString());
+        verify(agentMapper).updateRootInviteCode(42L, inviteCode);
+    }
+
+    @Test
+    void rootInviteRotationFailsAfterCollisionRetryBudgetExhausted() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
+                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
+        when(agentMapper.selectByRootInviteCode(anyString()))
+                .thenReturn(SkitAgentDO.builder().id(99L).tenantId(99L).build());
+        when(memberMapper.selectByInviteCode(anyString())).thenReturn(null);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> agentService.rotateRootInviteCode(42L));
+
+        assertEquals("生成代理商邀请码失败", exception.getMessage());
+        verify(agentMapper, times(10)).selectByRootInviteCode(anyString());
+        verify(agentMapper, never()).updateRootInviteCode(anyLong(), anyString());
     }
 
     @Test

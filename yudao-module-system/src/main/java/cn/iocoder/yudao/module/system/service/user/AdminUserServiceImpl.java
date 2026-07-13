@@ -262,8 +262,8 @@ public class AdminUserServiceImpl implements AdminUserService {
         oauth2TokenService.removeAccessToken(id, UserTypeEnum.ADMIN.getValue());
 
         // 3. 记录操作日志上下文
-        LogRecordContext.putVariable("user", user);
-        LogRecordContext.putVariable("newPassword", updateObj.getPassword());
+        LogRecordContext.putVariable("user", new AdminUserDO().setId(user.getId())
+                .setUsername(user.getUsername()).setNickname(user.getNickname()));
     }
 
     @Override

@@ -31,7 +31,9 @@ import java.util.Locale;
 import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_ARCHIVED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_CODE_EXISTS;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_ARCHIVED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_PACKAGE_NOT_EXISTS;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_MOBILE_EXISTS;
@@ -130,6 +132,11 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         platformAdminGuard.check();
         ValidationUtils.validate(updateReqVO);
         SkitAgentDO agent = validateAgent(updateReqVO.getTenantId());
+        if (agent.getArchivedTime() != null
+                && Objects.equals(updateReqVO.getStatus(),
+                cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus())) {
+            throw exception(AGENT_ARCHIVED);
+        }
         TenantDO tenant = tenantService.getTenant(updateReqVO.getTenantId());
         if (tenant == null) {
             throw exception(AGENT_NOT_EXISTS);
@@ -146,6 +153,9 @@ public class SkitAgentServiceImpl implements SkitAgentService {
             saveAdSettings(updateReqVO, true);
             commissionService.ensureDefaultPlan();
         });
+        if (!Objects.equals(tenant.getStatus(), updateReqVO.getStatus())) {
+            syncBoundAdministratorStatus(tenant, updateReqVO.getStatus());
+        }
     }
 
     @Override
@@ -181,16 +191,13 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         platformAdminGuard.check();
         SkitAgentDO agent = validateAgent(tenantId);
         TenantDO tenant = validateTenant(agent.getTenantId());
-        if (agent.getArchivedTime() != null) {
-            return;
+        if (agent.getArchivedTime() == null) {
+            agentMapper.updateArchiveState(tenantId, java.time.LocalDateTime.now(), SecurityFrameworkUtils.getLoginUserId());
         }
-        agentMapper.updateArchiveState(tenantId, java.time.LocalDateTime.now(), SecurityFrameworkUtils.getLoginUserId());
         tenantService.updateTenantStatus(tenantId,
                 cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.DISABLE.getStatus());
-        if (tenant.getContactUserId() != null) {
-            TenantUtils.execute(tenantId, () -> adminUserService.updateUserStatus(tenant.getContactUserId(),
-                    cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.DISABLE.getStatus()));
-        }
+        syncBoundAdministratorStatus(tenant,
+                cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.DISABLE.getStatus());
     }
 
     @Override
@@ -198,14 +205,15 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     public void restoreAgent(Long tenantId) {
         platformAdminGuard.check();
         SkitAgentDO agent = validateAgent(tenantId);
+        if (agent.getArchivedTime() == null) {
+            throw exception(AGENT_NOT_ARCHIVED);
+        }
         TenantDO tenant = validateTenant(agent.getTenantId());
         agentMapper.clearArchiveState(tenantId);
         tenantService.updateTenantStatus(tenantId,
                 cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus());
-        if (tenant.getContactUserId() != null) {
-            TenantUtils.execute(tenantId, () -> adminUserService.updateUserStatus(tenant.getContactUserId(),
-                    cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus()));
-        }
+        syncBoundAdministratorStatus(tenant,
+                cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus());
     }
 
     @Override
@@ -314,40 +322,52 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         return tenant.getContactUserId();
     }
 
+    private void syncBoundAdministratorStatus(TenantDO tenant, Integer status) {
+        if (tenant.getContactUserId() == null) {
+            return;
+        }
+        TenantUtils.execute(tenant.getId(),
+                () -> adminUserService.updateUserStatus(tenant.getContactUserId(), status));
+    }
+
     private void saveAdSettings(SkitAgentUpdateReqVO source, boolean preserveMissing) {
         SkitAdAccountService.Settings settings = adAccountService.getSettings();
-        settings.setPangleUsername(merge(source.getPangleUsername(), settings.getPangleUsername(), true));
-        settings.setPangleAppId(merge(source.getPangleAppId(), settings.getPangleAppId(), true));
+        settings.setPangleUsername(merge(trimNonSecret(source.getPangleUsername()), settings.getPangleUsername(), true));
+        settings.setPangleAppId(merge(trimNonSecret(source.getPangleAppId()), settings.getPangleAppId(), true));
         settings.setPangleAppSecret(source.getPangleAppSecret());
-        settings.setPanglePlacementId(merge(source.getPanglePlacementId(), settings.getPanglePlacementId(), true));
+        settings.setPanglePlacementId(merge(trimNonSecret(source.getPanglePlacementId()), settings.getPanglePlacementId(), true));
         settings.setPangleEnabled(resolveEnabled(source.getPangleEnabled(), settings.getPangleEnabled()));
-        settings.setTakuUsername(merge(source.getTakuUsername(), settings.getTakuUsername(), true));
-        settings.setTakuAppId(merge(source.getTakuAppId(), settings.getTakuAppId(), true));
+        settings.setTakuUsername(merge(trimNonSecret(source.getTakuUsername()), settings.getTakuUsername(), true));
+        settings.setTakuAppId(merge(trimNonSecret(source.getTakuAppId()), settings.getTakuAppId(), true));
         settings.setTakuAppKey(source.getTakuAppKey());
         settings.setTakuAppSecret(source.getTakuAppSecret());
-        settings.setTakuPlacementId(merge(source.getTakuPlacementId(), settings.getTakuPlacementId(), true));
+        settings.setTakuPlacementId(merge(trimNonSecret(source.getTakuPlacementId()), settings.getTakuPlacementId(), true));
         settings.setTakuEnabled(resolveEnabled(source.getTakuEnabled(), settings.getTakuEnabled()));
         adAccountService.saveSettings(settings);
     }
 
     private void saveAdSettings(SkitAgentCreateReqVO source, boolean preserveMissing) {
         SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
-        settings.setPangleUsername(source.getPangleUsername());
-        settings.setPangleAppId(source.getPangleAppId());
+        settings.setPangleUsername(trimNonSecret(source.getPangleUsername()));
+        settings.setPangleAppId(trimNonSecret(source.getPangleAppId()));
         settings.setPangleAppSecret(source.getPangleAppSecret());
-        settings.setPanglePlacementId(source.getPanglePlacementId());
+        settings.setPanglePlacementId(trimNonSecret(source.getPanglePlacementId()));
         settings.setPangleEnabled(Boolean.TRUE.equals(source.getPangleEnabled()));
-        settings.setTakuUsername(source.getTakuUsername());
-        settings.setTakuAppId(source.getTakuAppId());
+        settings.setTakuUsername(trimNonSecret(source.getTakuUsername()));
+        settings.setTakuAppId(trimNonSecret(source.getTakuAppId()));
         settings.setTakuAppKey(source.getTakuAppKey());
         settings.setTakuAppSecret(source.getTakuAppSecret());
-        settings.setTakuPlacementId(source.getTakuPlacementId());
+        settings.setTakuPlacementId(trimNonSecret(source.getTakuPlacementId()));
         settings.setTakuEnabled(Boolean.TRUE.equals(source.getTakuEnabled()));
         adAccountService.saveSettings(settings);
     }
 
     private String merge(String requested, String existing, boolean preserveMissing) {
         return preserveMissing && requested == null ? existing : requested;
+    }
+
+    private String trimNonSecret(String value) {
+        return value == null ? null : StrUtil.trim(value);
     }
 
     private Boolean resolveEnabled(Boolean requested, Boolean existing) {
