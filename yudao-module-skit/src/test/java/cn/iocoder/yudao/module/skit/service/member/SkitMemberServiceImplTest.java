@@ -205,12 +205,7 @@ class SkitMemberServiceImplTest {
     void registerAllowsMobileAlreadyUsedByAnotherTenant() {
         SkitAgentDO agent = SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
                 .rootInviteCode("ROOT42").status(CommonStatusEnum.ENABLE.getStatus()).build();
-        SkitMemberDO existingMember = enabledMember(99L, 43L, 0, "OTHER99");
         when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(agent);
-        when(memberMapper.selectListByMobile("13800000004")).thenAnswer(invocation -> {
-            assertTrue(TenantContextHolder.isIgnore());
-            return Collections.singletonList(existingMember);
-        });
         when(memberMapper.selectByMobile("13800000004")).thenAnswer(invocation -> {
             assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
             return null;

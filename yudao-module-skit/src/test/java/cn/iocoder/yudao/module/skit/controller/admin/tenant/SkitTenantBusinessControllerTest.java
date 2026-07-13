@@ -353,6 +353,5 @@ class SkitTenantBusinessControllerTest {
     private void mockExistingAgent(Long tenantId) {
         when(agentMapper.selectByTenantId(tenantId)).thenReturn(SkitAgentDO.builder().tenantId(tenantId)
                 .tenantCode("AGENT" + tenantId).status(CommonStatusEnum.ENABLE.getStatus()).build());
-        when(tenantService.getTenant(tenantId)).thenReturn(new TenantDO().setId(tenantId));
     }
 }
