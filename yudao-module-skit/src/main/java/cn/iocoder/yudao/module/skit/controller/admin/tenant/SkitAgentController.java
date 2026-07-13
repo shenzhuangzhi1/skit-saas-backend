@@ -3,9 +3,7 @@ package cn.iocoder.yudao.module.skit.controller.admin.tenant;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPageReqVO;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentRespVO;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentSaveReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.*;
 import cn.iocoder.yudao.module.skit.service.agent.SkitAgentService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -41,17 +39,52 @@ public class SkitAgentController {
     }
 
     @PostMapping("/create")
-    @ApiAccessLog(sanitizeKeys = {"pangleAppSecret", "takuAppKey", "takuAppSecret"})
+    @ApiAccessLog(sanitizeKeys = {"password", "pangleAppSecret", "takuAppKey", "takuAppSecret"})
     @Operation(summary = "创建代理商")
-    public CommonResult<Long> create(@Valid @RequestBody SkitAgentSaveReqVO reqVO) {
+    public CommonResult<Long> create(@Valid @RequestBody SkitAgentCreateReqVO reqVO) {
         return success(agentService.createAgent(reqVO));
     }
 
     @PutMapping("/update")
     @ApiAccessLog(sanitizeKeys = {"pangleAppSecret", "takuAppKey", "takuAppSecret"})
     @Operation(summary = "更新代理商")
-    public CommonResult<Boolean> update(@Valid @RequestBody SkitAgentSaveReqVO reqVO) {
+    public CommonResult<Boolean> update(@Valid @RequestBody SkitAgentUpdateReqVO reqVO) {
         agentService.updateAgent(reqVO);
         return success(true);
+    }
+
+    @PutMapping("/update-mobile")
+    @Operation(summary = "换绑代理商管理员手机号")
+    public CommonResult<Boolean> updateMobile(@Valid @RequestBody SkitAgentMobileUpdateReqVO reqVO) {
+        agentService.updateAgentMobile(reqVO);
+        return success(true);
+    }
+
+    @PutMapping("/reset-password")
+    @ApiAccessLog(sanitizeKeys = {"password"})
+    @Operation(summary = "重置代理商管理员密码")
+    public CommonResult<Boolean> resetPassword(@Valid @RequestBody SkitAgentPasswordResetReqVO reqVO) {
+        agentService.resetAgentPassword(reqVO);
+        return success(true);
+    }
+
+    @PutMapping("/archive")
+    @Operation(summary = "归档代理商")
+    public CommonResult<Boolean> archive(@RequestParam("tenantId") Long tenantId) {
+        agentService.archiveAgent(tenantId);
+        return success(true);
+    }
+
+    @PutMapping("/restore")
+    @Operation(summary = "恢复代理商")
+    public CommonResult<Boolean> restore(@RequestParam("tenantId") Long tenantId) {
+        agentService.restoreAgent(tenantId);
+        return success(true);
+    }
+
+    @PutMapping("/rotate-root-invite")
+    @Operation(summary = "轮换代理商根邀请码")
+    public CommonResult<String> rotateRootInvite(@RequestParam("tenantId") Long tenantId) {
+        return success(agentService.rotateRootInviteCode(tenantId));
     }
 }

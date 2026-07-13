@@ -160,6 +160,12 @@ public class TenantServiceImpl implements TenantService {
         }
     }
 
+    @Override
+    public void updateTenantStatus(Long id, Integer status) {
+        validateUpdateTenant(id);
+        tenantMapper.updateById(new TenantDO().setId(id).setStatus(status));
+    }
+
     private void validTenantNameDuplicate(String name, Long id) {
         TenantDO tenant = tenantMapper.selectByName(name);
         if (tenant == null) {

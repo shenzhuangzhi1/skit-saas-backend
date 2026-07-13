@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.skit.controller.admin.tenant.vo;
 
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
+import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.validation.InEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -14,6 +16,7 @@ public class SkitAgentPageReqVO extends PageParam {
     private String keyword;
 
     @Schema(description = "状态，0 开启、1 停用", example = "0")
+    @InEnum(value = CommonStatusEnum.class, message = "状态必须是 {value}")
     private Integer status;
 
 }

@@ -171,6 +171,22 @@ public class AdminUserServiceImpl implements AdminUserService {
         LogRecordContext.putVariable("user", oldUser);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateUserIdentity(Long id, String username, String mobile) {
+        validateUserExists(id);
+        List<AdminUserDO> usernameMatches = userMapper.selectListByUsernameIgnoreTenant(username);
+        if (usernameMatches.stream().anyMatch(user -> !Objects.equals(user.getId(), id))) {
+            throw exception(USER_USERNAME_EXISTS);
+        }
+        List<AdminUserDO> mobileMatches = userMapper.selectListByMobileIgnoreTenant(mobile);
+        if (mobileMatches.stream().anyMatch(user -> !Objects.equals(user.getId(), id))) {
+            throw exception(USER_MOBILE_EXISTS);
+        }
+        userMapper.updateById(new AdminUserDO().setId(id).setUsername(username).setMobile(mobile));
+        oauth2TokenService.removeAccessToken(id, UserTypeEnum.ADMIN.getValue());
+    }
+
     private void updateUserPost(UserSaveReqVO reqVO, AdminUserDO updateObj) {
         Long userId = reqVO.getId();
         Set<Long> dbPostIds = convertSet(userPostMapper.selectListByUserId(userId), UserPostDO::getPostId);
@@ -243,6 +259,7 @@ public class AdminUserServiceImpl implements AdminUserService {
         updateObj.setId(id);
         updateObj.setPassword(encodePassword(password)); // 加密密码
         userMapper.updateById(updateObj);
+        oauth2TokenService.removeAccessToken(id, UserTypeEnum.ADMIN.getValue());
 
         // 3. 记录操作日志上下文
         LogRecordContext.putVariable("user", user);

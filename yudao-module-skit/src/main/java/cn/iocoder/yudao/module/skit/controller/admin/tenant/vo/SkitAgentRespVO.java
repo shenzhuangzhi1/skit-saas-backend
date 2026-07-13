@@ -17,12 +17,18 @@ public class SkitAgentRespVO {
     @Schema(description = "代理商根邀请码", requiredMode = Schema.RequiredMode.REQUIRED,
             example = "A1B2C3D4E5F6")
     private String rootInviteCode;
+    @Schema(description = "归档时间")
+    private LocalDateTime archivedTime;
+    @Schema(description = "归档操作人")
+    private Long archivedBy;
     @Schema(description = "代理商名称", requiredMode = Schema.RequiredMode.REQUIRED)
     private String name;
     @Schema(description = "联系人")
     private String contactName;
     @Schema(description = "联系手机")
     private String contactMobile;
+    @Schema(description = "管理员登录手机号")
+    private String mobile;
     @Schema(description = "状态")
     private Integer status;
     @Schema(description = "绑定域名数组")

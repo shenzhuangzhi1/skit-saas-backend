@@ -1,13 +1,12 @@
 package cn.iocoder.yudao.module.skit.service.agent;
 
-import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPageReqVO;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentRespVO;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentSaveReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.*;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
@@ -24,25 +23,27 @@ import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
 import com.baomidou.dynamic.datasource.annotation.DSTransactional;
 import org.springframework.stereotype.Service;
+import org.springframework.validation.annotation.Validated;
 
 import javax.annotation.Resource;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_CODE_EXISTS;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_PACKAGE_NOT_EXISTS;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_MOBILE_EXISTS;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_USERNAME_EXISTS;
 
 @Service
+@Validated
 public class SkitAgentServiceImpl implements SkitAgentService {
 
     private static final String AUTO_TENANT_CODE_PREFIX = "AG";
     private static final String AGENT_INVITE_CODE_PREFIX = "A";
+    private static final String STANDARD_AGENT_PACKAGE_CODE = "SKIT_AGENT_STANDARD";
 
     @Resource
     private SkitPlatformAdminGuard platformAdminGuard;
@@ -66,20 +67,13 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     @Override
     public PageResult<SkitAgentRespVO> getAgentPage(SkitAgentPageReqVO pageReqVO) {
         platformAdminGuard.check();
-        String keyword = StrUtil.trim(pageReqVO.getKeyword());
-        List<SkitAgentRespVO> all = agentMapper.selectList().stream()
+        ValidationUtils.validate(pageReqVO);
+        PageResult<SkitAgentDO> page = agentMapper.selectPage(pageReqVO);
+        List<SkitAgentRespVO> list = page.getList().stream()
                 .map(this::toRespVO)
                 .filter(Objects::nonNull)
-                .filter(item -> matchesKeyword(item, keyword))
-                .filter(item -> pageReqVO.getStatus() == null
-                        || Objects.equals(pageReqVO.getStatus(), item.getStatus()))
-                .sorted(Comparator.comparing(SkitAgentRespVO::getCreateTime,
-                        Comparator.nullsLast(Comparator.reverseOrder())))
-                .collect(Collectors.toList());
-        long requestedOffset = (long) (pageReqVO.getPageNo() - 1) * pageReqVO.getPageSize();
-        int fromIndex = (int) Math.min(requestedOffset, all.size());
-        int toIndex = Math.min(fromIndex + pageReqVO.getPageSize(), all.size());
-        return new PageResult<>(new ArrayList<>(all.subList(fromIndex, toIndex)), (long) all.size());
+                .collect(java.util.stream.Collectors.toList());
+        return new PageResult<>(list, page.getTotal());
     }
 
     @Override
@@ -94,22 +88,25 @@ public class SkitAgentServiceImpl implements SkitAgentService {
 
     @Override
     @DSTransactional
-    public Long createAgent(SkitAgentSaveReqVO createReqVO) {
+    public Long createAgent(SkitAgentCreateReqVO createReqVO) {
         platformAdminGuard.check();
-        validateAdministratorUsernameUnbound(createReqVO.getUsername());
-        String requestedTenantCode = normalizeTenantCode(createReqVO.getTenantCode());
-        validateTenantCodeDuplicate(requestedTenantCode, null);
+        ValidationUtils.validate(createReqVO);
+        String mobile = SkitAgentCreateReqVO.normalizeMobile(createReqVO.getMobile());
+        validateAdministratorIdentityUnbound(mobile);
+        TenantPackageDO standardPackage = tenantPackageService.getTenantPackageByCode(STANDARD_AGENT_PACKAGE_CODE);
+        if (standardPackage == null) {
+            throw exception(TENANT_PACKAGE_NOT_EXISTS);
+        }
 
-        Long tenantId = tenantService.createTenant(toTenantSaveReqVO(createReqVO, null));
-        String tenantCode = StrUtil.isNotBlank(requestedTenantCode)
-                ? requestedTenantCode : AUTO_TENANT_CODE_PREFIX + tenantId;
+        Long tenantId = tenantService.createTenant(toTenantSaveReqVO(createReqVO, standardPackage));
+        String tenantCode = AUTO_TENANT_CODE_PREFIX + tenantId;
         validateTenantCodeDuplicate(tenantCode, null);
         agentMapper.insert(SkitAgentDO.builder()
                 .tenantId(tenantId)
                 .tenantCode(tenantCode)
                 .rootInviteCode(generateRootInviteCode())
                 .status(createReqVO.getStatus())
-                .remark(StrUtil.nullToEmpty(createReqVO.getRemark()))
+                .remark("")
                 .build());
         appReleaseService.ensureProfile(tenantId, tenantCode);
         TenantUtils.execute(tenantId, () -> {
@@ -117,44 +114,108 @@ public class SkitAgentServiceImpl implements SkitAgentService {
             saveAdSettings(createReqVO, false);
             commissionService.ensureDefaultPlan();
         });
+        if (cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.isDisable(createReqVO.getStatus())) {
+            TenantDO tenant = tenantService.getTenant(tenantId);
+            if (tenant != null && tenant.getContactUserId() != null) {
+                TenantUtils.execute(tenantId, () -> adminUserService.updateUserStatus(tenant.getContactUserId(),
+                        cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.DISABLE.getStatus()));
+            }
+        }
         return tenantId;
     }
 
     @Override
     @DSTransactional
-    public void updateAgent(SkitAgentSaveReqVO updateReqVO) {
+    public void updateAgent(SkitAgentUpdateReqVO updateReqVO) {
         platformAdminGuard.check();
+        ValidationUtils.validate(updateReqVO);
         SkitAgentDO agent = validateAgent(updateReqVO.getTenantId());
         TenantDO tenant = tenantService.getTenant(updateReqVO.getTenantId());
         if (tenant == null) {
             throw exception(AGENT_NOT_EXISTS);
         }
 
-        String tenantCode = normalizeTenantCode(updateReqVO.getTenantCode());
-        if (StrUtil.isBlank(tenantCode)) {
-            tenantCode = agent.getTenantCode();
-        }
-        validateTenantCodeDuplicate(tenantCode, agent.getTenantId());
         tenantService.updateTenant(toTenantSaveReqVO(updateReqVO, tenant));
         agentMapper.updateById(new SkitAgentDO()
                 .setId(agent.getId())
-                .setTenantCode(tenantCode)
-                .setStatus(updateReqVO.getStatus())
                 .setRemark(updateReqVO.getRemark() == null ? agent.getRemark() : updateReqVO.getRemark()));
-        if (!tenantCode.equals(agent.getTenantCode())) {
-            appReleaseService.renameProfile(agent.getTenantId(), tenantCode);
-        }
 
         Long tenantId = agent.getTenantId();
-        if (StrUtil.isNotBlank(updateReqVO.getPassword()) && tenant.getContactUserId() != null) {
-            TenantUtils.execute(tenantId,
-                    () -> adminUserService.updateUserPassword(tenant.getContactUserId(), updateReqVO.getPassword()));
-        }
         TenantUtils.execute(tenantId, () -> {
             adAccountService.ensureDefaultAccounts();
             saveAdSettings(updateReqVO, true);
             commissionService.ensureDefaultPlan();
         });
+    }
+
+    @Override
+    @DSTransactional
+    public void updateAgentMobile(SkitAgentMobileUpdateReqVO updateReqVO) {
+        platformAdminGuard.check();
+        ValidationUtils.validate(updateReqVO);
+        SkitAgentDO agent = validateAgent(updateReqVO.getTenantId());
+        TenantDO tenant = validateTenant(agent.getTenantId());
+        Long userId = requireContactUserId(tenant);
+        String mobile = SkitAgentCreateReqVO.normalizeMobile(updateReqVO.getMobile());
+        validateAdministratorIdentityAvailable(mobile, userId);
+        tenantService.updateTenant(toTenantMobileUpdateReqVO(tenant, mobile));
+        TenantUtils.execute(agent.getTenantId(),
+                () -> adminUserService.updateUserIdentity(userId, mobile, mobile));
+    }
+
+    @Override
+    @DSTransactional
+    public void resetAgentPassword(SkitAgentPasswordResetReqVO resetReqVO) {
+        platformAdminGuard.check();
+        ValidationUtils.validate(resetReqVO);
+        SkitAgentDO agent = validateAgent(resetReqVO.getTenantId());
+        TenantDO tenant = validateTenant(agent.getTenantId());
+        Long userId = requireContactUserId(tenant);
+        TenantUtils.execute(agent.getTenantId(),
+                () -> adminUserService.updateUserPassword(userId, resetReqVO.getPassword()));
+    }
+
+    @Override
+    @DSTransactional
+    public void archiveAgent(Long tenantId) {
+        platformAdminGuard.check();
+        SkitAgentDO agent = validateAgent(tenantId);
+        TenantDO tenant = validateTenant(agent.getTenantId());
+        if (agent.getArchivedTime() != null) {
+            return;
+        }
+        agentMapper.updateArchiveState(tenantId, java.time.LocalDateTime.now(), SecurityFrameworkUtils.getLoginUserId());
+        tenantService.updateTenantStatus(tenantId,
+                cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.DISABLE.getStatus());
+        if (tenant.getContactUserId() != null) {
+            TenantUtils.execute(tenantId, () -> adminUserService.updateUserStatus(tenant.getContactUserId(),
+                    cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.DISABLE.getStatus()));
+        }
+    }
+
+    @Override
+    @DSTransactional
+    public void restoreAgent(Long tenantId) {
+        platformAdminGuard.check();
+        SkitAgentDO agent = validateAgent(tenantId);
+        TenantDO tenant = validateTenant(agent.getTenantId());
+        agentMapper.clearArchiveState(tenantId);
+        tenantService.updateTenantStatus(tenantId,
+                cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus());
+        if (tenant.getContactUserId() != null) {
+            TenantUtils.execute(tenantId, () -> adminUserService.updateUserStatus(tenant.getContactUserId(),
+                    cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus()));
+        }
+    }
+
+    @Override
+    @DSTransactional
+    public String rotateRootInviteCode(Long tenantId) {
+        platformAdminGuard.check();
+        validateAgent(tenantId);
+        String inviteCode = generateRootInviteCode();
+        agentMapper.updateRootInviteCode(tenantId, inviteCode);
+        return inviteCode;
     }
 
     private SkitAgentDO validateAgent(Long tenantId) {
@@ -178,46 +239,110 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         }
     }
 
-    private void validateAdministratorUsernameUnbound(String username) {
-        if (CollUtil.isNotEmpty(adminUserService.getUserListByUsernameIgnoreTenant(username))) {
+    private void validateAdministratorIdentityUnbound(String mobile) {
+        validateAdministratorIdentityAvailable(mobile, null);
+    }
+
+    private void validateAdministratorIdentityAvailable(String mobile, Long excludeUserId) {
+        if (adminUserService.getUserListByUsernameIgnoreTenant(mobile).stream()
+                .anyMatch(user -> !Objects.equals(user.getId(), excludeUserId))) {
             throw exception(USER_USERNAME_EXISTS);
+        }
+        if (adminUserService.getUserListByMobileIgnoreTenant(mobile).stream()
+                .anyMatch(user -> !Objects.equals(user.getId(), excludeUserId))) {
+            throw exception(USER_MOBILE_EXISTS);
         }
     }
 
-    private TenantSaveReqVO toTenantSaveReqVO(SkitAgentSaveReqVO source, TenantDO existing) {
+    private TenantSaveReqVO toTenantSaveReqVO(SkitAgentCreateReqVO source, TenantPackageDO standardPackage) {
+        String mobile = SkitAgentCreateReqVO.normalizeMobile(source.getMobile());
         TenantSaveReqVO target = new TenantSaveReqVO();
-        target.setId(source.getTenantId());
         target.setName(source.getName());
-        target.setContactName(source.getContactName());
-        target.setContactMobile(source.getContactMobile());
+        target.setContactName(source.getName());
+        target.setContactMobile(mobile);
         target.setStatus(source.getStatus());
-        target.setWebsites(source.getWebsites() != null ? source.getWebsites()
-                : existing == null ? null : existing.getWebsites());
-        target.setPackageId(source.getPackageId());
+        target.setPackageId(standardPackage.getId());
         target.setExpireTime(source.getExpireTime());
-        target.setAccountCount(source.getAccountCount());
-        target.setUsername(source.getUsername());
+        target.setAccountCount(1);
+        target.setUsername(mobile);
         target.setPassword(source.getPassword());
         return target;
     }
 
-    private void saveAdSettings(SkitAgentSaveReqVO source, boolean preserveMissing) {
-        SkitAdAccountService.Settings settings = preserveMissing
-                ? adAccountService.getSettings() : new SkitAdAccountService.Settings();
-        settings.setPangleUsername(merge(source.getPangleUsername(), settings.getPangleUsername(), preserveMissing));
-        settings.setPangleAppId(merge(source.getPangleAppId(), settings.getPangleAppId(), preserveMissing));
+    private TenantSaveReqVO toTenantSaveReqVO(SkitAgentUpdateReqVO source, TenantDO existing) {
+        TenantSaveReqVO target = copyTenant(existing);
+        target.setName(source.getName());
+        target.setContactName(source.getName());
+        target.setStatus(source.getStatus());
+        target.setExpireTime(source.getExpireTime());
+        target.setAccountCount(1);
+        return target;
+    }
+
+    private TenantSaveReqVO toTenantMobileUpdateReqVO(TenantDO tenant, String mobile) {
+        TenantSaveReqVO target = copyTenant(tenant);
+        target.setContactMobile(mobile);
+        return target;
+    }
+
+    private TenantSaveReqVO copyTenant(TenantDO tenant) {
+        TenantSaveReqVO target = new TenantSaveReqVO();
+        target.setId(tenant.getId());
+        target.setName(tenant.getName());
+        target.setContactName(tenant.getContactName());
+        target.setContactMobile(tenant.getContactMobile());
+        target.setStatus(tenant.getStatus());
+        target.setWebsites(tenant.getWebsites());
+        target.setPackageId(tenant.getPackageId());
+        target.setExpireTime(tenant.getExpireTime());
+        target.setAccountCount(tenant.getAccountCount());
+        return target;
+    }
+
+    private TenantDO validateTenant(Long tenantId) {
+        TenantDO tenant = tenantService.getTenant(tenantId);
+        if (tenant == null) {
+            throw exception(AGENT_NOT_EXISTS);
+        }
+        return tenant;
+    }
+
+    private Long requireContactUserId(TenantDO tenant) {
+        if (tenant.getContactUserId() == null) {
+            throw exception(AGENT_NOT_EXISTS);
+        }
+        return tenant.getContactUserId();
+    }
+
+    private void saveAdSettings(SkitAgentUpdateReqVO source, boolean preserveMissing) {
+        SkitAdAccountService.Settings settings = adAccountService.getSettings();
+        settings.setPangleUsername(merge(source.getPangleUsername(), settings.getPangleUsername(), true));
+        settings.setPangleAppId(merge(source.getPangleAppId(), settings.getPangleAppId(), true));
         settings.setPangleAppSecret(source.getPangleAppSecret());
-        settings.setPanglePlacementId(merge(source.getPanglePlacementId(),
-                settings.getPanglePlacementId(), preserveMissing));
-        settings.setPangleEnabled(resolveEnabled(source.getPangleEnabled(), settings.getPangleEnabled(),
-                settings.getPangleUsername(), settings.getPangleAppId(), settings.getPanglePlacementId()));
-        settings.setTakuUsername(merge(source.getTakuUsername(), settings.getTakuUsername(), preserveMissing));
-        settings.setTakuAppId(merge(source.getTakuAppId(), settings.getTakuAppId(), preserveMissing));
+        settings.setPanglePlacementId(merge(source.getPanglePlacementId(), settings.getPanglePlacementId(), true));
+        settings.setPangleEnabled(resolveEnabled(source.getPangleEnabled(), settings.getPangleEnabled()));
+        settings.setTakuUsername(merge(source.getTakuUsername(), settings.getTakuUsername(), true));
+        settings.setTakuAppId(merge(source.getTakuAppId(), settings.getTakuAppId(), true));
         settings.setTakuAppKey(source.getTakuAppKey());
         settings.setTakuAppSecret(source.getTakuAppSecret());
-        settings.setTakuPlacementId(merge(source.getTakuPlacementId(), settings.getTakuPlacementId(), preserveMissing));
-        settings.setTakuEnabled(resolveEnabled(source.getTakuEnabled(), settings.getTakuEnabled(),
-                settings.getTakuUsername(), settings.getTakuAppId(), settings.getTakuPlacementId()));
+        settings.setTakuPlacementId(merge(source.getTakuPlacementId(), settings.getTakuPlacementId(), true));
+        settings.setTakuEnabled(resolveEnabled(source.getTakuEnabled(), settings.getTakuEnabled()));
+        adAccountService.saveSettings(settings);
+    }
+
+    private void saveAdSettings(SkitAgentCreateReqVO source, boolean preserveMissing) {
+        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
+        settings.setPangleUsername(source.getPangleUsername());
+        settings.setPangleAppId(source.getPangleAppId());
+        settings.setPangleAppSecret(source.getPangleAppSecret());
+        settings.setPanglePlacementId(source.getPanglePlacementId());
+        settings.setPangleEnabled(Boolean.TRUE.equals(source.getPangleEnabled()));
+        settings.setTakuUsername(source.getTakuUsername());
+        settings.setTakuAppId(source.getTakuAppId());
+        settings.setTakuAppKey(source.getTakuAppKey());
+        settings.setTakuAppSecret(source.getTakuAppSecret());
+        settings.setTakuPlacementId(source.getTakuPlacementId());
+        settings.setTakuEnabled(Boolean.TRUE.equals(source.getTakuEnabled()));
         adAccountService.saveSettings(settings);
     }
 
@@ -225,15 +350,8 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         return preserveMissing && requested == null ? existing : requested;
     }
 
-    private Boolean resolveEnabled(Boolean requested, Boolean existing, String username,
-                                   String appId, String placementId) {
-        if (requested != null) {
-            return requested;
-        }
-        if (Boolean.TRUE.equals(existing)) {
-            return true;
-        }
-        return StrUtil.isAllNotBlank(username, appId, placementId);
+    private Boolean resolveEnabled(Boolean requested, Boolean existing) {
+        return requested != null ? requested : Boolean.TRUE.equals(existing);
     }
 
     private String generateRootInviteCode() {
@@ -258,9 +376,12 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         result.setTenantId(tenant.getId());
         result.setTenantCode(agent.getTenantCode());
         result.setRootInviteCode(agent.getRootInviteCode());
+        result.setArchivedTime(agent.getArchivedTime());
+        result.setArchivedBy(agent.getArchivedBy());
         result.setName(tenant.getName());
         result.setContactName(tenant.getContactName());
         result.setContactMobile(tenant.getContactMobile());
+        result.setMobile(tenant.getContactMobile());
         result.setStatus(tenant.getStatus());
         result.setWebsites(tenant.getWebsites());
         result.setPackageId(tenant.getPackageId());
@@ -271,8 +392,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         TenantPackageDO tenantPackage = tenantPackageService.getTenantPackage(tenant.getPackageId());
         result.setPackageName(tenantPackage == null ? null : tenantPackage.getName());
         if (tenant.getContactUserId() != null) {
-            AdminUserDO user = TenantUtils.execute(tenant.getId(),
-                    () -> adminUserService.getUser(tenant.getContactUserId()));
+            AdminUserDO user = adminUserService.getUserIgnoreTenant(tenant.getContactUserId());
             result.setUsername(user == null ? null : user.getUsername());
         }
         SkitAdAccountService.Settings settings = TenantUtils.execute(tenant.getId(), adAccountService::getSettings);
@@ -292,25 +412,6 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         result.setTakuEnabled(settings.getTakuEnabled());
         result.setTakuAppKeyConfigured(settings.getTakuAppKeyConfigured());
         result.setTakuSecretConfigured(settings.getTakuSecretConfigured());
-    }
-
-    private boolean matchesKeyword(SkitAgentRespVO item, String keyword) {
-        if (StrUtil.isBlank(keyword)) {
-            return true;
-        }
-        String normalized = keyword.toLowerCase(Locale.ROOT);
-        return containsIgnoreCase(item.getName(), normalized)
-                || containsIgnoreCase(item.getTenantCode(), normalized)
-                || containsIgnoreCase(item.getContactName(), normalized)
-                || containsIgnoreCase(item.getContactMobile(), normalized);
-    }
-
-    private boolean containsIgnoreCase(String value, String normalizedKeyword) {
-        return value != null && value.toLowerCase(Locale.ROOT).contains(normalizedKeyword);
-    }
-
-    private String normalizeTenantCode(String tenantCode) {
-        return StrUtil.isBlank(tenantCode) ? null : StrUtil.trim(tenantCode).toUpperCase(Locale.ROOT);
     }
 
 }

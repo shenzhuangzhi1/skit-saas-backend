@@ -3,7 +3,10 @@ package cn.iocoder.yudao.module.skit.service.agent;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentRespVO;
-import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentSaveReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentCreateReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentMobileUpdateReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPasswordResetReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentUpdateReqVO;
 
 import javax.validation.Valid;
 
@@ -16,8 +19,18 @@ public interface SkitAgentService {
 
     SkitAgentRespVO getAgent(Long tenantId);
 
-    Long createAgent(@Valid SkitAgentSaveReqVO createReqVO);
+    Long createAgent(@Valid SkitAgentCreateReqVO createReqVO);
 
-    void updateAgent(@Valid SkitAgentSaveReqVO updateReqVO);
+    void updateAgent(@Valid SkitAgentUpdateReqVO updateReqVO);
+
+    void updateAgentMobile(@Valid SkitAgentMobileUpdateReqVO updateReqVO);
+
+    void resetAgentPassword(@Valid SkitAgentPasswordResetReqVO resetReqVO);
+
+    void archiveAgent(Long tenantId);
+
+    void restoreAgent(Long tenantId);
+
+    String rotateRootInviteCode(Long tenantId);
 
 }

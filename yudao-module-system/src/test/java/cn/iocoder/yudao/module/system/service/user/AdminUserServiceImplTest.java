@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.system.service.user;
 
 import cn.hutool.core.util.RandomUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.enums.UserTypeEnum;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.collection.ArrayUtils;
@@ -269,6 +270,20 @@ public class AdminUserServiceImplTest extends BaseDbUnitTest {
         // 断言
         AdminUserDO user = userMapper.selectById(userId);
         assertEquals("encode:" + password, user.getPassword());
+        verify(oauth2TokenService).removeAccessToken(userId, UserTypeEnum.ADMIN.getValue());
+    }
+
+    @Test
+    public void testUpdateUserIdentity_success() {
+        AdminUserDO dbUser = randomAdminUserDO();
+        userMapper.insert(dbUser);
+
+        userService.updateUserIdentity(dbUser.getId(), "13900000000", "13900000000");
+
+        AdminUserDO user = userMapper.selectById(dbUser.getId());
+        assertEquals("13900000000", user.getUsername());
+        assertEquals("13900000000", user.getMobile());
+        verify(oauth2TokenService).removeAccessToken(dbUser.getId(), UserTypeEnum.ADMIN.getValue());
     }
 
     @Test

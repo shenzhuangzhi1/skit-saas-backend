@@ -1,11 +1,35 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.agent;
 
+import cn.hutool.core.util.StrUtil;
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
+import cn.iocoder.yudao.framework.mybatis.core.query.MPJLambdaWrapperX;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentPageReqVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
+import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
+
+import java.time.LocalDateTime;
 
 @Mapper
 public interface SkitAgentMapper extends BaseMapperX<SkitAgentDO> {
+
+    default PageResult<SkitAgentDO> selectPage(SkitAgentPageReqVO reqVO) {
+        String keyword = StrUtil.trim(reqVO.getKeyword());
+        MPJLambdaWrapperX<SkitAgentDO> query = new MPJLambdaWrapperX<SkitAgentDO>()
+                .selectAll(SkitAgentDO.class)
+                .innerJoin(TenantDO.class, TenantDO::getId, SkitAgentDO::getTenantId)
+                .eqIfPresent(TenantDO::getStatus, reqVO.getStatus())
+                .orderByDesc(SkitAgentDO::getId);
+        if (StrUtil.isNotBlank(keyword)) {
+            query.and(wrapper -> wrapper.like(SkitAgentDO::getTenantCode, keyword)
+                    .or().like(TenantDO::getName, keyword)
+                    .or().like(TenantDO::getContactName, keyword)
+                    .or().like(TenantDO::getContactMobile, keyword));
+        }
+        return selectJoinPage(reqVO, SkitAgentDO.class, query);
+    }
 
     default SkitAgentDO selectByTenantId(Long tenantId) {
         return selectOne(SkitAgentDO::getTenantId, tenantId);
@@ -17,6 +41,26 @@ public interface SkitAgentMapper extends BaseMapperX<SkitAgentDO> {
 
     default SkitAgentDO selectByRootInviteCode(String inviteCode) {
         return selectOne(SkitAgentDO::getRootInviteCode, inviteCode);
+    }
+
+    default int updateArchiveState(Long tenantId, LocalDateTime archivedTime, Long archivedBy) {
+        return update(new SkitAgentDO(), new LambdaUpdateWrapper<SkitAgentDO>()
+                .eq(SkitAgentDO::getTenantId, tenantId)
+                .set(SkitAgentDO::getArchivedTime, archivedTime)
+                .set(SkitAgentDO::getArchivedBy, archivedBy));
+    }
+
+    default int clearArchiveState(Long tenantId) {
+        return update(new SkitAgentDO(), new LambdaUpdateWrapper<SkitAgentDO>()
+                .eq(SkitAgentDO::getTenantId, tenantId)
+                .set(SkitAgentDO::getArchivedTime, null)
+                .set(SkitAgentDO::getArchivedBy, null));
+    }
+
+    default int updateRootInviteCode(Long tenantId, String inviteCode) {
+        return update(new SkitAgentDO(), new LambdaUpdateWrapper<SkitAgentDO>()
+                .eq(SkitAgentDO::getTenantId, tenantId)
+                .set(SkitAgentDO::getRootInviteCode, inviteCode));
     }
 
 }

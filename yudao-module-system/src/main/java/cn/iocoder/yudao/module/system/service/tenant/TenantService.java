@@ -34,6 +34,9 @@ public interface TenantService {
      */
     void updateTenant(@Valid TenantSaveReqVO updateReqVO);
 
+    /** Updates only availability, without revalidating a tenant's historical package. */
+    void updateTenantStatus(Long id, Integer status);
+
     /**
      * 更新租户的角色菜单
      *

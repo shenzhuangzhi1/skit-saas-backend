@@ -48,6 +48,9 @@ public interface AdminUserService {
      */
     void updateUser(@Valid UserSaveReqVO updateReqVO);
 
+    /** Atomically rebinds the login identity and revokes all existing administrator tokens. */
+    void updateUserIdentity(Long id, String username, String mobile);
+
     /**
      * 更新用户的最后登陆信息
      *
