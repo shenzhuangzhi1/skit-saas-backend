@@ -42,7 +42,7 @@ jobs:
       - name: Run focused tenant lifecycle tests
         run: >-
           mvn -B -pl yudao-module-skit,yudao-module-system -am
-          -Dtest='Skit*Test,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest'
+          -Dtest='Skit*Test,*SecurityTest,SystemPlatformAdminGuardTest,TenantVisitContextInterceptorTest,AdminAuthServiceImplTest,OAuth2TokenServiceImplTest,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest'
           -Dsurefire.failIfNoSpecifiedTests=false test
 
       - name: Build server jar

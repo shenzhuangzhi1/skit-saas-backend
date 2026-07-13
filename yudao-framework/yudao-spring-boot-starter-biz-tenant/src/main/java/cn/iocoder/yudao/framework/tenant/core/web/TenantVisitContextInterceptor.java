@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.framework.tenant.core.web;
 
 import cn.hutool.core.util.ObjUtil;
+import cn.iocoder.yudao.framework.common.biz.system.tenant.TenantCommonApi;
 import cn.iocoder.yudao.framework.common.exception.enums.GlobalErrorCodeConstants;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.service.SecurityFrameworkService;
@@ -29,6 +30,8 @@ public class TenantVisitContextInterceptor implements HandlerInterceptor {
 
     private final SecurityFrameworkService securityFrameworkService;
 
+    private final TenantCommonApi tenantApi;
+
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         // 如果和当前租户编号一致，则直接跳过
@@ -51,6 +54,10 @@ public class TenantVisitContextInterceptor implements HandlerInterceptor {
                 || !securityFrameworkService.hasRole(PLATFORM_ADMIN_ROLE)) {
             throw exception0(GlobalErrorCodeConstants.FORBIDDEN.getCode(), "仅平台超级管理员可切换租户");
         }
+
+        // Visit mode is an operational context. Archived, disabled, expired, or missing tenants must
+        // remain audit-only and cannot be reactivated through a header switch.
+        tenantApi.validateTenant(visitTenantId);
 
         // 【重点】切换租户编号
         loginUser.setVisitTenantId(visitTenantId);

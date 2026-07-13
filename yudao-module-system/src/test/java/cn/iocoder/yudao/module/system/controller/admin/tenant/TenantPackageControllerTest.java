@@ -2,37 +2,51 @@ package cn.iocoder.yudao.module.system.controller.admin.tenant;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class TenantPackageControllerTest {
 
     @Test
-    void shouldRequireSuperAdminForEveryTenantPackageEndpoint() {
-        PreAuthorize authorization = TenantPackageController.class.getAnnotation(PreAuthorize.class);
+    void shouldNotExposeLegacyTenantDiscoveryEndpoints() {
+        assertFalse(hasGetMapping(TenantController.class, "/get-id-by-name"));
+        assertFalse(hasGetMapping(TenantController.class, "/get-by-website"));
+        assertFalse(hasGetMapping(TenantController.class, "simple-list"));
+        assertFalse(hasGetMapping(TenantController.class, "/simple-list"));
+        assertNoTenantMethod("createTenant");
+        assertNoTenantMethod("updateTenant");
+        assertNoTenantMethod("deleteTenant");
+        assertNoTenantMethod("deleteTenantList");
+    }
 
-        assertNotNull(authorization);
-        assertEquals("@ss.hasRole('super_admin')", authorization.value());
+    @Test
+    void shouldRequireOriginalPlatformAdministratorForGenericTenantAdministration() throws Exception {
+        assertTenantPermission("getTenant", "system:tenant:query");
+        assertTenantPermission("getTenantPage", "system:tenant:query");
+        assertTenantPermission("exportTenantExcel", "system:tenant:export");
     }
 
     @Test
     void shouldRequireSuperAdminAndPreserveEndpointPermissionChecks() throws Exception {
         assertPermission("createTenantPackage",
-                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:create')");
+                "@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:create')");
         assertPermission("updateTenantPackage",
-                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:update')");
+                "@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:update')");
         assertPermission("deleteTenantPackage",
-                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:delete')");
+                "@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:delete')");
         assertPermission("deleteTenantPackageList",
-                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:delete')");
+                "@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:delete')");
         assertPermission("getTenantPackage",
-                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:query')");
+                "@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:query')");
         assertPermission("getTenantPackagePage",
-                "@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:query')");
-        assertPermission("getTenantPackageList", "@ss.hasRole('super_admin')");
+                "@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:query')");
+        assertPermission("getTenantPackageList", "@systemPlatformAdminGuard.isPlatformAdmin()");
     }
 
     private static void assertPermission(String methodName, String expected) throws Exception {
@@ -49,6 +63,29 @@ class TenantPackageControllerTest {
             }
         }
         throw new NoSuchMethodException(methodName);
+    }
+
+    private static void assertTenantPermission(String methodName, String permission) {
+        Method method = Arrays.stream(TenantController.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals(methodName))
+                .findFirst().orElseThrow(() -> new AssertionError("Missing method " + methodName));
+        PreAuthorize authorization = method.getAnnotation(PreAuthorize.class);
+        assertNotNull(authorization, methodName + " should require the platform guard");
+        assertEquals("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('"
+                + permission + "')", authorization.value());
+    }
+
+    private static boolean hasGetMapping(Class<?> controller, String path) {
+        return Arrays.stream(controller.getDeclaredMethods())
+                .map(method -> method.getAnnotation(GetMapping.class))
+                .filter(mapping -> mapping != null)
+                .flatMap(mapping -> Arrays.stream(mapping.value()))
+                .anyMatch(path::equals);
+    }
+
+    private static void assertNoTenantMethod(String methodName) {
+        assertFalse(Arrays.stream(TenantController.class.getDeclaredMethods())
+                .anyMatch(method -> method.getName().equals(methodName)), methodName + " must not be exposed");
     }
 
 }

@@ -11,22 +11,16 @@ import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
 import cn.iocoder.yudao.framework.datapermission.core.annotation.DataPermission;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.system.api.logger.dto.LoginLogCreateReqDTO;
-import cn.iocoder.yudao.module.system.api.sms.SmsCodeApi;
-import cn.iocoder.yudao.module.system.api.sms.dto.code.SmsCodeUseReqDTO;
-import cn.iocoder.yudao.module.system.api.social.dto.SocialUserBindReqDTO;
-import cn.iocoder.yudao.module.system.api.social.dto.SocialUserRespDTO;
 import cn.iocoder.yudao.module.system.controller.admin.auth.vo.*;
-import cn.iocoder.yudao.module.system.convert.auth.AuthConvert;
 import cn.iocoder.yudao.module.system.dal.dataobject.oauth2.OAuth2AccessTokenDO;
 import cn.iocoder.yudao.module.system.dal.dataobject.user.AdminUserDO;
 import cn.iocoder.yudao.module.system.enums.logger.LoginLogTypeEnum;
 import cn.iocoder.yudao.module.system.enums.logger.LoginResultEnum;
 import cn.iocoder.yudao.module.system.enums.oauth2.OAuth2ClientConstants;
-import cn.iocoder.yudao.module.system.enums.sms.SmsSceneEnum;
 import cn.iocoder.yudao.module.system.service.logger.LoginLogService;
 import cn.iocoder.yudao.module.system.service.member.MemberService;
 import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
-import cn.iocoder.yudao.module.system.service.social.SocialUserService;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
 import com.anji.captcha.model.common.ResponseModel;
 import com.anji.captcha.model.vo.CaptchaVO;
@@ -36,7 +30,6 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import javax.validation.Validator;
@@ -45,7 +38,6 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
-import static cn.iocoder.yudao.framework.common.util.servlet.ServletUtils.getClientIP;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.*;
 
 /**
@@ -60,19 +52,17 @@ public class AdminAuthServiceImpl implements AdminAuthService {
     @Resource
     private AdminUserService userService;
     @Resource
+    private TenantService tenantService;
+    @Resource
     private LoginLogService loginLogService;
     @Resource
     private OAuth2TokenService oauth2TokenService;
-    @Resource
-    private SocialUserService socialUserService;
     @Resource
     private MemberService memberService;
     @Resource
     private Validator validator;
     @Resource
     private CaptchaService captchaService;
-    @Resource
-    private SmsCodeApi smsCodeApi;
 
     /**
      * 验证码的开关，默认为 true
@@ -118,13 +108,8 @@ public class AdminAuthServiceImpl implements AdminAuthService {
     private AuthLoginRespVO loginWithinTenant(AuthLoginReqVO reqVO) {
         AdminUserDO user = authenticate(reqVO.getUsername(), reqVO.getPassword());
 
-        // 如果 socialType 非空，说明需要绑定社交用户
-        if (reqVO.getSocialType() != null) {
-            socialUserService.bindSocialUser(new SocialUserBindReqDTO(user.getId(), getUserType().getValue(),
-                    reqVO.getSocialType(), reqVO.getSocialCode(), reqVO.getSocialState()));
-        }
         // 创建 Token 令牌，记录登录日志
-        return createTokenAfterLoginSuccess(user.getId(), reqVO.getUsername(), LoginLogTypeEnum.LOGIN_USERNAME);
+        return createTokenAfterLoginSuccess(user, reqVO.getUsername(), LoginLogTypeEnum.LOGIN_USERNAME);
     }
 
     private Long resolveLoginTenantId(String username) {
@@ -135,41 +120,6 @@ public class AdminAuthServiceImpl implements AdminAuthService {
             throw exception(AUTH_LOGIN_BAD_CREDENTIALS);
         }
         return users.get(0).getTenantId();
-    }
-
-    @Override
-    public void sendSmsCode(AuthSmsSendReqVO reqVO) {
-        // 如果是重置密码场景，需要校验图形验证码是否正确
-        if (Objects.equals(SmsSceneEnum.ADMIN_MEMBER_RESET_PASSWORD.getScene(), reqVO.getScene())) {
-            ResponseModel response = doValidateCaptcha(reqVO);
-            if (!response.isSuccess()) {
-                throw exception(AUTH_REGISTER_CAPTCHA_CODE_ERROR, response.getRepMsg());
-            }
-        }
-
-        // 手机号也是全局唯一的登录身份，不能依赖请求头指定租户。
-        if (resolveLoginUserByMobile(reqVO.getMobile()) == null) {
-            throw exception(AUTH_MOBILE_NOT_EXISTS);
-        }
-        // 发送验证码
-        smsCodeApi.sendSmsCode(AuthConvert.INSTANCE.convert(reqVO).setCreateIp(getClientIP()));
-    }
-
-    @Override
-    public AuthLoginRespVO smsLogin(AuthSmsLoginReqVO reqVO) {
-        // 校验验证码
-        smsCodeApi.useSmsCode(AuthConvert.INSTANCE.convert(reqVO, SmsSceneEnum.ADMIN_MEMBER_LOGIN.getScene(), getClientIP()));
-
-        // 获得用户信息，并按手机号绑定关系切换到正确租户。
-        AdminUserDO user = resolveLoginUserByMobile(reqVO.getMobile());
-        if (user == null) {
-            throw exception(USER_NOT_EXISTS);
-        }
-
-        AtomicReference<AuthLoginRespVO> result = new AtomicReference<>();
-        TenantUtils.execute(user.getTenantId(), () -> result.set(
-                createTokenAfterLoginSuccess(user.getId(), reqVO.getMobile(), LoginLogTypeEnum.LOGIN_MOBILE)));
-        return result.get();
     }
 
     private void createLoginLog(Long userId, String username,
@@ -189,27 +139,6 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         if (userId != null && Objects.equals(LoginResultEnum.SUCCESS.getResult(), loginResult.getResult())) {
             userService.updateUserLogin(userId, ServletUtils.getClientIP());
         }
-    }
-
-    @Override
-    public AuthLoginRespVO socialLogin(AuthSocialLoginReqVO reqVO) {
-        // 使用 code 授权码，进行登录。然后，获得到绑定的用户编号
-        SocialUserRespDTO socialUser = socialUserService.getSocialUserByCode(UserTypeEnum.ADMIN.getValue(), reqVO.getType(),
-                reqVO.getCode(), reqVO.getState());
-        if (socialUser == null || socialUser.getUserId() == null) {
-            throw exception(AUTH_THIRD_LOGIN_NOT_BIND);
-        }
-
-        // 社交绑定关系记录的是全局用户编号，仍需由用户绑定关系决定租户。
-        AdminUserDO user = userService.getUserIgnoreTenant(socialUser.getUserId());
-        if (user == null || user.getTenantId() == null) {
-            throw exception(USER_NOT_EXISTS);
-        }
-
-        AtomicReference<AuthLoginRespVO> result = new AtomicReference<>();
-        TenantUtils.execute(user.getTenantId(), () -> result.set(
-                createTokenAfterLoginSuccess(user.getId(), user.getUsername(), LoginLogTypeEnum.LOGIN_SOCIAL)));
-        return result.get();
     }
 
     @VisibleForTesting
@@ -234,11 +163,12 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         return captchaService.verification(captchaVO);
     }
 
-    private AuthLoginRespVO createTokenAfterLoginSuccess(Long userId, String username, LoginLogTypeEnum logType) {
+    private AuthLoginRespVO createTokenAfterLoginSuccess(AdminUserDO user, String username, LoginLogTypeEnum logType) {
+        requireLoginEligible(user);
         // 插入登陆日志
-        createLoginLog(userId, username, logType, LoginResultEnum.SUCCESS);
+        createLoginLog(user.getId(), username, logType, LoginResultEnum.SUCCESS);
         // 创建访问令牌
-        OAuth2AccessTokenDO accessTokenDO = oauth2TokenService.createAccessToken(userId, getUserType().getValue(),
+        OAuth2AccessTokenDO accessTokenDO = oauth2TokenService.createAccessToken(user.getId(), getUserType().getValue(),
                 OAuth2ClientConstants.CLIENT_ID_DEFAULT, null);
         // 构建返回结果
         return BeanUtils.toBean(accessTokenDO, AuthLoginRespVO.class);
@@ -290,51 +220,13 @@ public class AdminAuthServiceImpl implements AdminAuthService {
         return UserTypeEnum.ADMIN;
     }
 
-    @Override
-    public AuthLoginRespVO register(AuthRegisterReqVO registerReqVO) {
-        // 1. 校验验证码
-        validateCaptcha(registerReqVO);
-
-        // 2. 校验用户名是否已存在
-        Long userId = userService.registerUser(registerReqVO);
-
-        // 3. 创建 Token 令牌，记录登录日志
-        return createTokenAfterLoginSuccess(userId, registerReqVO.getUsername(), LoginLogTypeEnum.LOGIN_USERNAME);
-    }
-
-    @VisibleForTesting
-    void validateCaptcha(AuthRegisterReqVO reqVO) {
-        ResponseModel response = doValidateCaptcha(reqVO);
-        // 验证不通过
-        if (!response.isSuccess()) {
-            throw exception(AUTH_REGISTER_CAPTCHA_CODE_ERROR, response.getRepMsg());
+    private void requireLoginEligible(AdminUserDO user) {
+        if (user == null || user.getTenantId() == null) {
+            throw exception(USER_NOT_EXISTS);
         }
-    }
-
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void resetPassword(AuthResetPasswordReqVO reqVO) {
-        AdminUserDO userByMobile = resolveLoginUserByMobile(reqVO.getMobile());
-        if (userByMobile == null) {
-            throw exception(USER_MOBILE_NOT_EXISTS);
+        if (CommonStatusEnum.isDisable(user.getStatus())) {
+            throw exception(AUTH_LOGIN_USER_DISABLED);
         }
-
-        smsCodeApi.useSmsCode(new SmsCodeUseReqDTO()
-                .setCode(reqVO.getCode())
-                .setMobile(reqVO.getMobile())
-                .setScene(SmsSceneEnum.ADMIN_MEMBER_RESET_PASSWORD.getScene())
-                .setUsedIp(getClientIP())
-        );
-
-        TenantUtils.execute(userByMobile.getTenantId(),
-                () -> userService.updateUserPassword(userByMobile.getId(), reqVO.getPassword()));
-    }
-
-    private AdminUserDO resolveLoginUserByMobile(String mobile) {
-        List<AdminUserDO> users = userService.getUserListByMobileIgnoreTenant(mobile);
-        if (CollUtil.size(users) != 1 || users.get(0).getTenantId() == null) {
-            return null;
-        }
-        return users.get(0);
+        tenantService.validTenant(user.getTenantId());
     }
 }

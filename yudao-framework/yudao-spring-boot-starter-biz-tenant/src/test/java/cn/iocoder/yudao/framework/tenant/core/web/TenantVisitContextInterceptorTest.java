@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.framework.tenant.core.web;
 
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.framework.common.biz.system.tenant.TenantCommonApi;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.service.SecurityFrameworkService;
 import cn.iocoder.yudao.framework.tenant.config.TenantProperties;
@@ -22,12 +23,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class TenantVisitContextInterceptorTest {
 
     @Mock
     private SecurityFrameworkService securityFrameworkService;
+    @Mock
+    private TenantCommonApi tenantApi;
 
     @AfterEach
     void clearContext() {
@@ -62,12 +67,28 @@ class TenantVisitContextInterceptorTest {
         assertTrue(allowed);
         assertEquals(42L, TenantContextHolder.getRequiredTenantId());
         assertEquals(42L, loginUser.getVisitTenantId());
+        verify(tenantApi).validateTenant(42L);
+    }
+
+    @Test
+    void systemSuperAdministratorCannotVisitInactiveTenant() {
+        authenticate(1L);
+        TenantContextHolder.setTenantId(1L);
+        when(securityFrameworkService.hasRole("super_admin")).thenReturn(true);
+        ServiceException inactive = new ServiceException(FORBIDDEN.getCode(), "tenant inactive");
+        doThrow(inactive).when(tenantApi).validateTenant(42L);
+
+        ServiceException actual = assertThrows(ServiceException.class,
+                () -> interceptor().preHandle(visitRequest(42L), new MockHttpServletResponse(), new Object()));
+
+        assertEquals(inactive, actual);
+        assertEquals(1L, TenantContextHolder.getRequiredTenantId());
     }
 
     private TenantVisitContextInterceptor interceptor() {
         TenantProperties properties = new TenantProperties();
         properties.setPlatformTenantId(1L);
-        return new TenantVisitContextInterceptor(properties, securityFrameworkService);
+        return new TenantVisitContextInterceptor(properties, securityFrameworkService, tenantApi);
     }
 
     private LoginUser authenticate(Long tenantId) {

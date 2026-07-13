@@ -27,7 +27,6 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @RestController
 @RequestMapping("/system/tenant-package")
 @Validated
-@PreAuthorize("@ss.hasRole('super_admin')")
 public class TenantPackageController {
 
     @Resource
@@ -35,14 +34,14 @@ public class TenantPackageController {
 
     @PostMapping("/create")
     @Operation(summary = "创建租户套餐")
-    @PreAuthorize("@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:create')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:create')")
     public CommonResult<Long> createTenantPackage(@Valid @RequestBody TenantPackageSaveReqVO createReqVO) {
         return success(tenantPackageService.createTenantPackage(createReqVO));
     }
 
     @PutMapping("/update")
     @Operation(summary = "更新租户套餐")
-    @PreAuthorize("@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:update')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:update')")
     public CommonResult<Boolean> updateTenantPackage(@Valid @RequestBody TenantPackageSaveReqVO updateReqVO) {
         tenantPackageService.updateTenantPackage(updateReqVO);
         return success(true);
@@ -51,7 +50,7 @@ public class TenantPackageController {
     @DeleteMapping("/delete")
     @Operation(summary = "删除租户套餐")
     @Parameter(name = "id", description = "编号", required = true)
-    @PreAuthorize("@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:delete')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:delete')")
     public CommonResult<Boolean> deleteTenantPackage(@RequestParam("id") Long id) {
         tenantPackageService.deleteTenantPackage(id);
         return success(true);
@@ -60,7 +59,7 @@ public class TenantPackageController {
     @DeleteMapping("/delete-list")
     @Parameter(name = "ids", description = "编号列表", required = true)
     @Operation(summary = "批量删除租户套餐")
-    @PreAuthorize("@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:delete')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:delete')")
     public CommonResult<Boolean> deleteTenantPackageList(@RequestParam("ids") List<Long> ids) {
         tenantPackageService.deleteTenantPackageList(ids);
         return success(true);
@@ -69,7 +68,7 @@ public class TenantPackageController {
     @GetMapping("/get")
     @Operation(summary = "获得租户套餐")
     @Parameter(name = "id", description = "编号", required = true, example = "1024")
-    @PreAuthorize("@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:query')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:query')")
     public CommonResult<TenantPackageRespVO> getTenantPackage(@RequestParam("id") Long id) {
         TenantPackageDO tenantPackage = tenantPackageService.getTenantPackage(id);
         return success(BeanUtils.toBean(tenantPackage, TenantPackageRespVO.class));
@@ -77,7 +76,7 @@ public class TenantPackageController {
 
     @GetMapping("/page")
     @Operation(summary = "获得租户套餐分页")
-    @PreAuthorize("@ss.hasRole('super_admin') and @ss.hasPermission('system:tenant-package:query')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin() and @ss.hasPermission('system:tenant-package:query')")
     public CommonResult<PageResult<TenantPackageRespVO>> getTenantPackagePage(@Valid TenantPackagePageReqVO pageVO) {
         PageResult<TenantPackageDO> pageResult = tenantPackageService.getTenantPackagePage(pageVO);
         return success(BeanUtils.toBean(pageResult, TenantPackageRespVO.class));
@@ -85,7 +84,7 @@ public class TenantPackageController {
 
     @GetMapping({"/get-simple-list", "simple-list"})
     @Operation(summary = "获取租户套餐精简信息列表", description = "只包含被开启的租户套餐，主要用于前端的下拉选项")
-    @PreAuthorize("@ss.hasRole('super_admin')")
+    @PreAuthorize("@systemPlatformAdminGuard.isPlatformAdmin()")
     public CommonResult<List<TenantPackageSimpleRespVO>> getTenantPackageList() {
         List<TenantPackageDO> list = tenantPackageService.getTenantPackageListByStatus(CommonStatusEnum.ENABLE.getStatus());
         return success(BeanUtils.toBean(list, TenantPackageSimpleRespVO.class));

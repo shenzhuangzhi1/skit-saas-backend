@@ -153,12 +153,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     public void updateAgent(SkitAgentUpdateReqVO updateReqVO) {
         platformAdminGuard.check();
         ValidationUtils.validate(updateReqVO);
-        SkitAgentDO agent = validateAgent(updateReqVO.getTenantId());
-        if (agent.getArchivedTime() != null
-                && Objects.equals(updateReqVO.getStatus(),
-                cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.ENABLE.getStatus())) {
-            throw exception(AGENT_ARCHIVED);
-        }
+        SkitAgentDO agent = validateMutableAgent(updateReqVO.getTenantId());
         TenantDO tenant = tenantService.getTenant(updateReqVO.getTenantId());
         if (tenant == null) {
             throw exception(AGENT_NOT_EXISTS);
@@ -185,7 +180,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     public void updateAgentMobile(SkitAgentMobileUpdateReqVO updateReqVO) {
         platformAdminGuard.check();
         ValidationUtils.validate(updateReqVO);
-        SkitAgentDO agent = validateAgent(updateReqVO.getTenantId());
+        SkitAgentDO agent = validateMutableAgent(updateReqVO.getTenantId());
         TenantDO tenant = validateTenant(agent.getTenantId());
         Long userId = requireContactUserId(tenant);
         String mobile = SkitAgentCreateReqVO.normalizeMobile(updateReqVO.getMobile());
@@ -200,7 +195,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     public void resetAgentPassword(SkitAgentPasswordResetReqVO resetReqVO) {
         platformAdminGuard.check();
         ValidationUtils.validate(resetReqVO);
-        SkitAgentDO agent = validateAgent(resetReqVO.getTenantId());
+        SkitAgentDO agent = validateMutableAgent(resetReqVO.getTenantId());
         TenantDO tenant = validateTenant(agent.getTenantId());
         Long userId = requireContactUserId(tenant);
         TenantUtils.execute(agent.getTenantId(),
@@ -242,7 +237,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     @DSTransactional
     public String rotateRootInviteCode(Long tenantId) {
         platformAdminGuard.check();
-        validateAgent(tenantId);
+        validateMutableAgent(tenantId);
         String inviteCode = generateRootInviteCode();
         agentMapper.updateRootInviteCode(tenantId, inviteCode);
         return inviteCode;
@@ -255,6 +250,14 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         SkitAgentDO agent = agentMapper.selectByTenantId(tenantId);
         if (agent == null) {
             throw exception(AGENT_NOT_EXISTS);
+        }
+        return agent;
+    }
+
+    private SkitAgentDO validateMutableAgent(Long tenantId) {
+        SkitAgentDO agent = validateAgent(tenantId);
+        if (agent.getArchivedTime() != null) {
+            throw exception(AGENT_ARCHIVED);
         }
         return agent;
     }

@@ -242,6 +242,18 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
+    void updateAgentCannotModifyArchivedAgentWhileKeepingItDisabled() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(archivedAgent());
+        SkitAgentUpdateReqVO request = updateRequest();
+        request.setStatus(CommonStatusEnum.DISABLE.getStatus());
+
+        assertServiceException(() -> agentService.updateAgent(request), AGENT_ARCHIVED);
+
+        verify(tenantService, never()).updateTenant(any());
+        verify(adAccountService, never()).saveSettings(any());
+    }
+
+    @Test
     void mobileRebindRejectsGlobalMobileDuplicate() {
         mockExistingAgent();
         when(adminUserService.getUserListByMobileIgnoreTenant("13900000000"))
@@ -272,6 +284,19 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
+    void mobileRebindRejectsArchivedAgent() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(archivedAgent());
+        SkitAgentMobileUpdateReqVO request = new SkitAgentMobileUpdateReqVO();
+        request.setTenantId(42L);
+        request.setMobile("13900000000");
+
+        assertServiceException(() -> agentService.updateAgentMobile(request), AGENT_ARCHIVED);
+
+        verify(tenantService, never()).updateTenant(any());
+        verify(adminUserService, never()).updateUserIdentity(anyLong(), anyString(), anyString());
+    }
+
+    @Test
     void passwordResetUsesDedicatedCommand() {
         mockExistingAgent();
         SkitAgentPasswordResetReqVO request = new SkitAgentPasswordResetReqVO();
@@ -281,6 +306,18 @@ class SkitAgentServiceImplTest {
         agentService.resetAgentPassword(request);
 
         verify(adminUserService).updateUserPassword(420L, "new-secret");
+    }
+
+    @Test
+    void passwordResetRejectsArchivedAgent() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(archivedAgent());
+        SkitAgentPasswordResetReqVO request = new SkitAgentPasswordResetReqVO();
+        request.setTenantId(42L);
+        request.setPassword("new-secret");
+
+        assertServiceException(() -> agentService.resetAgentPassword(request), AGENT_ARCHIVED);
+
+        verify(adminUserService, never()).updateUserPassword(anyLong(), anyString());
     }
 
     @Test
@@ -340,6 +377,16 @@ class SkitAgentServiceImplTest {
 
         assertTrue(inviteCode.startsWith("A"));
         verify(agentMapper).updateRootInviteCode(42L, inviteCode);
+    }
+
+    @Test
+    void rootInviteRotationRejectsArchivedAgent() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(archivedAgent());
+
+        assertServiceException(() -> agentService.rotateRootInviteCode(42L), AGENT_ARCHIVED);
+
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
+        verify(agentMapper, never()).updateRootInviteCode(anyLong(), anyString());
     }
 
     @Test
@@ -432,6 +479,11 @@ class SkitAgentServiceImplTest {
                 .setContactName("Agent 42").setContactMobile("13800000000")
                 .setContactUserId(420L).setStatus(CommonStatusEnum.ENABLE.getStatus())
                 .setPackageId(7L).setExpireTime(LocalDateTime.now().plusDays(30)).setAccountCount(1));
+    }
+
+    private static SkitAgentDO archivedAgent() {
+        return SkitAgentDO.builder().id(4L).tenantId(42L).tenantCode("AG42")
+                .rootInviteCode("AOLDINVITE01").archivedTime(LocalDateTime.now()).build();
     }
 
     private SkitAgentUpdateReqVO updateRequest() {

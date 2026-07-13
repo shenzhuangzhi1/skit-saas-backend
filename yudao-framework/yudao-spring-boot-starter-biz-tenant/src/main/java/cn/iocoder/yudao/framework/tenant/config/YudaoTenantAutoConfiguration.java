@@ -96,8 +96,9 @@ public class YudaoTenantAutoConfiguration {
 
     @Bean
     public TenantVisitContextInterceptor tenantVisitContextInterceptor(TenantProperties tenantProperties,
-                                                                       SecurityFrameworkService securityFrameworkService) {
-        return new TenantVisitContextInterceptor(tenantProperties, securityFrameworkService);
+                                                                       SecurityFrameworkService securityFrameworkService,
+                                                                       TenantCommonApi tenantApi) {
+        return new TenantVisitContextInterceptor(tenantProperties, securityFrameworkService, tenantApi);
     }
 
     @Bean

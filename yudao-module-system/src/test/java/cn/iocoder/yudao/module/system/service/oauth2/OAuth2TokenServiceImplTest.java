@@ -16,6 +16,7 @@ import cn.iocoder.yudao.module.system.dal.mysql.oauth2.OAuth2AccessTokenMapper;
 import cn.iocoder.yudao.module.system.dal.mysql.oauth2.OAuth2RefreshTokenMapper;
 import cn.iocoder.yudao.module.system.dal.redis.oauth2.OAuth2AccessTokenRedisDAO;
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.assertj.core.util.Lists;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -25,12 +26,15 @@ import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.common.util.object.ObjectUtils.cloneIgnoreId;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertPojoEquals;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.framework.test.core.util.RandomUtils.*;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_DISABLE;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 /**
@@ -56,6 +60,8 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
     private OAuth2ClientService oauth2ClientService;
     @MockBean
     private AdminUserService adminUserService;
+    @MockBean
+    private TenantService tenantService;
 
     @Test
     public void testCreateAccessToken() {
@@ -70,8 +76,9 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
                 .setAccessTokenValiditySeconds(30).setRefreshTokenValiditySeconds(60);
         when(oauth2ClientService.validOAuthClientFromCache(eq(clientId))).thenReturn(clientDO);
         // mock 数据（用户）
-        AdminUserDO user = randomPojo(AdminUserDO.class);
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setStatus(0).setTenantId(0L));
         when(adminUserService.getUser(userId)).thenReturn(user);
+        when(adminUserService.getUserIgnoreTenant(userId)).thenReturn(user);
 
         // 调用
         OAuth2AccessTokenDO accessTokenDO = oauth2TokenService.createAccessToken(userId, userType, clientId, scopes);
@@ -170,8 +177,10 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
         oauth2AccessTokenMapper.insert(accessTokenDO);
         oauth2AccessTokenRedisDAO.set(accessTokenDO);
         // mock 数据（用户）
-        AdminUserDO user = randomPojo(AdminUserDO.class);
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setStatus(0)
+                .setTenantId(refreshTokenDO.getTenantId()));
         when(adminUserService.getUser(refreshTokenDO.getUserId())).thenReturn(user);
+        when(adminUserService.getUserIgnoreTenant(refreshTokenDO.getUserId())).thenReturn(user);
 
         // 调用
         OAuth2AccessTokenDO newAccessTokenDO = oauth2TokenService.refreshAccessToken(refreshToken, clientId);
@@ -189,6 +198,55 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
         OAuth2AccessTokenDO redisAccessTokenDO = oauth2AccessTokenRedisDAO.get(newAccessTokenDO.getAccessToken());
         // TODO @芋艿：expiresTime 被屏蔽，仅 win11 会复现，建议后续修复。
         assertPojoEquals(newAccessTokenDO, redisAccessTokenDO, "expiresTime", "createTime", "updateTime", "deleted");
+    }
+
+    @Test
+    public void testRefreshAccessToken_rejectsDisabledAdministrator() {
+        TenantContextHolder.setTenantId(42L);
+        String refreshToken = randomString();
+        String clientId = randomString();
+        OAuth2ClientDO clientDO = randomPojo(OAuth2ClientDO.class).setClientId(clientId)
+                .setAccessTokenValiditySeconds(30);
+        when(oauth2ClientService.validOAuthClientFromCache(clientId)).thenReturn(clientDO);
+        OAuth2RefreshTokenDO refreshTokenDO = randomPojo(OAuth2RefreshTokenDO.class, o -> o
+                .setRefreshToken(refreshToken).setClientId(clientId)
+                .setExpiresTime(LocalDateTime.now().plusDays(1))
+                .setUserId(1L).setUserType(UserTypeEnum.ADMIN.getValue()).setTenantId(42L));
+        oauth2RefreshTokenMapper.insert(refreshTokenDO);
+        when(adminUserService.getUserIgnoreTenant(1L)).thenReturn(
+                randomPojo(AdminUserDO.class, o -> o.setId(1L).setTenantId(42L).setStatus(1)));
+
+        assertServiceException(() -> oauth2TokenService.refreshAccessToken(refreshToken, clientId),
+                cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.AUTH_LOGIN_USER_DISABLED);
+
+        assertEquals(0, oauth2AccessTokenMapper.selectCount());
+    }
+
+    @Test
+    public void testRefreshAccessToken_rejectsDisabledMemberTenantBeforeMutation() {
+        String refreshToken = randomString();
+        String clientId = randomString();
+        OAuth2ClientDO clientDO = randomPojo(OAuth2ClientDO.class).setClientId(clientId)
+                .setAccessTokenValiditySeconds(30);
+        when(oauth2ClientService.validOAuthClientFromCache(clientId)).thenReturn(clientDO);
+        OAuth2RefreshTokenDO refreshTokenDO = randomPojo(OAuth2RefreshTokenDO.class, o -> o
+                .setRefreshToken(refreshToken).setClientId(clientId)
+                .setExpiresTime(LocalDateTime.now().plusDays(1))
+                .setUserId(1L).setUserType(UserTypeEnum.MEMBER.getValue()).setTenantId(42L));
+        oauth2RefreshTokenMapper.insert(refreshTokenDO);
+        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o
+                .setRefreshToken(refreshToken).setUserId(1L)
+                .setUserType(UserTypeEnum.MEMBER.getValue()).setTenantId(42L));
+        oauth2AccessTokenMapper.insert(accessTokenDO);
+        oauth2AccessTokenRedisDAO.set(accessTokenDO);
+        doThrow(exception(TENANT_DISABLE, "agent")).when(tenantService).validTenant(42L);
+
+        assertServiceException(() -> oauth2TokenService.refreshAccessToken(refreshToken, clientId),
+                TENANT_DISABLE, "agent");
+
+        assertNotNull(oauth2AccessTokenMapper.selectByAccessToken(accessTokenDO.getAccessToken()));
+        assertNotNull(oauth2AccessTokenRedisDAO.get(accessTokenDO.getAccessToken()));
+        assertNotNull(oauth2RefreshTokenMapper.selectByRefreshToken(refreshToken));
     }
 
     @Test

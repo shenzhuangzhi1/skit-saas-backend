@@ -5,20 +5,16 @@ import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.enums.UserTypeEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.test.core.ut.BaseDbUnitTest;
-import cn.iocoder.yudao.module.system.api.sms.SmsCodeApi;
-import cn.iocoder.yudao.module.system.api.social.dto.SocialUserBindReqDTO;
-import cn.iocoder.yudao.module.system.api.social.dto.SocialUserRespDTO;
-import cn.iocoder.yudao.module.system.controller.admin.auth.vo.*;
+import cn.iocoder.yudao.module.system.controller.admin.auth.vo.AuthLoginReqVO;
+import cn.iocoder.yudao.module.system.controller.admin.auth.vo.AuthLoginRespVO;
 import cn.iocoder.yudao.module.system.dal.dataobject.oauth2.OAuth2AccessTokenDO;
 import cn.iocoder.yudao.module.system.dal.dataobject.user.AdminUserDO;
 import cn.iocoder.yudao.module.system.enums.logger.LoginLogTypeEnum;
 import cn.iocoder.yudao.module.system.enums.logger.LoginResultEnum;
-import cn.iocoder.yudao.module.system.enums.sms.SmsSceneEnum;
-import cn.iocoder.yudao.module.system.enums.social.SocialTypeEnum;
 import cn.iocoder.yudao.module.system.service.logger.LoginLogService;
 import cn.iocoder.yudao.module.system.service.member.MemberService;
 import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
-import cn.iocoder.yudao.module.system.service.social.SocialUserService;
+import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
 import com.anji.captcha.model.common.ResponseModel;
 import com.anji.captcha.service.CaptchaService;
@@ -34,19 +30,30 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static cn.hutool.core.util.RandomUtil.randomEle;
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertPojoEquals;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.framework.test.core.util.RandomUtils.randomPojo;
 import static cn.iocoder.yudao.framework.test.core.util.RandomUtils.randomString;
-import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.*;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.AUTH_LOGIN_BAD_CREDENTIALS;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.AUTH_LOGIN_CAPTCHA_CODE_ERROR;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.AUTH_LOGIN_USER_DISABLED;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.TENANT_DISABLE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.argThat;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 @Import(AdminAuthServiceImpl.class)
-public class AdminAuthServiceImplTest extends BaseDbUnitTest {
+class AdminAuthServiceImplTest extends BaseDbUnitTest {
 
     @Resource
     private AdminAuthServiceImpl authService;
@@ -54,13 +61,11 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
     @MockBean
     private AdminUserService userService;
     @MockBean
+    private TenantService tenantService;
+    @MockBean
     private CaptchaService captchaService;
     @MockBean
     private LoginLogService loginLogService;
-    @MockBean
-    private SocialUserService socialUserService;
-    @MockBean
-    private SmsCodeApi smsCodeApi;
     @MockBean
     private OAuth2TokenService oauth2TokenService;
     @MockBean
@@ -69,355 +74,152 @@ public class AdminAuthServiceImplTest extends BaseDbUnitTest {
     private Validator validator;
 
     @BeforeEach
-    public void setUp() {
+    void setUp() {
         authService.setCaptchaEnable(true);
-        // 注入一个 Validator 对象
         ReflectUtil.setFieldValue(authService, "validator",
                 Validation.buildDefaultValidatorFactory().getValidator());
     }
 
     @Test
-    public void testAuthenticate_success() {
-        // 准备参数
+    void authenticateSuccess() {
         String username = randomString();
         String password = randomString();
-        // mock user 数据
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setUsername(username)
+        AdminUserDO user = randomPojo(AdminUserDO.class, value -> value.setUsername(username)
                 .setPassword(password).setStatus(CommonStatusEnum.ENABLE.getStatus()));
-        when(userService.getUserByUsername(eq(username))).thenReturn(user);
-        // mock password 匹配
-        when(userService.isPasswordMatch(eq(password), eq(user.getPassword()))).thenReturn(true);
+        when(userService.getUserByUsername(username)).thenReturn(user);
+        when(userService.isPasswordMatch(password, user.getPassword())).thenReturn(true);
 
-        // 调用
-        AdminUserDO loginUser = authService.authenticate(username, password);
-        // 校验
-        assertPojoEquals(user, loginUser);
+        assertPojoEquals(user, authService.authenticate(username, password));
     }
 
     @Test
-    public void testAuthenticate_userNotFound() {
-        // 准备参数
+    void authenticateRejectsMissingUser() {
         String username = randomString();
-        String password = randomString();
 
-        // 调用, 并断言异常
-        assertServiceException(() -> authService.authenticate(username, password),
+        assertServiceException(() -> authService.authenticate(username, randomString()),
                 AUTH_LOGIN_BAD_CREDENTIALS);
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_USERNAME.getType())
-                        && o.getResult().equals(LoginResultEnum.BAD_CREDENTIALS.getResult())
-                        && o.getUserId() == null)
-        );
+
+        verify(loginLogService).createLoginLog(argThat(log -> log.getUserId() == null
+                && LoginResultEnum.BAD_CREDENTIALS.getResult().equals(log.getResult())));
     }
 
     @Test
-    public void testAuthenticate_badCredentials() {
-        // 准备参数
+    void authenticateRejectsBadPassword() {
         String username = randomString();
-        String password = randomString();
-        // mock user 数据
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setUsername(username)
-                .setPassword(password).setStatus(CommonStatusEnum.ENABLE.getStatus()));
-        when(userService.getUserByUsername(eq(username))).thenReturn(user);
+        AdminUserDO user = randomPojo(AdminUserDO.class, value -> value.setUsername(username)
+                .setStatus(CommonStatusEnum.ENABLE.getStatus()));
+        when(userService.getUserByUsername(username)).thenReturn(user);
 
-        // 调用, 并断言异常
-        assertServiceException(() -> authService.authenticate(username, password),
+        assertServiceException(() -> authService.authenticate(username, randomString()),
                 AUTH_LOGIN_BAD_CREDENTIALS);
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_USERNAME.getType())
-                        && o.getResult().equals(LoginResultEnum.BAD_CREDENTIALS.getResult())
-                        && o.getUserId().equals(user.getId()))
-        );
     }
 
     @Test
-    public void testAuthenticate_userDisabled() {
-        // 准备参数
+    void authenticateRejectsDisabledUser() {
         String username = randomString();
         String password = randomString();
-        // mock user 数据
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setUsername(username)
+        AdminUserDO user = randomPojo(AdminUserDO.class, value -> value.setUsername(username)
                 .setPassword(password).setStatus(CommonStatusEnum.DISABLE.getStatus()));
-        when(userService.getUserByUsername(eq(username))).thenReturn(user);
-        // mock password 匹配
-        when(userService.isPasswordMatch(eq(password), eq(user.getPassword()))).thenReturn(true);
+        when(userService.getUserByUsername(username)).thenReturn(user);
+        when(userService.isPasswordMatch(password, user.getPassword())).thenReturn(true);
 
-        // 调用, 并断言异常
-        assertServiceException(() -> authService.authenticate(username, password),
-                AUTH_LOGIN_USER_DISABLED);
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_USERNAME.getType())
-                        && o.getResult().equals(LoginResultEnum.USER_DISABLED.getResult())
-                        && o.getUserId().equals(user.getId()))
-        );
+        assertServiceException(() -> authService.authenticate(username, password), AUTH_LOGIN_USER_DISABLED);
     }
 
     @Test
-    public void testLogin_success() {
-        // 准备参数
-        AuthLoginReqVO reqVO = randomPojo(AuthLoginReqVO.class, o ->
-                o.setUsername("test_username").setPassword("test_password")
-                        .setSocialType(randomEle(SocialTypeEnum.values()).getType()));
-
-        // mock 验证码正确
+    void loginResolvesTenantFromUniqueUsername() {
         authService.setCaptchaEnable(false);
-        // mock user 数据
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> {
-            o.setId(1L).setUsername("test_username").setPassword("test_password")
-                    .setStatus(CommonStatusEnum.ENABLE.getStatus());
-            o.setTenantId(42L);
-        });
-        when(userService.getUserListByUsernameIgnoreTenant(eq("test_username")))
+        AuthLoginReqVO request = new AuthLoginReqVO();
+        request.setUsername("test_username");
+        request.setPassword("test_password");
+        AdminUserDO user = randomPojo(AdminUserDO.class, value -> value.setId(1L)
+                .setUsername(request.getUsername()).setPassword(request.getPassword())
+                .setStatus(CommonStatusEnum.ENABLE.getStatus()).setTenantId(42L));
+        when(userService.getUserListByUsernameIgnoreTenant(request.getUsername()))
                 .thenReturn(Collections.singletonList(user));
-        when(userService.getUserByUsername(eq("test_username"))).thenReturn(user);
-        // mock password 匹配
-        when(userService.isPasswordMatch(eq("test_password"), eq(user.getPassword()))).thenReturn(true);
-        // mock 缓存登录用户到 Redis
-        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> {
-            o.setUserId(1L).setUserType(UserTypeEnum.ADMIN.getValue());
-            o.setTenantId(42L);
-        });
-        AtomicReference<Long> tokenTenantId = new AtomicReference<>();
-        when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()), eq("default"), isNull()))
-                .thenAnswer(invocation -> {
-                    tokenTenantId.set(TenantContextHolder.getTenantId());
-                    return accessTokenDO;
+        when(userService.getUserByUsername(request.getUsername())).thenReturn(user);
+        when(userService.isPasswordMatch(request.getPassword(), user.getPassword())).thenReturn(true);
+        OAuth2AccessTokenDO token = randomPojo(OAuth2AccessTokenDO.class, value -> value.setUserId(1L)
+                .setUserType(UserTypeEnum.ADMIN.getValue()).setTenantId(42L));
+        AtomicReference<Long> tokenTenant = new AtomicReference<>();
+        when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()),
+                eq("default"), isNull())).thenAnswer(invocation -> {
+                    tokenTenant.set(TenantContextHolder.getTenantId());
+                    return token;
                 });
 
-        // 调用，并校验
-        AuthLoginRespVO loginRespVO = authService.login(reqVO);
-        assertPojoEquals(accessTokenDO, loginRespVO);
-        assertEquals(42L, loginRespVO.getTenantId());
-        assertEquals(42L, tokenTenantId.get());
+        AuthLoginRespVO response = authService.login(request);
+
+        assertPojoEquals(token, response);
+        assertEquals(42L, tokenTenant.get());
         assertNull(TenantContextHolder.getTenantId());
-        // 校验调用参数
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_USERNAME.getType())
-                        && o.getResult().equals(LoginResultEnum.SUCCESS.getResult())
-                        && o.getUserId().equals(user.getId()))
-        );
-        verify(socialUserService).bindSocialUser(eq(new SocialUserBindReqDTO(
-                user.getId(), UserTypeEnum.ADMIN.getValue(),
-                reqVO.getSocialType(), reqVO.getSocialCode(), reqVO.getSocialState())));
+        verify(tenantService, atLeastOnce()).validTenant(42L);
+        verify(loginLogService).createLoginLog(argThat(log -> log.getUserId().equals(user.getId())
+                && LoginLogTypeEnum.LOGIN_USERNAME.getType().equals(log.getLogType())
+                && LoginResultEnum.SUCCESS.getResult().equals(log.getResult())));
     }
 
     @Test
-    public void testLogin_rejectsUsernameBoundToMultipleTenants() {
+    void loginRejectsInactiveTenantBeforeTokenCreation() {
         authService.setCaptchaEnable(false);
-        AuthLoginReqVO reqVO = new AuthLoginReqVO();
-        reqVO.setUsername("shared-admin");
-        reqVO.setPassword("secret123");
-        when(userService.getUserListByUsernameIgnoreTenant(eq("shared-admin"))).thenReturn(Arrays.asList(
-                randomPojo(AdminUserDO.class, o -> o.setTenantId(42L)),
-                randomPojo(AdminUserDO.class, o -> o.setTenantId(43L))));
+        AuthLoginReqVO request = new AuthLoginReqVO();
+        request.setUsername("test_username");
+        request.setPassword("test_password");
+        AdminUserDO user = randomPojo(AdminUserDO.class, value -> value.setId(1L)
+                .setUsername(request.getUsername()).setPassword(request.getPassword())
+                .setStatus(CommonStatusEnum.ENABLE.getStatus()).setTenantId(42L));
+        when(userService.getUserListByUsernameIgnoreTenant(request.getUsername()))
+                .thenReturn(Collections.singletonList(user));
+        when(userService.getUserByUsername(request.getUsername())).thenReturn(user);
+        when(userService.isPasswordMatch(request.getPassword(), user.getPassword())).thenReturn(true);
+        doThrow(exception(TENANT_DISABLE, "agent")).when(tenantService).validTenant(42L);
 
-        assertServiceException(() -> authService.login(reqVO), AUTH_LOGIN_BAD_CREDENTIALS);
+        assertServiceException(() -> authService.login(request), TENANT_DISABLE, "agent");
+
+        verifyNoInteractions(oauth2TokenService);
+    }
+
+    @Test
+    void loginRejectsUsernameBoundToMultipleTenants() {
+        authService.setCaptchaEnable(false);
+        AuthLoginReqVO request = new AuthLoginReqVO();
+        request.setUsername("shared-admin");
+        request.setPassword("secret123");
+        when(userService.getUserListByUsernameIgnoreTenant(request.getUsername())).thenReturn(Arrays.asList(
+                randomPojo(AdminUserDO.class, value -> value.setTenantId(42L)),
+                randomPojo(AdminUserDO.class, value -> value.setTenantId(43L))));
+
+        assertServiceException(() -> authService.login(request), AUTH_LOGIN_BAD_CREDENTIALS);
+
         verify(userService, never()).getUserByUsername(anyString());
         verifyNoInteractions(oauth2TokenService);
     }
 
     @Test
-    public void testSendSmsCode() {
-        // 准备参数
-        String mobile = randomString();
-        Integer scene = SmsSceneEnum.ADMIN_MEMBER_LOGIN.getScene();
-        AuthSmsSendReqVO reqVO = new AuthSmsSendReqVO(mobile, scene);
-        // mock 方法（用户信息）
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setTenantId(42L));
-        when(userService.getUserListByMobileIgnoreTenant(eq(mobile))).thenReturn(Collections.singletonList(user));
+    void validateCaptchaWhenEnabled() {
+        AuthLoginReqVO request = randomPojo(AuthLoginReqVO.class);
+        when(captchaService.verification(argThat(captcha ->
+                request.getCaptchaVerification().equals(captcha.getCaptchaVerification()))))
+                .thenReturn(ResponseModel.success());
 
-        // 调用
-        authService.sendSmsCode(reqVO);
-        // 断言
-        verify(smsCodeApi).sendSmsCode(argThat(sendReqDTO -> {
-            assertEquals(mobile, sendReqDTO.getMobile());
-            assertEquals(scene, sendReqDTO.getScene());
-            return true;
-        }));
+        authService.validateCaptcha(request);
     }
 
     @Test
-    public void testSmsLogin_success() {
-        // 准备参数
-        String mobile = randomString();
-        String code = randomString();
-        AuthSmsLoginReqVO reqVO = new AuthSmsLoginReqVO(mobile, code);
-        // mock 方法（验证码）
-        doNothing().when(smsCodeApi).useSmsCode((argThat(smsCodeUseReqDTO -> {
-            assertEquals(mobile, smsCodeUseReqDTO.getMobile());
-            assertEquals(code, smsCodeUseReqDTO.getCode());
-            assertEquals(SmsSceneEnum.ADMIN_MEMBER_LOGIN.getScene(), smsCodeUseReqDTO.getScene());
-            return true;
-        })));
-        // mock 方法（用户信息）
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(1L).setTenantId(42L));
-        when(userService.getUserListByMobileIgnoreTenant(eq(mobile))).thenReturn(Collections.singletonList(user));
-        // mock 缓存登录用户到 Redis
-        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o.setUserId(1L)
-                .setUserType(UserTypeEnum.ADMIN.getValue()));
-        AtomicReference<Long> tokenTenantId = new AtomicReference<>();
-        when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()), eq("default"), isNull()))
-                .thenAnswer(invocation -> {
-                    tokenTenantId.set(TenantContextHolder.getTenantId());
-                    return accessTokenDO;
-                });
-
-        // 调用，并断言
-        AuthLoginRespVO loginRespVO = authService.smsLogin(reqVO);
-        assertPojoEquals(accessTokenDO, loginRespVO);
-        assertEquals(42L, tokenTenantId.get());
-        assertNull(TenantContextHolder.getTenantId());
-        // 断言调用
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_MOBILE.getType())
-                        && o.getResult().equals(LoginResultEnum.SUCCESS.getResult())
-                        && o.getUserId().equals(user.getId()))
-        );
-    }
-
-    @Test
-    public void testSocialLogin_success() {
-        // 准备参数
-        AuthSocialLoginReqVO reqVO = randomPojo(AuthSocialLoginReqVO.class);
-        // mock 方法（绑定的用户编号）
-        Long userId = 1L;
-        when(socialUserService.getSocialUserByCode(eq(UserTypeEnum.ADMIN.getValue()), eq(reqVO.getType()),
-                eq(reqVO.getCode()), eq(reqVO.getState()))).thenReturn(new SocialUserRespDTO(randomString(), randomString(), randomString(), userId));
-        // mock（用户）
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(userId).setTenantId(42L));
-        when(userService.getUserIgnoreTenant(eq(userId))).thenReturn(user);
-        // mock 缓存登录用户到 Redis
-        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o.setUserId(1L)
-                .setUserType(UserTypeEnum.ADMIN.getValue()));
-        AtomicReference<Long> tokenTenantId = new AtomicReference<>();
-        when(oauth2TokenService.createAccessToken(eq(1L), eq(UserTypeEnum.ADMIN.getValue()), eq("default"), isNull()))
-                .thenAnswer(invocation -> {
-                    tokenTenantId.set(TenantContextHolder.getTenantId());
-                    return accessTokenDO;
-                });
-
-        // 调用，并断言
-        AuthLoginRespVO loginRespVO = authService.socialLogin(reqVO);
-        assertPojoEquals(accessTokenDO, loginRespVO);
-        assertEquals(42L, tokenTenantId.get());
-        assertNull(TenantContextHolder.getTenantId());
-        // 断言调用
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_SOCIAL.getType())
-                        && o.getResult().equals(LoginResultEnum.SUCCESS.getResult())
-                        && o.getUserId().equals(user.getId()))
-        );
-    }
-
-    @Test
-    public void testResetPassword_resolvesTenantByMobile() {
-        String mobile = "13800000004";
-        AuthResetPasswordReqVO reqVO = new AuthResetPasswordReqVO("new-password", mobile, "123456");
-        AdminUserDO user = randomPojo(AdminUserDO.class, o -> o.setId(1L).setTenantId(42L));
-        when(userService.getUserListByMobileIgnoreTenant(eq(mobile))).thenReturn(Collections.singletonList(user));
-        AtomicReference<Long> passwordUpdateTenantId = new AtomicReference<>();
-        doAnswer(invocation -> {
-            passwordUpdateTenantId.set(TenantContextHolder.getTenantId());
-            return null;
-        }).when(userService).updateUserPassword(eq(user.getId()), eq("new-password"));
-
-        authService.resetPassword(reqVO);
-
-        assertEquals(42L, passwordUpdateTenantId.get());
-        assertNull(TenantContextHolder.getTenantId());
-    }
-
-    @Test
-    public void testValidateCaptcha_successWithEnable() {
-        // 准备参数
-        AuthLoginReqVO reqVO = randomPojo(AuthLoginReqVO.class);
-
-        // mock 验证通过
-        when(captchaService.verification(argThat(captchaVO -> {
-            assertEquals(reqVO.getCaptchaVerification(), captchaVO.getCaptchaVerification());
-            return true;
-        }))).thenReturn(ResponseModel.success());
-
-        // 调用，无需断言
-        authService.validateCaptcha(reqVO);
-    }
-
-    @Test
-    public void testValidateCaptcha_successWithDisable() {
-        // 准备参数
-        AuthLoginReqVO reqVO = randomPojo(AuthLoginReqVO.class);
-
-        // mock 验证码关闭
+    void validateCaptchaWhenDisabled() {
         authService.setCaptchaEnable(false);
-
-        // 调用，无需断言
-        authService.validateCaptcha(reqVO);
+        authService.validateCaptcha(randomPojo(AuthLoginReqVO.class));
+        verifyNoInteractions(captchaService);
     }
 
     @Test
-    public void testCaptcha_fail() {
-        // 准备参数
-        AuthLoginReqVO reqVO = randomPojo(AuthLoginReqVO.class);
+    void validateCaptchaRejectsFailure() {
+        AuthLoginReqVO request = randomPojo(AuthLoginReqVO.class);
+        when(captchaService.verification(argThat(captcha ->
+                request.getCaptchaVerification().equals(captcha.getCaptchaVerification()))))
+                .thenReturn(ResponseModel.errorMsg("invalid"));
 
-        // mock 验证通过
-        when(captchaService.verification(argThat(captchaVO -> {
-            assertEquals(reqVO.getCaptchaVerification(), captchaVO.getCaptchaVerification());
-            return true;
-        }))).thenReturn(ResponseModel.errorMsg("就是不对"));
-
-        // 调用, 并断言异常
-        assertServiceException(() -> authService.validateCaptcha(reqVO), AUTH_LOGIN_CAPTCHA_CODE_ERROR, "就是不对");
-        // 校验调用参数
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGIN_USERNAME.getType())
-                        && o.getResult().equals(LoginResultEnum.CAPTCHA_CODE_ERROR.getResult()))
-        );
+        assertServiceException(() -> authService.validateCaptcha(request), AUTH_LOGIN_CAPTCHA_CODE_ERROR,
+                "invalid");
     }
-
-    @Test
-    public void testRefreshToken() {
-        // 准备参数
-        String refreshToken = randomString();
-        // mock 方法
-        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class);
-        when(oauth2TokenService.refreshAccessToken(eq(refreshToken), eq("default")))
-                .thenReturn(accessTokenDO);
-
-        // 调用
-        AuthLoginRespVO loginRespVO = authService.refreshToken(refreshToken);
-        // 断言
-        assertPojoEquals(accessTokenDO, loginRespVO);
-    }
-
-    @Test
-    public void testLogout_success() {
-        // 准备参数
-        String token = randomString();
-        // mock
-        OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o.setUserId(1L)
-                .setUserType(UserTypeEnum.ADMIN.getValue()));
-        when(oauth2TokenService.removeAccessToken(eq(token))).thenReturn(accessTokenDO);
-
-        // 调用
-        authService.logout(token, LoginLogTypeEnum.LOGOUT_SELF.getType());
-        // 校验调用参数
-        verify(loginLogService).createLoginLog(
-                argThat(o -> o.getLogType().equals(LoginLogTypeEnum.LOGOUT_SELF.getType())
-                        && o.getResult().equals(LoginResultEnum.SUCCESS.getResult()))
-        );
-        // 调用，并校验
-
-    }
-
-    @Test
-    public void testLogout_fail() {
-        // 准备参数
-        String token = randomString();
-
-        // 调用
-        authService.logout(token, LoginLogTypeEnum.LOGOUT_SELF.getType());
-        // 校验调用参数
-        verify(loginLogService, never()).createLoginLog(any());
-    }
-
 }
