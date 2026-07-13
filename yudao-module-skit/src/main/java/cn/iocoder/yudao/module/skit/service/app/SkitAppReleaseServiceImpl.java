@@ -60,15 +60,7 @@ public class SkitAppReleaseServiceImpl implements SkitAppReleaseService {
     @Override
     public ProfileView getProfile(Long tenantId) {
         SkitAppReleaseProfileDO profile = profileMapper.selectByTenantId(tenantId);
-        if (profile == null) {
-            SkitAgentDO agent = agentMapper.selectByTenantId(tenantId);
-            if (agent == null) {
-                return null;
-            }
-            ensureProfile(tenantId, agent.getTenantCode());
-            profile = profileMapper.selectByTenantId(tenantId);
-        }
-        return toView(profile);
+        return profile == null ? null : toView(profile);
     }
 
     @Override

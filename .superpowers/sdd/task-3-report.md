@@ -15,6 +15,7 @@ Commit: this report is included in the Task 3 commit; the resulting hash is retu
 ## Verification
 
 - Tests: PASS — offline compile of all Skit main sources plus Task 3 system OAuth sources, focused runner 56/56, and `git diff --check`.
+- Independent review found and closed two App-release lifecycle gaps: archived writes now use the operational resolver, while archived reads use the audit resolver and no longer lazily insert a missing profile. The focused controller/App-release regression runner passes 21/21 on Java 8 bytecode targets.
 - The focused Maven command was attempted offline first; Surefire could not start because the local cache lacks Netty native classifier artifacts.
 
 ## Concerns

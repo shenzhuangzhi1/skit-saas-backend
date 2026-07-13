@@ -128,7 +128,7 @@ public class SkitTenantBusinessController {
     public CommonResult<SkitAppReleaseService.ProfileView> getAppRelease(
             @RequestParam("tenantId") Long tenantId) {
         platformAdminGuard.check();
-        return success(appReleaseService.getProfile(tenantId));
+        return success(inAuditTenant(tenantId, () -> appReleaseService.getProfile(tenantId)));
     }
 
     @PutMapping("/app-release")
@@ -147,7 +147,7 @@ public class SkitTenantBusinessController {
         profile.setNativeVersion(reqVO.getNativeVersion());
         profile.setNativePackage(reqVO.getNativePackage());
         profile.setStatus(reqVO.getStatus());
-        return success(appReleaseService.saveProfile(profile));
+        return success(inTargetTenant(reqVO.getTenantId(), () -> appReleaseService.saveProfile(profile)));
     }
 
     @GetMapping("/commission-rules")

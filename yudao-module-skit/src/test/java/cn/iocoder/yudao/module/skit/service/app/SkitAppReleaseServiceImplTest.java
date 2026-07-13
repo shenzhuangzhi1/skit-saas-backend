@@ -15,6 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
@@ -98,6 +99,17 @@ class SkitAppReleaseServiceImplTest {
 
         assertServiceException(() -> releaseService.current("AGENT42", "2.2.0"), TENANT_DISABLE,
                 "disabled-agent");
+    }
+
+    @Test
+    void getProfileIsPureReadWhenProfileDoesNotExist() {
+        when(profileMapper.selectByTenantId(42L)).thenReturn(null);
+
+        assertNull(releaseService.getProfile(42L));
+
+        verify(profileMapper).selectByTenantId(42L);
+        verifyNoInteractions(agentMapper, tenantService);
+        verify(profileMapper, never()).insert(any(SkitAppReleaseProfileDO.class));
     }
 
     private SkitAppReleaseProfileDO enabledProfile() {

@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
+import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import cn.iocoder.yudao.module.skit.service.revenue.SkitRevenueService;
@@ -51,6 +52,8 @@ class SkitTenantBusinessControllerTest {
 
     @Mock
     private SkitAdAccountService adAccountService;
+    @Mock
+    private SkitAppReleaseService appReleaseService;
     @Mock
     private SkitCommissionService commissionService;
     @Mock
@@ -218,6 +221,46 @@ class SkitTenantBusinessControllerTest {
         verify(platformAdminGuard).check();
         verify(tenantService, never()).validTenant(20L);
         verify(revenueService).getLedgerPage(reqVO, null, null, null);
+    }
+
+    @Test
+    void platformAdminCanAuditArchivedAppReleaseWithoutCanonicalAvailabilityCheck() {
+        authenticate(1L);
+        TenantContextHolder.setTenantId(1L);
+        when(agentMapper.selectByTenantId(20L)).thenReturn(SkitAgentDO.builder()
+                .tenantId(20L).tenantCode("AGENT20").build());
+        when(tenantService.getTenant(20L)).thenReturn(new TenantDO().setId(20L)
+                .setStatus(CommonStatusEnum.DISABLE.getStatus()));
+        SkitAppReleaseService.ProfileView view = new SkitAppReleaseService.ProfileView();
+        view.setTenantId(20L);
+        when(appReleaseService.getProfile(20L)).thenAnswer(invocation -> {
+            assertEquals(20L, TenantContextHolder.getRequiredTenantId());
+            return view;
+        });
+
+        CommonResult<SkitAppReleaseService.ProfileView> response = controller.getAppRelease(20L);
+
+        assertEquals(20L, response.getData().getTenantId());
+        verify(tenantService, never()).validTenant(20L);
+        verify(appReleaseService).getProfile(20L);
+        assertEquals(1L, TenantContextHolder.getRequiredTenantId());
+    }
+
+    @Test
+    void platformAdminCannotSaveAppReleaseForArchivedAgent() {
+        authenticate(1L);
+        TenantContextHolder.setTenantId(1L);
+        doThrow(exception(TENANT_DISABLE, "archived-agent")).when(tenantService).validTenant(20L);
+        SkitTenantBusinessController.AppReleaseSaveReqVO reqVO =
+                new SkitTenantBusinessController.AppReleaseSaveReqVO();
+        reqVO.setTenantId(20L);
+        reqVO.setStatus(CommonStatusEnum.DISABLE.getStatus());
+
+        assertServiceException(() -> controller.saveAppRelease(reqVO), TENANT_DISABLE, "archived-agent");
+
+        verify(tenantService).validTenant(20L);
+        verifyNoInteractions(appReleaseService);
+        assertEquals(1L, TenantContextHolder.getRequiredTenantId());
     }
 
     @Test
