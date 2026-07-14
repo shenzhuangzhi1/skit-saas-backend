@@ -7,16 +7,27 @@ set -euo pipefail
 
 cd "${DEPLOY_PATH}"
 
+persisted_credential_key=""
+persisted_credential_key_id=""
 set -a
 if [ -f .env ]; then
   # shellcheck disable=SC1091
   . ./.env
+  persisted_credential_key="${SKIT_AD_CREDENTIAL_KEY:-}"
+  persisted_credential_key_id="${SKIT_AD_CREDENTIAL_KEY_ID:-}"
 fi
 if [ -f server.env ]; then
   # shellcheck disable=SC1091
   . ./server.env
 fi
 set +a
+
+# The persisted server-side .env is the source of truth after first activation. A newly uploaded
+# server.env may seed a missing key, but it must not silently rotate an existing key/key-id pair.
+if [ -n "${persisted_credential_key}" ]; then
+  SKIT_AD_CREDENTIAL_KEY="${persisted_credential_key}"
+  SKIT_AD_CREDENTIAL_KEY_ID="${persisted_credential_key_id:-primary}"
+fi
 
 upsert_env() {
   key="$1"
@@ -112,8 +123,9 @@ if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
   fi
 fi
 
-# Generate the advertising credential key once, then reuse the persisted value on every release.
-# An operator may inject SKIT_AD_ENCRYPTION_KEY before the first deployment to use a managed Secret.
+# Generate the legacy advertising field-encryption key once, then reuse the persisted value on
+# every release. An operator may inject the key before the first deployment to use a managed
+# Secret.
 if [ -z "${SKIT_AD_ENCRYPTION_KEY:-}" ]; then
   if command -v openssl >/dev/null 2>&1; then
     SKIT_AD_ENCRYPTION_KEY="$(openssl rand -hex 16)"
@@ -132,6 +144,42 @@ if [[ ! "${SKIT_AD_ENCRYPTION_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
   echo "SKIT_AD_ENCRYPTION_KEY contains unsafe characters for server-side environment persistence."
   exit 1
 fi
+
+# Credential envelopes use a dedicated key so their lifecycle and rotation are independent from
+# the legacy encrypted account fields. Generate it only when no persisted or injected value exists.
+if [ -z "${SKIT_AD_CREDENTIAL_KEY:-}" ]; then
+  while :; do
+    if command -v openssl >/dev/null 2>&1; then
+      SKIT_AD_CREDENTIAL_KEY="$(openssl rand -hex 16)"
+    else
+      SKIT_AD_CREDENTIAL_KEY="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    fi
+    if [ "${SKIT_AD_CREDENTIAL_KEY}" != "${SKIT_AD_ENCRYPTION_KEY}" ]; then
+      break
+    fi
+  done
+fi
+case "${#SKIT_AD_CREDENTIAL_KEY}" in
+  16|24|32) ;;
+  *)
+    echo "SKIT_AD_CREDENTIAL_KEY must contain exactly 16, 24, or 32 single-byte characters."
+    exit 1
+    ;;
+esac
+if [[ ! "${SKIT_AD_CREDENTIAL_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+  echo "SKIT_AD_CREDENTIAL_KEY contains unsafe characters for server-side environment persistence."
+  exit 1
+fi
+if [ "${SKIT_AD_CREDENTIAL_KEY}" = "${SKIT_AD_ENCRYPTION_KEY}" ]; then
+  echo "SKIT_AD_CREDENTIAL_KEY must not reuse SKIT_AD_ENCRYPTION_KEY."
+  exit 1
+fi
+
+SKIT_AD_CREDENTIAL_KEY_ID="${SKIT_AD_CREDENTIAL_KEY_ID:-primary}"
+if [[ ! "${SKIT_AD_CREDENTIAL_KEY_ID}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+  echo "SKIT_AD_CREDENTIAL_KEY_ID must contain 1 to 64 safe identifier characters."
+  exit 1
+fi
 case "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" in
   0|1) ;;
   *)
@@ -142,6 +190,8 @@ esac
 
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
 upsert_env SKIT_AD_ENCRYPTION_KEY "${SKIT_AD_ENCRYPTION_KEY}"
+upsert_env SKIT_AD_CREDENTIAL_KEY "${SKIT_AD_CREDENTIAL_KEY}"
+upsert_env SKIT_AD_CREDENTIAL_KEY_ID "${SKIT_AD_CREDENTIAL_KEY_ID}"
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"

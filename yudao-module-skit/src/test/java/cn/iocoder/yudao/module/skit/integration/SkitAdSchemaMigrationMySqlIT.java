@@ -4,13 +4,18 @@ import cn.iocoder.yudao.module.skit.framework.schema.SkitSchemaInitializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
 
@@ -89,6 +94,113 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
         assertEquals("NON_SETTLEABLE", value("balance_bucket", "skit_commission_ledger", 701L));
         assertEquals(0, ((Number) value("revision_no", "skit_commission_ledger", 701L)).intValue());
         assertEquals(0, ((Number) value("status", "skit_commission_ledger", 701L)).intValue());
+    }
+
+    @Test
+    void accountAndSourceScopedRevenueIdsCoexistButExactDuplicatesRemainIdempotent() {
+        jdbc().update("INSERT INTO skit_ad_account "
+                        + "(id,tenant_id,provider,account_name,account_id,app_id,app_key,status) "
+                        + "VALUES (94006,101,'MINTEGRAL','second verified account',"
+                        + "'second-verified-account','second-verified-app','',1)");
+        insertVerifiedRevenue(201L, "TAKU", "SERVER_REWARD", "shared-provider-event");
+
+        assertDoesNotThrow(() -> insertVerifiedRevenue(
+                201L, "TAKU", "IMPRESSION_CALLBACK", "shared-provider-event"));
+        assertDoesNotThrow(() -> insertVerifiedRevenue(
+                94006L, "MINTEGRAL", "SERVER_REWARD", "shared-provider-event"));
+        assertThrows(DataAccessException.class,
+                () -> insertVerifiedRevenue(201L, "TAKU", "SERVER_REWARD", "shared-provider-event"));
+        assertThrows(DataAccessException.class,
+                () -> insertVerifiedRevenue(94006L, "MINTEGRAL", "SERVER_REWARD", "shared-provider-event"));
+    }
+
+    @Test
+    void legacyRevenueAndLedgerBusinessFactsAreAppendOnly() {
+        installSameTenantMutationTargets();
+
+        assertLegacyMutationRejected("skit_ad_revenue_event", 601L, "legacy revenue facts are immutable",
+                "UPDATE skit_ad_revenue_event SET gross_amount=99.00000000,source_amount_units=99,"
+                        + "estimated_amount_units=99,reconciled_amount_units=99,amount_scale=2,"
+                        + "source_currency='USD' WHERE id=601");
+        assertLegacyMutationRejected("skit_ad_revenue_event", 601L, "legacy revenue facts are immutable",
+                "UPDATE skit_ad_revenue_event SET ad_account_id=94002,source_member_id=94003,provider='PANGLE',"
+                        + "placement_id='tampered-placement',external_event_id='tampered-event',"
+                        + "policy_snapshot_id=94004 WHERE id=601");
+        assertLegacyMutationRejected("skit_ad_revenue_event", 601L, "legacy revenue facts are immutable",
+                "UPDATE skit_ad_revenue_event SET occurred_time=DATE_ADD(occurred_time,INTERVAL 1 DAY),"
+                        + "completed=b'0',mock=b'1',rule_version=2,raw_data='tampered',deleted=b'1' WHERE id=601");
+
+        assertLegacyMutationRejected("skit_commission_ledger", 701L, "legacy ledger facts are immutable",
+                "UPDATE skit_commission_ledger SET gross_amount=99.00000000,rate_bps=9999,"
+                        + "amount=98.00000000,currency='USD',gross_amount_units=99,amount_units=98,"
+                        + "amount_scale=2 WHERE id=701");
+        assertLegacyMutationRejected("skit_commission_ledger", 701L, "legacy ledger facts are immutable",
+                "UPDATE skit_commission_ledger SET event_id=94005,beneficiary_member_id=94003,level_no=2,"
+                        + "rule_version=2,policy_snapshot_id=94004 WHERE id=701");
+        assertLegacyMutationRejected("skit_commission_ledger", 701L, "legacy ledger facts are immutable",
+                "UPDATE skit_commission_ledger SET deleted=b'1' WHERE id=701");
+    }
+
+    @Test
+    void inviteCodeOwnershipAndTerminalHistoryAreImmutable() {
+        Long agentRegistryId = jdbc().queryForObject("SELECT id FROM skit_invite_code_registry "
+                + "WHERE owner_type='AGENT' AND agent_id=101", Long.class);
+        Long memberRegistryId = jdbc().queryForObject("SELECT id FROM skit_invite_code_registry "
+                + "WHERE owner_type='MEMBER' AND member_id=301", Long.class);
+
+        List<String> immutableMutations = Arrays.asList(
+                "id=99001",
+                "tenant_id=102",
+                "code='TAMPERED101'",
+                "owner_type='MEMBER'",
+                "agent_id=NULL",
+                "member_id=301",
+                "creator='tampered'",
+                "create_time=DATE_ADD(create_time,INTERVAL 1 DAY)",
+                "deleted=b'1'");
+        for (String mutation : immutableMutations) {
+            assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                    "invite code ownership is immutable",
+                    "UPDATE skit_invite_code_registry SET " + mutation + " WHERE id=" + agentRegistryId);
+        }
+
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET rotated_at='2026-07-14 00:00:00' "
+                        + "WHERE id=" + agentRegistryId);
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET status='ROTATED' WHERE id=" + agentRegistryId);
+
+        assertEquals(1, jdbc().update("UPDATE skit_invite_code_registry "
+                + "SET status='ROTATED',rotated_at='2026-07-14 00:00:00' WHERE id=?", agentRegistryId));
+        assertEquals("ROTATED", value("status", "skit_invite_code_registry", agentRegistryId));
+        assertEquals(1, jdbc().update("UPDATE skit_invite_code_registry "
+                + "SET updater='rotation-audit' WHERE id=?", agentRegistryId));
+
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET status='ACTIVE',rotated_at=NULL "
+                        + "WHERE id=" + agentRegistryId);
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET status='DISABLED' WHERE id=" + agentRegistryId);
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET rotated_at='2026-07-15 00:00:00' "
+                        + "WHERE id=" + agentRegistryId);
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET rotated_at=NULL WHERE id=" + agentRegistryId);
+
+        assertEquals(1, jdbc().update("UPDATE skit_invite_code_registry "
+                + "SET status='DISABLED',rotated_at='2026-07-14 00:00:00' WHERE id=?", memberRegistryId));
+        assertMutationRejected("skit_invite_code_registry", memberRegistryId,
+                "invite code lifecycle is monotonic",
+                "UPDATE skit_invite_code_registry SET status='ROTATED' WHERE id=" + memberRegistryId);
+        assertMutationRejected("skit_invite_code_registry", agentRegistryId,
+                "invite code registry rows cannot be deleted",
+                "DELETE FROM skit_invite_code_registry WHERE id=" + agentRegistryId);
     }
 
     @Test
@@ -247,6 +359,54 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
 
     private Object value(String column, String table, long id) {
         return jdbc().queryForObject("SELECT `" + column + "` FROM `" + table + "` WHERE id=?", Object.class, id);
+    }
+
+    private void insertVerifiedRevenue(long adAccountId, String provider,
+                                       String sourceType, String externalEventId) {
+        jdbc().update("INSERT INTO skit_ad_revenue_event "
+                        + "(tenant_id,ad_account_id,provider,placement_id,external_event_id,source_member_id,"
+                        + "gross_amount,occurred_time,completed,mock,status,source_type,legacy_unverified) "
+                        + "VALUES (101,?,?,'verified-placement',?,301,1.00000000,CURRENT_TIMESTAMP,"
+                        + "b'1',b'0',0,?,b'0')",
+                adAccountId, provider, externalEventId, sourceType);
+    }
+
+    private void installSameTenantMutationTargets() {
+        jdbc().update("INSERT INTO skit_ad_account "
+                        + "(id,tenant_id,provider,account_name,account_id,app_id,app_key,status) "
+                        + "VALUES (94002,101,'PANGLE','mutation target','mutation-target','mutation-app','',1)");
+        jdbc().update("INSERT INTO skit_member "
+                        + "(id,tenant_id,mobile,password,nickname,invite_code,depth,status) "
+                        + "VALUES (94003,101,'13900009403','hash','mutation target','MUTATION94003',1,0)");
+        jdbc().update("INSERT INTO skit_ad_policy_snapshot "
+                        + "(id,tenant_id,plan_id,source_member_id,rule_version,snapshot_schema_version,"
+                        + "snapshot_json,snapshot_hash,policy_snapshot_at) "
+                        + "VALUES (94004,101,401,94003,1,1,'{}',UNHEX(REPEAT('42',32)),CURRENT_TIMESTAMP)");
+        jdbc().update("INSERT INTO skit_ad_revenue_event "
+                        + "(id,tenant_id,ad_account_id,provider,placement_id,external_event_id,source_member_id,"
+                        + "gross_amount,occurred_time,completed,mock,status,source_type,policy_snapshot_id,"
+                        + "legacy_unverified) VALUES (94005,101,94002,'PANGLE','mutation-target','mutation-target',"
+                        + "94003,1.00000000,CURRENT_TIMESTAMP,b'1',b'0',0,'SERVER_REWARD',94004,b'0')");
+    }
+
+    private void assertLegacyMutationRejected(String table, long id, String triggerMessage, String sql) {
+        assertMutationRejected(table, id, triggerMessage, sql);
+    }
+
+    private void assertMutationRejected(String table, long id, String triggerMessage, String sql) {
+        Map<String, Object> before = jdbc().queryForMap("SELECT * FROM `" + table + "` WHERE id=?", id);
+        DataAccessException exception = assertThrows(DataAccessException.class, () -> {
+            TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource()));
+            transaction.executeWithoutResult(status -> {
+                try {
+                    jdbc().update(sql);
+                } finally {
+                    status.setRollbackOnly();
+                }
+            });
+        });
+        assertTrue(exception.getMessage().contains(triggerMessage), exception.getMessage());
+        assertEquals(before, jdbc().queryForMap("SELECT * FROM `" + table + "` WHERE id=?", id));
     }
 
     private void assertCompoundForeignKey(String[] expected) {

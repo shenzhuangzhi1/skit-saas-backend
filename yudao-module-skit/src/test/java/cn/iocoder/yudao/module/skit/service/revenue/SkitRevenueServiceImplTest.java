@@ -90,7 +90,8 @@ class SkitRevenueServiceImplTest {
     @Test
     void reportCreatesVersionedMemberAndAgentLedgers() {
         mockCurrentMemberAndAccount();
-        when(eventMapper.selectByProviderAndExternalEventId(PROVIDER_PANGLE, "event-100")).thenReturn(null);
+        when(eventMapper.selectByAccountSourceAndExternalEventId(
+                ACCOUNT_ID, REVENUE_SOURCE_LEGACY_CLIENT, "event-100")).thenReturn(null);
         when(adAccountService.getEnabledPublicConfig(PROVIDER_PANGLE)).thenReturn(publicConfig());
         when(commissionService.getActiveSnapshot()).thenReturn(new SkitCommissionService.PlanSnapshot(
                 3L, 5, Arrays.asList(new SkitCommissionService.RuleSnapshot(0, 2500),
@@ -137,7 +138,8 @@ class SkitRevenueServiceImplTest {
     @Test
     void legacyIgnoredRowIsAlsoUnverifiedAndPermanentlyNonsettleable() {
         mockCurrentMemberAndAccount();
-        when(eventMapper.selectByProviderAndExternalEventId(PROVIDER_PANGLE, "event-ignored")).thenReturn(null);
+        when(eventMapper.selectByAccountSourceAndExternalEventId(
+                ACCOUNT_ID, REVENUE_SOURCE_LEGACY_CLIENT, "event-ignored")).thenReturn(null);
         when(adAccountService.getEnabledPublicConfig(PROVIDER_PANGLE)).thenReturn(publicConfig());
         when(eventMapper.insert(any(SkitAdRevenueEventDO.class))).thenAnswer(invocation -> {
             SkitAdRevenueEventDO event = invocation.getArgument(0);
@@ -160,7 +162,8 @@ class SkitRevenueServiceImplTest {
     void replayOfSameEventReturnsExistingLedgerWithoutCreatingAnotherDistribution() {
         mockCurrentMemberAndAccount();
         SkitAdRevenueEventDO existing = existingEvent(ACCOUNT_ID);
-        when(eventMapper.selectByProviderAndExternalEventId(PROVIDER_PANGLE, "event-100"))
+        when(eventMapper.selectByAccountSourceAndExternalEventId(
+                ACCOUNT_ID, REVENUE_SOURCE_LEGACY_CLIENT, "event-100"))
                 .thenReturn(existing);
         when(ledgerMapper.selectList(any(SFunction.class), eq(EVENT_ID))).thenReturn(Collections.singletonList(
                 SkitCommissionLedgerDO.builder().eventId(EVENT_ID).beneficiaryType(BENEFICIARY_MEMBER)
@@ -178,9 +181,10 @@ class SkitRevenueServiceImplTest {
     }
 
     @Test
-    void sameExternalEventFromDifferentAgentAdAccountIsRejected() {
+    void accountScopedLookupReturningAnotherAccountFailsClosedAsCorruptData() {
         mockCurrentMemberAndAccount();
-        when(eventMapper.selectByProviderAndExternalEventId(PROVIDER_PANGLE, "event-100"))
+        when(eventMapper.selectByAccountSourceAndExternalEventId(
+                ACCOUNT_ID, REVENUE_SOURCE_LEGACY_CLIENT, "event-100"))
                 .thenReturn(existingEvent(999L));
 
         assertServiceException(() -> revenueService.report(SOURCE_MEMBER_ID, reportCommand("event-100")),

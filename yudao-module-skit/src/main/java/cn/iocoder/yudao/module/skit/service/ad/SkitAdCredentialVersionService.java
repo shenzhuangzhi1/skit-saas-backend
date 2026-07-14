@@ -5,6 +5,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Objects;
+import java.util.function.Function;
 
 public interface SkitAdCredentialVersionService {
 
@@ -121,13 +123,20 @@ public interface SkitAdCredentialVersionService {
         }
 
         @JsonIgnore
-        public synchronized byte[] consumeSecret() {
+        public synchronized <T> T withSecret(Function<byte[], T> operation) {
+            Objects.requireNonNull(operation, "operation");
             if (secret == null) {
                 throw new IllegalStateException("Reward secret has already been consumed");
             }
-            byte[] result = secret.clone();
-            close();
-            return result;
+            byte[] internal = secret;
+            byte[] working = internal.clone();
+            secret = null;
+            try {
+                return operation.apply(working);
+            } finally {
+                Arrays.fill(working, (byte) 0);
+                Arrays.fill(internal, (byte) 0);
+            }
         }
 
         @Override

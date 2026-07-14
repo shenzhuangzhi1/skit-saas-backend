@@ -9,6 +9,9 @@ import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoServi
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAesGcmCredentialCryptoService;
 import cn.iocoder.yudao.module.skit.integration.SkitMySqlIntegrationTestBase;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -165,7 +168,9 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
         SkitAdCredentialVersionService.ResolvedRewardSecret resolved = service.resolveRewardSecret(
                 tenantId, accountId, activeVersion, LocalDateTime.now(ZoneOffset.UTC).plusMinutes(5),
                 LocalDateTime.now(ZoneOffset.UTC));
-        assertTrue(new String(resolved.consumeSecret(), StandardCharsets.UTF_8).startsWith("reward-secret-"));
+        boolean validSecret = resolved.withSecret(secret ->
+                new String(secret, StandardCharsets.UTF_8).startsWith("reward-secret-"));
+        assertTrue(validSecret);
     }
 
     @Test
@@ -217,6 +222,37 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
                 + "WHERE tenant_id=? AND ad_account_id=? AND active=b'1'", Integer.class, tenantId, accountId));
         assertNull(jdbc().queryForObject("SELECT accept_until FROM skit_ad_reward_secret_version "
                 + "WHERE tenant_id=? AND ad_account_id=?", Timestamp.class, tenantId, accountId));
+    }
+
+    @Test
+    void credentialIdentityMaterialAndRowsAreImmutableAtTheDatabaseBoundary() {
+        long tenantId = 8701L;
+        long accountId = 8702L;
+        insertAccount(tenantId, accountId, "IMMUTABLE");
+        jdbc().update("INSERT INTO skit_ad_callback_key "
+                        + "(id,tenant_id,ad_account_id,key_version,callback_key_hash,active) "
+                        + "VALUES (8703,?,?,1,UNHEX(REPEAT('31',32)),b'1')",
+                tenantId, accountId);
+        jdbc().update("INSERT INTO skit_ad_reward_secret_version "
+                        + "(id,tenant_id,ad_account_id,secret_version,ciphertext,nonce,encryption_key_id,"
+                        + "envelope_version,active) VALUES (8704,?,?,1,?,?,'test-primary',1,b'1')",
+                tenantId, accountId, new byte[]{1, 2, 3}, new byte[12]);
+
+        assertCredentialMutationRejected("credential identity and material are immutable",
+                "UPDATE skit_ad_callback_key SET key_version=2,callback_key_hash=UNHEX(REPEAT('32',32)),"
+                        + "deleted=b'1' WHERE id=8703");
+        assertCredentialMutationRejected("credential identity and material are immutable",
+                "UPDATE skit_ad_reward_secret_version SET secret_version=2,ciphertext=X'040506',"
+                        + "nonce=UNHEX(REPEAT('01',12)),encryption_key_id='other',deleted=b'1' WHERE id=8704");
+        assertCredentialMutationRejected("credential version rows cannot be deleted",
+                "DELETE FROM skit_ad_callback_key WHERE id=8703");
+        assertCredentialMutationRejected("credential version rows cannot be deleted",
+                "DELETE FROM skit_ad_reward_secret_version WHERE id=8704");
+
+        assertEquals(1, jdbc().update("UPDATE skit_ad_callback_key SET active=b'0',"
+                + "accept_until=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 15 MINUTE) WHERE id=8703"));
+        assertCredentialMutationRejected("credential lifecycle is monotonic",
+                "UPDATE skit_ad_callback_key SET active=b'1',accept_until=NULL WHERE id=8703");
     }
 
     private SkitAdCredentialVersionServiceImpl service(SecureRandom random) {
@@ -333,6 +369,20 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
                         + "(id,tenant_id,provider,account_name,account_id,app_id,app_key,status) "
                         + "VALUES (?,?,?,?,?,?,?,1)",
                 accountId, tenantId, provider, provider, provider, provider, "");
+    }
+
+    private void assertCredentialMutationRejected(String triggerMessage, String sql) {
+        DataAccessException exception = assertThrows(DataAccessException.class, () -> {
+            TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource()));
+            transaction.executeWithoutResult(status -> {
+                try {
+                    jdbc().update(sql);
+                } finally {
+                    status.setRollbackOnly();
+                }
+            });
+        });
+        assertTrue(exception.getMessage().contains(triggerMessage), exception.getMessage());
     }
 
     private static LocalDateTime localDateTime(Timestamp timestamp) {

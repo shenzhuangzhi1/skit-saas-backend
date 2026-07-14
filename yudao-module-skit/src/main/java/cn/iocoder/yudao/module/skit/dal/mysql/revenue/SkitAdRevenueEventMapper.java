@@ -8,9 +8,11 @@ import org.apache.ibatis.annotations.Mapper;
 @Mapper
 public interface SkitAdRevenueEventMapper extends BaseMapperX<SkitAdRevenueEventDO> {
 
-    default SkitAdRevenueEventDO selectByProviderAndExternalEventId(String provider, String externalEventId) {
+    default SkitAdRevenueEventDO selectByAccountSourceAndExternalEventId(Long adAccountId, String sourceType,
+                                                                         String externalEventId) {
         return selectOne(new LambdaQueryWrapperX<SkitAdRevenueEventDO>()
-                .eq(SkitAdRevenueEventDO::getProvider, provider)
+                .eq(SkitAdRevenueEventDO::getAdAccountId, adAccountId)
+                .eq(SkitAdRevenueEventDO::getSourceType, sourceType)
                 .eq(SkitAdRevenueEventDO::getExternalEventId, externalEventId));
     }
 

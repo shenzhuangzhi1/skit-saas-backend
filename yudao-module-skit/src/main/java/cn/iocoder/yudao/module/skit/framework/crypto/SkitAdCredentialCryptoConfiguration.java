@@ -15,8 +15,17 @@ public class SkitAdCredentialCryptoConfiguration {
     @Bean
     public SkitAdCredentialCryptoService skitAdCredentialCryptoService(
             SkitAdCredentialCryptoProperties properties) {
+        Map<String, String> configuredKeys = new LinkedHashMap<>(properties.getKeys());
+        String currentKey = properties.getCurrentKey();
+        if (currentKey != null && !currentKey.isEmpty()) {
+            String retainedCurrentKey = configuredKeys.putIfAbsent(properties.getCurrentKeyId(), currentKey);
+            if (retainedCurrentKey != null && !retainedCurrentKey.equals(currentKey)) {
+                throw new IllegalArgumentException("Credential encryption key id "
+                        + properties.getCurrentKeyId() + " is configured with conflicting key material");
+            }
+        }
         Map<String, byte[]> keys = new LinkedHashMap<>();
-        properties.getKeys().forEach((keyId, value) -> {
+        configuredKeys.forEach((keyId, value) -> {
             if (value != null && !value.isEmpty()) {
                 for (int index = 0; index < value.length(); index++) {
                     if (value.charAt(index) > 0x7f) {

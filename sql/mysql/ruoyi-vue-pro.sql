@@ -5457,7 +5457,7 @@ CREATE TABLE IF NOT EXISTS `skit_ad_revenue_event` (
   `deleted` bit(1) NOT NULL DEFAULT b'0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_revenue_event_tenant_id` (`tenant_id`,`id`),
-  UNIQUE KEY `uk_skit_revenue_event_external` (`tenant_id`,`provider`,`external_event_id`),
+  KEY `idx_skit_revenue_event_external` (`tenant_id`,`provider`,`external_event_id`),
   UNIQUE KEY `uk_skit_revenue_source_idem` (`tenant_id`,`ad_account_id`,`source_type`,`external_event_id`),
   UNIQUE KEY `uk_skit_revenue_inbox_source` (`tenant_id`,`callback_inbox_id`,`source_type`),
   UNIQUE KEY `uk_skit_revenue_session_source` (`tenant_id`,`ad_session_id`,`source_type`),
@@ -5530,13 +5530,47 @@ CREATE TRIGGER IF NOT EXISTS `trg_skit_revenue_legacy_immutable`
 BEFORE UPDATE ON `skit_ad_revenue_event` FOR EACH ROW
 BEGIN
   IF OLD.`legacy_unverified` = b'1' AND NOT (
-    NEW.`legacy_unverified` <=> OLD.`legacy_unverified`
+    NEW.`id` <=> OLD.`id`
+    AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`ad_account_id` <=> OLD.`ad_account_id`
+    AND NEW.`provider` <=> OLD.`provider`
+    AND NEW.`placement_id` <=> OLD.`placement_id`
+    AND NEW.`external_event_id` <=> OLD.`external_event_id`
+    AND NEW.`source_member_id` <=> OLD.`source_member_id`
+    AND NEW.`gross_amount` <=> OLD.`gross_amount`
+    AND NEW.`occurred_time` <=> OLD.`occurred_time`
+    AND NEW.`completed` <=> OLD.`completed`
+    AND NEW.`mock` <=> OLD.`mock`
+    AND NEW.`status` <=> OLD.`status`
+    AND NEW.`rule_version` <=> OLD.`rule_version`
+    AND NEW.`raw_data` <=> OLD.`raw_data`
+    AND NEW.`ad_session_id` <=> OLD.`ad_session_id`
+    AND NEW.`callback_inbox_id` <=> OLD.`callback_inbox_id`
+    AND NEW.`policy_snapshot_id` <=> OLD.`policy_snapshot_id`
+    AND NEW.`reconciliation_bucket_id` <=> OLD.`reconciliation_bucket_id`
+    AND NEW.`reconciliation_revision_id` <=> OLD.`reconciliation_revision_id`
     AND NEW.`source_type` <=> OLD.`source_type`
+    AND NEW.`provider_transaction_id` <=> OLD.`provider_transaction_id`
+    AND NEW.`provider_show_id` <=> OLD.`provider_show_id`
+    AND NEW.`sdk_request_id` <=> OLD.`sdk_request_id`
+    AND NEW.`adsource_id` <=> OLD.`adsource_id`
+    AND NEW.`source_amount_units` <=> OLD.`source_amount_units`
+    AND NEW.`estimated_amount_units` <=> OLD.`estimated_amount_units`
+    AND NEW.`reconciled_amount_units` <=> OLD.`reconciled_amount_units`
+    AND NEW.`amount_scale` <=> OLD.`amount_scale`
+    AND NEW.`source_currency` <=> OLD.`source_currency`
     AND NEW.`match_status` <=> OLD.`match_status`
     AND NEW.`source_verification_status` <=> OLD.`source_verification_status`
     AND NEW.`reward_qualification_status` <=> OLD.`reward_qualification_status`
     AND NEW.`reconciliation_status` <=> OLD.`reconciliation_status`
-    AND NEW.`status` <=> OLD.`status`
+    AND NEW.`reconciled_at` <=> OLD.`reconciled_at`
+    AND NEW.`verified_at` <=> OLD.`verified_at`
+    AND NEW.`payload_hash` <=> OLD.`payload_hash`
+    AND NEW.`version` <=> OLD.`version`
+    AND NEW.`legacy_unverified` <=> OLD.`legacy_unverified`
+    AND NEW.`creator` <=> OLD.`creator`
+    AND NEW.`create_time` <=> OLD.`create_time`
+    AND NEW.`deleted` <=> OLD.`deleted`
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'legacy revenue facts are immutable';
   END IF;
@@ -5545,14 +5579,121 @@ CREATE TRIGGER IF NOT EXISTS `trg_skit_ledger_legacy_immutable`
 BEFORE UPDATE ON `skit_commission_ledger` FOR EACH ROW
 BEGIN
   IF OLD.`legacy_unverified` = b'1' AND NOT (
-    NEW.`legacy_unverified` <=> OLD.`legacy_unverified`
+    NEW.`id` <=> OLD.`id`
+    AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`event_id` <=> OLD.`event_id`
+    AND NEW.`beneficiary_type` <=> OLD.`beneficiary_type`
+    AND NEW.`beneficiary_member_id` <=> OLD.`beneficiary_member_id`
+    AND NEW.`level_no` <=> OLD.`level_no`
+    AND NEW.`gross_amount` <=> OLD.`gross_amount`
+    AND NEW.`rate_bps` <=> OLD.`rate_bps`
+    AND NEW.`amount` <=> OLD.`amount`
+    AND NEW.`rule_version` <=> OLD.`rule_version`
+    AND NEW.`status` <=> OLD.`status`
     AND NEW.`entry_type` <=> OLD.`entry_type`
     AND NEW.`balance_bucket` <=> OLD.`balance_bucket`
+    AND NEW.`currency` <=> OLD.`currency`
+    AND NEW.`gross_amount_units` <=> OLD.`gross_amount_units`
+    AND NEW.`amount_units` <=> OLD.`amount_units`
+    AND NEW.`amount_scale` <=> OLD.`amount_scale`
+    AND NEW.`reversal_of_id` <=> OLD.`reversal_of_id`
+    AND NEW.`reconciliation_revision_id` <=> OLD.`reconciliation_revision_id`
+    AND NEW.`policy_snapshot_id` <=> OLD.`policy_snapshot_id`
     AND NEW.`revision_no` <=> OLD.`revision_no`
-    AND NEW.`status` <=> OLD.`status`
+    AND NEW.`legacy_unverified` <=> OLD.`legacy_unverified`
+    AND NEW.`creator` <=> OLD.`creator`
+    AND NEW.`create_time` <=> OLD.`create_time`
+    AND NEW.`deleted` <=> OLD.`deleted`
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'legacy ledger facts are immutable';
   END IF;
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_key_immutable`
+BEFORE UPDATE ON `skit_ad_callback_key` FOR EACH ROW
+BEGIN
+  IF NOT (
+    NEW.`id` <=> OLD.`id`
+    AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`ad_account_id` <=> OLD.`ad_account_id`
+    AND NEW.`key_version` <=> OLD.`key_version`
+    AND NEW.`callback_key_hash` <=> OLD.`callback_key_hash`
+    AND NEW.`creator` <=> OLD.`creator`
+    AND NEW.`create_time` <=> OLD.`create_time`
+    AND NEW.`deleted` <=> OLD.`deleted`
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'credential identity and material are immutable';
+  ELSEIF NOT ((NEW.`active` <=> OLD.`active`) OR (OLD.`active` = b'1' AND NEW.`active` = b'0'))
+    OR NOT ((NEW.`accept_until` <=> OLD.`accept_until`) OR
+      (OLD.`accept_until` IS NULL AND NEW.`accept_until` IS NOT NULL AND NEW.`active` = b'0'))
+    OR NOT ((NEW.`revoked_at` <=> OLD.`revoked_at`) OR
+      (OLD.`revoked_at` IS NULL AND NEW.`revoked_at` IS NOT NULL))
+    OR (NEW.`revoked_at` IS NOT NULL AND NEW.`active` = b'1') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'credential lifecycle is monotonic';
+  END IF;
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_key_no_delete`
+BEFORE DELETE ON `skit_ad_callback_key` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'credential version rows cannot be deleted';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_reward_secret_immutable`
+BEFORE UPDATE ON `skit_ad_reward_secret_version` FOR EACH ROW
+BEGIN
+  IF NOT (
+    NEW.`id` <=> OLD.`id`
+    AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`ad_account_id` <=> OLD.`ad_account_id`
+    AND NEW.`secret_version` <=> OLD.`secret_version`
+    AND NEW.`ciphertext` <=> OLD.`ciphertext`
+    AND NEW.`nonce` <=> OLD.`nonce`
+    AND NEW.`encryption_key_id` <=> OLD.`encryption_key_id`
+    AND NEW.`envelope_version` <=> OLD.`envelope_version`
+    AND NEW.`creator` <=> OLD.`creator`
+    AND NEW.`create_time` <=> OLD.`create_time`
+    AND NEW.`deleted` <=> OLD.`deleted`
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'credential identity and material are immutable';
+  ELSEIF NOT ((NEW.`active` <=> OLD.`active`) OR (OLD.`active` = b'1' AND NEW.`active` = b'0'))
+    OR NOT ((NEW.`accept_until` <=> OLD.`accept_until`) OR
+      (OLD.`accept_until` IS NULL AND NEW.`accept_until` IS NOT NULL AND NEW.`active` = b'0'))
+    OR NOT ((NEW.`revoked_at` <=> OLD.`revoked_at`) OR
+      (OLD.`revoked_at` IS NULL AND NEW.`revoked_at` IS NOT NULL))
+    OR (NEW.`revoked_at` IS NOT NULL AND NEW.`active` = b'1') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'credential lifecycle is monotonic';
+  END IF;
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_reward_secret_no_delete`
+BEFORE DELETE ON `skit_ad_reward_secret_version` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'credential version rows cannot be deleted';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_invite_registry_immutable`
+BEFORE UPDATE ON `skit_invite_code_registry` FOR EACH ROW
+BEGIN
+  IF NOT (
+    NEW.`id` <=> OLD.`id`
+    AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`code` <=> OLD.`code`
+    AND NEW.`owner_type` <=> OLD.`owner_type`
+    AND NEW.`agent_id` <=> OLD.`agent_id`
+    AND NEW.`member_id` <=> OLD.`member_id`
+    AND NEW.`creator` <=> OLD.`creator`
+    AND NEW.`create_time` <=> OLD.`create_time`
+    AND NEW.`deleted` <=> OLD.`deleted`
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invite code ownership is immutable';
+  ELSEIF NOT (((NEW.`status` <=> OLD.`status`) AND (NEW.`rotated_at` <=> OLD.`rotated_at`)) OR
+      (OLD.`status` = 'ACTIVE' AND NEW.`status` IN ('ROTATED', 'DISABLED')
+        AND OLD.`rotated_at` IS NULL AND NEW.`rotated_at` IS NOT NULL))
+    OR (NEW.`status` = 'ACTIVE' AND NEW.`rotated_at` IS NOT NULL)
+    OR (NEW.`status` IN ('ROTATED', 'DISABLED') AND NEW.`rotated_at` IS NULL) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invite code lifecycle is monotonic';
+  END IF;
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_invite_registry_no_delete`
+BEFORE DELETE ON `skit_invite_code_registry` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invite code registry rows cannot be deleted';
 END$$
 DELIMITER ;
 

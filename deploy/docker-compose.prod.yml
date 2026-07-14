@@ -53,6 +53,8 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: local
       SKIT_AD_ENCRYPTION_KEY: ${SKIT_AD_ENCRYPTION_KEY:?SKIT_AD_ENCRYPTION_KEY is required}
+      SKIT_AD_CREDENTIAL_KEY: ${SKIT_AD_CREDENTIAL_KEY:?SKIT_AD_CREDENTIAL_KEY is required}
+      SKIT_AD_CREDENTIAL_KEY_ID: ${SKIT_AD_CREDENTIAL_KEY_ID:-primary}
       JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx512m -Djava.security.egd=file:/dev/./urandom}
       ARGS: >-
         --spring.datasource.dynamic.datasource.master.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-skit_saas}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true

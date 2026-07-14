@@ -88,8 +88,8 @@ skit:
   ad:
     credential-encryption:
       current-key-id: ${SKIT_AD_CREDENTIAL_KEY_ID:primary}
-      keys:
-        primary: ${SKIT_AD_CREDENTIAL_KEY:}
+      current-key: ${SKIT_AD_CREDENTIAL_KEY:}
+      keys: {}
 
 mybatis-plus-join:
   banner: false # 是否打印 mybatis plus join banner，默认true

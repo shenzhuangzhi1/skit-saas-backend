@@ -10,6 +10,7 @@ import java.util.Map;
 public class SkitAdCredentialCryptoProperties {
 
     private String currentKeyId = "primary";
+    private String currentKey = "";
     private Map<String, String> keys = new LinkedHashMap<>();
 
     public String getCurrentKeyId() {
@@ -18,6 +19,15 @@ public class SkitAdCredentialCryptoProperties {
 
     public void setCurrentKeyId(String currentKeyId) {
         this.currentKeyId = currentKeyId;
+    }
+
+    @JsonIgnore
+    public String getCurrentKey() {
+        return currentKey;
+    }
+
+    public void setCurrentKey(String currentKey) {
+        this.currentKey = currentKey == null ? "" : currentKey;
     }
 
     @JsonIgnore
@@ -32,7 +42,8 @@ public class SkitAdCredentialCryptoProperties {
     @Override
     public String toString() {
         return "SkitAdCredentialCryptoProperties{currentKeyId='" + currentKeyId
-                + "', configuredKeyIds=" + keys.keySet() + '}';
+                + "', currentKeyConfigured=" + !currentKey.isEmpty()
+                + ", retainedKeyIds=" + keys.keySet() + '}';
     }
 
 }

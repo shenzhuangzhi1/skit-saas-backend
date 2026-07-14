@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoServi
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoConfiguration;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoProperties;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAesGcmCredentialCryptoService;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -45,7 +46,9 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Function;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -79,6 +82,20 @@ class SkitAdCredentialVersionServiceImplTest {
 
     private Clock clock;
     private SkitAdCredentialCryptoService crypto;
+
+    @Test
+    void resolvedSecretExposesOnlyAOneShotScopedCallbackApi() {
+        assertDoesNotThrow(() -> SkitAdCredentialVersionService.ResolvedRewardSecret.class
+                .getDeclaredMethod("withSecret", Function.class));
+        assertThrows(NoSuchMethodException.class, () -> SkitAdCredentialVersionService.ResolvedRewardSecret.class
+                .getDeclaredMethod("consumeSecret"));
+    }
+
+    @Test
+    void credentialMappersDoNotExposeGenericMutationApis() {
+        assertFalse(BaseMapper.class.isAssignableFrom(SkitAdCallbackKeyMapper.class));
+        assertFalse(BaseMapper.class.isAssignableFrom(SkitAdRewardSecretVersionMapper.class));
+    }
 
     @BeforeEach
     void setUp() {
@@ -240,14 +257,15 @@ class SkitAdCredentialVersionServiceImplTest {
                 .setAcceptUntil(receivedAt);
         when(rewardSecretMapper.selectByVersion(TENANT_ID, ACCOUNT_ID, 4)).thenReturn(reward);
         assertArrayEquals(plaintext, delayedProcessor.resolveRewardSecret(TENANT_ID, ACCOUNT_ID, 4,
-                receivedAt, receivedAt).consumeSecret());
+                receivedAt, receivedAt).withSecret(byte[]::clone));
         reward.setAcceptUntil(receivedAt.plusMinutes(2)).setRevokedAt(receivedAt);
         assertThrows(IllegalStateException.class, () -> delayedProcessor.resolveRewardSecret(
                 TENANT_ID, ACCOUNT_ID, 4, receivedAt.plusMinutes(2), receivedAt));
     }
 
     @Test
-    void rewardSecretRotationEncryptsBeforeRetiringPriorVersionAndResolvesOnlySnapshottedWindow() {
+    void rewardSecretRotationEncryptsBeforeRetiringPriorVersionAndResolvesOnlySnapshottedWindow()
+            throws Exception {
         byte[] plaintext = "provider-reward-secret".getBytes(StandardCharsets.UTF_8);
         SkitAdCredentialVersionServiceImpl service = service(new SequenceSecureRandom(sequence(3)));
         when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
@@ -278,9 +296,49 @@ class SkitAdCredentialVersionServiceImplTest {
                 TENANT_ID, ACCOUNT_ID, 2,
                 LocalDateTime.ofInstant(NOW.plusSeconds(30), ZoneOffset.UTC),
                 LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
-        assertArrayEquals(plaintext, resolved.consumeSecret());
-        assertThrows(IllegalStateException.class, resolved::consumeSecret);
+        java.lang.reflect.Field secretField =
+                SkitAdCredentialVersionService.ResolvedRewardSecret.class.getDeclaredField("secret");
+        secretField.setAccessible(true);
+        byte[] internal = (byte[]) secretField.get(resolved);
+        byte[][] captured = new byte[1][];
+        assertArrayEquals(plaintext, resolved.withSecret(secret -> {
+            captured[0] = secret;
+            return secret.clone();
+        }));
+        assertArrayEquals(new byte[plaintext.length], captured[0],
+                "the scoped callback buffer must be zeroed after use");
+        assertArrayEquals(new byte[plaintext.length], internal,
+                "the internal secret buffer must be zeroed after use");
+        assertNull(secretField.get(resolved));
+        assertThrows(IllegalStateException.class, () -> resolved.withSecret(byte[]::clone));
         assertFalse(resolved.toString().contains("provider-reward-secret"));
+    }
+
+    @Test
+    void resolvedRewardSecretZeroesScopedBuffersAfterCallbackFailureAndRejectsReuse() throws Exception {
+        byte[] plaintext = "failure-secret".getBytes(StandardCharsets.UTF_8);
+        SkitAdCredentialVersionService.ResolvedRewardSecret resolved =
+                new SkitAdCredentialVersionService.ResolvedRewardSecret(TENANT_ID, ACCOUNT_ID, 1,
+                        true, null, plaintext);
+        java.lang.reflect.Field secretField =
+                SkitAdCredentialVersionService.ResolvedRewardSecret.class.getDeclaredField("secret");
+        secretField.setAccessible(true);
+        byte[] internal = (byte[]) secretField.get(resolved);
+        byte[][] captured = new byte[1][];
+
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> resolved.withSecret(secret -> {
+                    captured[0] = secret;
+                    throw new IllegalArgumentException("callback failed");
+                }));
+
+        assertEquals("callback failed", failure.getMessage());
+        assertArrayEquals(new byte[plaintext.length], captured[0],
+                "the scoped callback buffer must be zeroed when the callback throws");
+        assertArrayEquals(new byte[plaintext.length], internal,
+                "the internal secret buffer must be zeroed when the callback throws");
+        assertNull(secretField.get(resolved));
+        assertThrows(IllegalStateException.class, () -> resolved.withSecret(byte[]::clone));
     }
 
     @Test
@@ -399,7 +457,8 @@ class SkitAdCredentialVersionServiceImplTest {
         SkitAdCredentialCryptoProperties properties = bindApplicationCredentialProperties(environment);
 
         assertEquals("primary", properties.getCurrentKeyId());
-        assertEquals(dedicatedKey, properties.getKeys().get("primary"));
+        assertEquals(dedicatedKey, properties.getCurrentKey());
+        assertTrue(properties.getKeys().isEmpty());
         assertFalse(properties.toString().contains(dedicatedKey));
         assertFalse(properties.toString().contains(legacySharedKey));
         String json = new ObjectMapper().writeValueAsString(properties);
@@ -421,6 +480,27 @@ class SkitAdCredentialVersionServiceImplTest {
         SkitAdCredentialCryptoService missing =
                 new SkitAdCredentialCryptoConfiguration().skitAdCredentialCryptoService(missingProperties);
         assertThrows(IllegalStateException.class, () -> missing.encrypt(context, plaintext));
+    }
+
+    @Test
+    void applicationConfigurationBindsTheDedicatedKeyUnderItsPersistedKeyId() throws Exception {
+        String dedicatedKey = "rotated-key-0123456789abcdefghij";
+        Map<String, Object> environment = new HashMap<>();
+        environment.put("SKIT_AD_CREDENTIAL_KEY", dedicatedKey);
+        environment.put("SKIT_AD_CREDENTIAL_KEY_ID", "rotation-2026-07");
+
+        SkitAdCredentialCryptoProperties properties = bindApplicationCredentialProperties(environment);
+
+        assertEquals("rotation-2026-07", properties.getCurrentKeyId());
+        assertEquals(dedicatedKey, properties.getCurrentKey());
+        SkitAdCredentialCryptoService configured =
+                new SkitAdCredentialCryptoConfiguration().skitAdCredentialCryptoService(properties);
+        SkitAdCredentialCryptoService.Context context = SkitAdCredentialCryptoService.Context.rewardSecret(
+                TENANT_ID, ACCOUNT_ID, 1, SkitAdCredentialCryptoService.CURRENT_ENVELOPE_VERSION);
+        byte[] plaintext = "configured-rotated-key".getBytes(StandardCharsets.UTF_8);
+        SkitAdCredentialCryptoService.EncryptedSecret encrypted = configured.encrypt(context, plaintext);
+        assertEquals("rotation-2026-07", encrypted.getKeyId());
+        assertArrayEquals(plaintext, configured.decrypt(context, encrypted));
     }
 
     private SkitAdCredentialVersionServiceImpl service(SecureRandom random) {

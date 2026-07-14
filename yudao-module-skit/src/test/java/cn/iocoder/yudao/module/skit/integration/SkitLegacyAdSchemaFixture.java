@@ -59,6 +59,26 @@ final class SkitLegacyAdSchemaFixture {
                 "collision", 1, 0);
     }
 
+    static void installSameTableInviteCollisions(JdbcTemplate jdbc) {
+        installReleasedTables(jdbc);
+        seedTenant(jdbc, TENANT_ID, 1001L, "13800000101");
+        seedTenant(jdbc, 102L, 1002L, "13800000102");
+        jdbc.update("INSERT INTO skit_agent "
+                        + "(id,tenant_id,tenant_code,root_invite_code,status) VALUES (?,?,?,?,?)",
+                101L, TENANT_ID, "legacy-101", "AGENT-CODE", 0);
+        jdbc.update("INSERT INTO skit_agent "
+                        + "(id,tenant_id,tenant_code,root_invite_code,status) VALUES (?,?,?,?,?)",
+                102L, 102L, "legacy-102", " AGENT-CODE", 0);
+        jdbc.update("INSERT INTO skit_member "
+                        + "(id,tenant_id,mobile,password,nickname,invite_code,depth,status) VALUES (?,?,?,?,?,?,?,?)",
+                301L, TENANT_ID, "13900000301", "legacy-password-hash", "legacy member 301",
+                "MEMBER-CODE", 1, 0);
+        jdbc.update("INSERT INTO skit_member "
+                        + "(id,tenant_id,mobile,password,nickname,invite_code,depth,status) VALUES (?,?,?,?,?,?,?,?)",
+                302L, TENANT_ID, "13900000302", "legacy-password-hash", "legacy member 302",
+                " MEMBER-CODE", 1, 0);
+    }
+
     static void installCrossTenantRevenueReference(JdbcTemplate jdbc) {
         installReleasedTables(jdbc);
         seedTenant(jdbc, TENANT_ID, 1001L, "13800000101");

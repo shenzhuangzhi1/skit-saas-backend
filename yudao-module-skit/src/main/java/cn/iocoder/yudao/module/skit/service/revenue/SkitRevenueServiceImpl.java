@@ -73,8 +73,8 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
 
         BigDecimal gross = normalizeMoney(command.getGrossAmount());
         long grossAmountUnits = toMoneyUnits(gross);
-        SkitAdRevenueEventDO existing = eventMapper.selectByProviderAndExternalEventId(
-                provider, command.getExternalEventId());
+        SkitAdRevenueEventDO existing = eventMapper.selectByAccountSourceAndExternalEventId(
+                account.getId(), REVENUE_SOURCE_LEGACY_CLIENT, command.getExternalEventId());
         if (existing != null) {
             validateIdempotentEvent(existing, sourceMemberId, account.getId(), command, gross);
             return buildReportResult(existing, true);
@@ -107,8 +107,8 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
                 .rawData(command.getRawData()).build();
         if (ignored) {
             if (!insertEvent(event)) {
-                SkitAdRevenueEventDO concurrent = eventMapper.selectByProviderAndExternalEventId(
-                        provider, command.getExternalEventId());
+                SkitAdRevenueEventDO concurrent = eventMapper.selectByAccountSourceAndExternalEventId(
+                        account.getId(), REVENUE_SOURCE_LEGACY_CLIENT, command.getExternalEventId());
                 validateIdempotentEvent(concurrent, sourceMemberId, account.getId(), command, gross);
                 return buildReportResult(concurrent, true);
             }
@@ -118,8 +118,8 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
         SkitCommissionService.PlanSnapshot snapshot = commissionService.getActiveSnapshot();
         event.setRuleVersion(snapshot.getVersion());
         if (!insertEvent(event)) {
-            SkitAdRevenueEventDO concurrent = eventMapper.selectByProviderAndExternalEventId(
-                    provider, command.getExternalEventId());
+            SkitAdRevenueEventDO concurrent = eventMapper.selectByAccountSourceAndExternalEventId(
+                    account.getId(), REVENUE_SOURCE_LEGACY_CLIENT, command.getExternalEventId());
             validateIdempotentEvent(concurrent, sourceMemberId, account.getId(), command, gross);
             return buildReportResult(concurrent, true);
         }
@@ -196,8 +196,8 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
             eventMapper.insert(event);
             return true;
         } catch (DuplicateKeyException ex) {
-            SkitAdRevenueEventDO existing = eventMapper.selectByProviderAndExternalEventId(
-                    event.getProvider(), event.getExternalEventId());
+            SkitAdRevenueEventDO existing = eventMapper.selectByAccountSourceAndExternalEventId(
+                    event.getAdAccountId(), event.getSourceType(), event.getExternalEventId());
             if (existing == null) {
                 throw ex;
             }

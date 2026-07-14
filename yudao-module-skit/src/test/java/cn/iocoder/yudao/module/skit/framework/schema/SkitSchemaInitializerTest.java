@@ -84,7 +84,7 @@ class SkitSchemaInitializerTest {
         expected.put(2026071302, "18cdd108bae5ed0d8700aa31d2483b5030d8a7ac4143b18fa7d8310818f6c6c4");
         expected.put(2026071303, "ece068f30e1b6abe5344f1e6f1f179c55cae0a93c6e3e23bd8f511b7522a5a21");
         expected.put(2026071304, "666a0061892df38cb1cf0e4762d223580703e5f5682eb784775f53fe37f4f0ef");
-        expected.put(2026071401, "1f0c58b8c1ad2c2879bf78dc73ac73b3e4c0b51315664974d1575ecfb0543da5");
+        expected.put(2026071401, "64e450e4b8048a00b0ce7fbbe9f4b162ec519b5cd3f2c83d12470d92fe72fdbf");
 
         Set<Integer> verifiedVersions = new HashSet<>();
         for (SkitSchemaInitializer.Migration migration : migrations) {

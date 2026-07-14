@@ -1,8 +1,9 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.ad;
 
-import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -10,7 +11,13 @@ import org.apache.ibatis.annotations.Update;
 import java.time.LocalDateTime;
 
 @Mapper
-public interface SkitAdCallbackKeyMapper extends BaseMapperX<SkitAdCallbackKeyDO> {
+public interface SkitAdCallbackKeyMapper {
+
+    @Insert("INSERT INTO `skit_ad_callback_key` "
+            + "(`ad_account_id`,`key_version`,`callback_key_hash`,`accept_until`,`revoked_at`) VALUES "
+            + "(#{adAccountId},#{keyVersion},#{callbackKeyHash},#{acceptUntil},#{revokedAt})")
+    @Options(useGeneratedKeys = true, keyProperty = "id")
+    int insert(SkitAdCallbackKeyDO row);
 
     @Select("SELECT MAX(`key_version`) FROM `skit_ad_callback_key` "
             + "WHERE `tenant_id`=#{tenantId} AND `ad_account_id`=#{adAccountId}")

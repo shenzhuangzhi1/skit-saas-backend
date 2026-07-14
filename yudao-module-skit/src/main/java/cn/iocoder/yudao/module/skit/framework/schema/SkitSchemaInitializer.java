@@ -85,11 +85,14 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final String TRIGGER_DEFINITION_QUERY = "SELECT CONCAT(`ACTION_TIMING`,':',"
             + "`EVENT_MANIPULATION`,':',`EVENT_OBJECT_TABLE`,':',`ACTION_STATEMENT`) FROM "
             + "information_schema.TRIGGERS WHERE `TRIGGER_SCHEMA`=DATABASE() AND `TRIGGER_NAME`=?";
-    private static final String TASK_2_INVITE_COLLISIONS_QUERY = "SELECT UPPER(TRIM(`a`.`root_invite_code`)) "
-            + "AS `normalized_code`,`a`.`tenant_id` AS `agent_tenant_id`,`a`.`id` AS `agent_id`,"
-            + "`m`.`tenant_id` AS `member_tenant_id`,`m`.`id` AS `member_id` FROM `skit_agent` `a` "
-            + "JOIN `skit_member` `m` ON UPPER(TRIM(`m`.`invite_code`))=UPPER(TRIM(`a`.`root_invite_code`)) "
-            + "WHERE `a`.`deleted`=b'0' AND `m`.`deleted`=b'0' ORDER BY `normalized_code`,`a`.`id`,`m`.`id`";
+    private static final String TASK_2_INVITE_COLLISIONS_QUERY = "SELECT `normalized_code`,"
+            + "GROUP_CONCAT(`owner_descriptor` ORDER BY `owner_descriptor` SEPARATOR ',') AS `owners` FROM ("
+            + "SELECT UPPER(TRIM(`root_invite_code`)) AS `normalized_code`,"
+            + "CONCAT('AGENT:',`tenant_id`,':',`id`) AS `owner_descriptor` FROM `skit_agent` "
+            + "WHERE `deleted`=b'0' UNION ALL SELECT UPPER(TRIM(`invite_code`)) AS `normalized_code`,"
+            + "CONCAT('MEMBER:',`tenant_id`,':',`id`) AS `owner_descriptor` FROM `skit_member` "
+            + "WHERE `deleted`=b'0') `invite_owners` GROUP BY `normalized_code` HAVING COUNT(*) > 1 "
+            + "ORDER BY `normalized_code`";
     private static final long TASK_2_MONEY_SCALE_FACTOR = 100000000L;
     private static final List<Task2ColumnSpec> TASK_2_PARENT_COLUMN_SPECS = Collections.unmodifiableList(
             Arrays.asList(
@@ -231,23 +234,42 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final List<Task2TriggerSpec> TASK_2_PARENT_TRIGGER_SPECS = Collections.unmodifiableList(
             Arrays.asList(
                     new Task2TriggerSpec("skit_ad_revenue_event", "trg_skit_revenue_legacy_immutable",
-                            "BEGIN IF OLD.`legacy_unverified`=b'1' AND NOT ("
-                                    + "NEW.`legacy_unverified` <=> OLD.`legacy_unverified` AND "
-                                    + "NEW.`source_type` <=> OLD.`source_type` AND "
-                                    + "NEW.`match_status` <=> OLD.`match_status` AND "
-                                    + "NEW.`source_verification_status` <=> OLD.`source_verification_status` AND "
-                                    + "NEW.`reward_qualification_status` <=> OLD.`reward_qualification_status` AND "
-                                    + "NEW.`reconciliation_status` <=> OLD.`reconciliation_status` AND "
-                                    + "NEW.`status` <=> OLD.`status`) THEN SIGNAL SQLSTATE '45000' "
-                                    + "SET MESSAGE_TEXT='legacy revenue facts are immutable'; END IF; END"),
+                            legacyImmutableAction("legacy revenue facts are immutable",
+                                    "id", "tenant_id", "ad_account_id", "provider", "placement_id",
+                                    "external_event_id", "source_member_id", "gross_amount", "occurred_time",
+                                    "completed", "mock", "status", "rule_version", "raw_data", "ad_session_id",
+                                    "callback_inbox_id", "policy_snapshot_id", "reconciliation_bucket_id",
+                                    "reconciliation_revision_id", "source_type", "provider_transaction_id",
+                                    "provider_show_id", "sdk_request_id", "adsource_id", "source_amount_units",
+                                    "estimated_amount_units", "reconciled_amount_units", "amount_scale",
+                                    "source_currency", "match_status", "source_verification_status",
+                                    "reward_qualification_status", "reconciliation_status", "reconciled_at",
+                                    "verified_at", "payload_hash", "version", "legacy_unverified", "creator",
+                                    "create_time", "deleted")),
                     new Task2TriggerSpec("skit_commission_ledger", "trg_skit_ledger_legacy_immutable",
-                            "BEGIN IF OLD.`legacy_unverified`=b'1' AND NOT ("
-                                    + "NEW.`legacy_unverified` <=> OLD.`legacy_unverified` AND "
-                                    + "NEW.`entry_type` <=> OLD.`entry_type` AND "
-                                    + "NEW.`balance_bucket` <=> OLD.`balance_bucket` AND "
-                                    + "NEW.`revision_no` <=> OLD.`revision_no` AND "
-                                    + "NEW.`status` <=> OLD.`status`) THEN SIGNAL SQLSTATE '45000' "
-                                    + "SET MESSAGE_TEXT='legacy ledger facts are immutable'; END IF; END")));
+                            legacyImmutableAction("legacy ledger facts are immutable",
+                                    "id", "tenant_id", "event_id", "beneficiary_type", "beneficiary_member_id",
+                                    "level_no", "gross_amount", "rate_bps", "amount", "rule_version", "status",
+                                    "entry_type", "balance_bucket", "currency", "gross_amount_units", "amount_units",
+                                    "amount_scale", "reversal_of_id", "reconciliation_revision_id",
+                                    "policy_snapshot_id", "revision_no", "legacy_unverified", "creator",
+                                    "create_time", "deleted")),
+                    new Task2TriggerSpec("skit_ad_callback_key", "trg_skit_callback_key_immutable",
+                            credentialUpdateAction("id", "tenant_id", "ad_account_id", "key_version",
+                                    "callback_key_hash", "creator", "create_time", "deleted")),
+                    new Task2TriggerSpec("skit_ad_callback_key", "trg_skit_callback_key_no_delete", "DELETE",
+                            rejectDeleteAction("credential version rows cannot be deleted")),
+                    new Task2TriggerSpec("skit_ad_reward_secret_version", "trg_skit_reward_secret_immutable",
+                            credentialUpdateAction("id", "tenant_id", "ad_account_id", "secret_version",
+                                    "ciphertext", "nonce", "encryption_key_id", "envelope_version", "creator",
+                                    "create_time", "deleted")),
+                    new Task2TriggerSpec("skit_ad_reward_secret_version", "trg_skit_reward_secret_no_delete", "DELETE",
+                            rejectDeleteAction("credential version rows cannot be deleted")),
+                    new Task2TriggerSpec("skit_invite_code_registry", "trg_skit_invite_registry_immutable",
+                            inviteRegistryUpdateAction("id", "tenant_id", "code", "owner_type", "agent_id",
+                                    "member_id", "creator", "create_time", "deleted")),
+                    new Task2TriggerSpec("skit_invite_code_registry", "trg_skit_invite_registry_no_delete", "DELETE",
+                            rejectDeleteAction("invite code registry rows cannot be deleted"))));
     private static final Pattern DEFAULT_DEFINITION_PATTERN = Pattern.compile(
             "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern GENERATED_DEFINITION_PATTERN = Pattern.compile(
@@ -633,13 +655,68 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
         private final String table;
         private final String trigger;
+        private final String event;
         private final String action;
 
         private Task2TriggerSpec(String table, String trigger, String action) {
+            this(table, trigger, "UPDATE", action);
+        }
+
+        private Task2TriggerSpec(String table, String trigger, String event, String action) {
             this.table = table;
             this.trigger = trigger;
+            this.event = event;
             this.action = action;
         }
+    }
+
+    private static String legacyImmutableAction(String message, String... columns) {
+        return "BEGIN IF OLD.`legacy_unverified`=b'1' AND NOT (" + unchangedColumns(columns)
+                + ") THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='" + message + "'; END IF; END";
+    }
+
+    private static String credentialUpdateAction(String... immutableColumns) {
+        return "BEGIN IF NOT (" + unchangedColumns(immutableColumns)
+                + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='credential identity and material are immutable'; "
+                + "ELSEIF NOT ((NEW.`active` <=> OLD.`active`) OR "
+                + "(OLD.`active`=b'1' AND NEW.`active`=b'0')) "
+                + "OR NOT ((NEW.`accept_until` <=> OLD.`accept_until`) OR "
+                + "(OLD.`accept_until` IS NULL AND NEW.`accept_until` IS NOT NULL AND NEW.`active`=b'0')) "
+                + "OR NOT ((NEW.`revoked_at` <=> OLD.`revoked_at`) OR "
+                + "(OLD.`revoked_at` IS NULL AND NEW.`revoked_at` IS NOT NULL)) "
+                + "OR (NEW.`revoked_at` IS NOT NULL AND NEW.`active`=b'1') "
+                + "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='credential lifecycle is monotonic'; "
+                + "END IF; END";
+    }
+
+    private static String inviteRegistryUpdateAction(String... immutableColumns) {
+        return "BEGIN IF NOT (" + unchangedColumns(immutableColumns)
+                + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='invite code ownership is immutable'; "
+                + "ELSEIF NOT (((NEW.`status` <=> OLD.`status`) AND "
+                + "(NEW.`rotated_at` <=> OLD.`rotated_at`)) OR "
+                + "(OLD.`status`='ACTIVE' AND NEW.`status` IN ('ROTATED','DISABLED') "
+                + "AND OLD.`rotated_at` IS NULL AND NEW.`rotated_at` IS NOT NULL)) "
+                + "OR (NEW.`status`='ACTIVE' AND NEW.`rotated_at` IS NOT NULL) "
+                + "OR (NEW.`status` IN ('ROTATED','DISABLED') AND NEW.`rotated_at` IS NULL) "
+                + "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='invite code lifecycle is monotonic'; "
+                + "END IF; END";
+    }
+
+    private static String rejectDeleteAction(String message) {
+        return "BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='" + message + "'; END";
+    }
+
+    private static String unchangedColumns(String... columns) {
+        StringBuilder result = new StringBuilder();
+        for (String column : columns) {
+            if (result.length() > 0) {
+                result.append(" AND ");
+            }
+            result.append("NEW.`").append(column).append("` <=> OLD.`").append(column).append('`');
+        }
+        return result.toString();
     }
 
     private static String canonicalManifest(int version, String description, List<String> manifest) {
@@ -727,9 +804,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     }
 
     private SchemaStep task2TriggerStep(Task2TriggerSpec spec) {
-        String sql = addTriggerSql(spec.table, spec.trigger, spec.action);
+        String sql = addTriggerSql(spec.table, spec.trigger, spec.event, spec.action);
         return schemaStep("ensure-task2-trigger", () -> ensureTask2Trigger(spec),
-                TRIGGER_DEFINITION_QUERY, spec.table, spec.trigger, spec.action, sql);
+                TRIGGER_DEFINITION_QUERY, spec.table, spec.trigger, spec.event, spec.action, sql);
     }
 
     private SchemaStep schemaStep(String operation, Runnable action, Object... content) {
@@ -776,8 +853,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return "ALTER TABLE `" + table + "` ADD CONSTRAINT `" + constraint + "` CHECK (" + expression + ")";
     }
 
-    private static String addTriggerSql(String table, String trigger, String action) {
-        return "CREATE TRIGGER IF NOT EXISTS `" + trigger + "` BEFORE UPDATE ON `" + table
+    private static String addTriggerSql(String table, String trigger, String event, String action) {
+        return "CREATE TRIGGER IF NOT EXISTS `" + trigger + "` BEFORE " + event + " ON `" + table
                 + "` FOR EACH ROW " + action;
     }
 
@@ -1368,16 +1445,27 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         steps.addAll(task2ParentTriggerSteps());
         steps.add(updateSqlStep("INSERT INTO `skit_invite_code_registry` "
                 + "(`tenant_id`,`code`,`owner_type`,`agent_id`,`member_id`,`status`,`creator`,`updater`) "
-                + "SELECT `tenant_id`,TRIM(`root_invite_code`),'AGENT',`id`,NULL,'ACTIVE',"
-                + "'skit-migration-2026071401','skit-migration-2026071401' FROM `skit_agent` "
-                + "WHERE `deleted`=b'0' ON DUPLICATE KEY UPDATE `code`=VALUES(`code`)"));
+                + "SELECT `a`.`tenant_id`,TRIM(`a`.`root_invite_code`),'AGENT',`a`.`id`,NULL,'ACTIVE',"
+                + "'skit-migration-2026071401','skit-migration-2026071401' FROM `skit_agent` `a` "
+                + "WHERE `a`.`deleted`=b'0' AND NOT EXISTS (SELECT 1 FROM `skit_invite_code_registry` `r` "
+                + "WHERE `r`.`normalized_code`=UPPER(TRIM(`a`.`root_invite_code`)) "
+                + "AND `r`.`tenant_id`=`a`.`tenant_id` AND `r`.`owner_type`='AGENT' "
+                + "AND `r`.`agent_id`=`a`.`id` AND `r`.`member_id` IS NULL AND `r`.`status`='ACTIVE')"));
         steps.add(updateSqlStep("INSERT INTO `skit_invite_code_registry` "
                 + "(`tenant_id`,`code`,`owner_type`,`agent_id`,`member_id`,`status`,`creator`,`updater`) "
-                + "SELECT `tenant_id`,TRIM(`invite_code`),'MEMBER',NULL,`id`,'ACTIVE',"
-                + "'skit-migration-2026071401','skit-migration-2026071401' FROM `skit_member` "
-                + "WHERE `deleted`=b'0' ON DUPLICATE KEY UPDATE `code`=VALUES(`code`)"));
+                + "SELECT `m`.`tenant_id`,TRIM(`m`.`invite_code`),'MEMBER',NULL,`m`.`id`,'ACTIVE',"
+                + "'skit-migration-2026071401','skit-migration-2026071401' FROM `skit_member` `m` "
+                + "WHERE `m`.`deleted`=b'0' AND NOT EXISTS (SELECT 1 FROM `skit_invite_code_registry` `r` "
+                + "WHERE `r`.`normalized_code`=UPPER(TRIM(`m`.`invite_code`)) "
+                + "AND `r`.`tenant_id`=`m`.`tenant_id` AND `r`.`owner_type`='MEMBER' "
+                + "AND `r`.`member_id`=`m`.`id` AND `r`.`agent_id` IS NULL AND `r`.`status`='ACTIVE')"));
+        steps.add(schemaStep("validate-task2-invite-registry-coverage",
+                this::validateTask2InviteRegistryCoverage, "active-source-owner-to-registry-v1"));
 
         steps.add(dropIndexStep("skit_commission_ledger", "uk_skit_ledger_beneficiary"));
+        steps.add(dropIndexStep("skit_ad_revenue_event", "uk_skit_revenue_event_external"));
+        steps.add(addIndexStep("skit_ad_revenue_event", "idx_skit_revenue_event_external",
+                "`tenant_id`,`provider`,`external_event_id`", false));
         steps.add(addIndexStep("skit_commission_ledger", "uk_skit_ledger_entry_revision",
                 "`tenant_id`,`event_id`,`beneficiary_type`,`beneficiary_member_id`,`level_no`,"
                         + "`entry_type`,`revision_no`", true));
@@ -1436,7 +1524,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateTask2TableSignatures(false);
         validateTask2LegacySingletons();
         if (tableExists("skit_agent") && tableExists("skit_member")) {
-            assertNoTask2PreflightRows("normalized cross-table invite-code collision",
+            assertNoTask2PreflightRows("normalized global invite-code collision",
                     TASK_2_INVITE_COLLISIONS_QUERY);
             assertNoTask2PreflightRows("blank agent invite-code owner",
                     "SELECT 'skit_agent' AS `owner_table`,`tenant_id`,`id` AS `owner_id` FROM `skit_agent` "
@@ -1453,6 +1541,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateTask2Reference("skit_ad_revenue_event", "ad_account_id", "skit_ad_account");
         validateTask2Reference("skit_ad_revenue_event", "source_member_id", "skit_member");
         validateTask2Reference("skit_commission_ledger", "event_id", "skit_ad_revenue_event");
+        validateTask2RevenueIdempotency();
         validateTask2LedgerBeneficiaries();
         validateTask2TenantOwners();
         validateTask2LegacyMoney();
@@ -1488,6 +1577,29 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         + "`l`.`beneficiary_type` NOT IN (1,2) ORDER BY `l`.`tenant_id`,`l`.`id`");
     }
 
+    private void validateTask2RevenueIdempotency() {
+        if (!tableExists("skit_ad_revenue_event")) {
+            return;
+        }
+        String sourceExpression = columnExists("skit_ad_revenue_event", "source_type")
+                ? "`source_type`" : "'LEGACY_CLIENT'";
+        assertNoTask2PreflightRows("revenue source idempotency collision",
+                "SELECT `tenant_id`,`ad_account_id`," + sourceExpression + " AS `source_type`,"
+                        + "`external_event_id`,GROUP_CONCAT(`id` ORDER BY `id`) AS `owner_ids` "
+                        + "FROM `skit_ad_revenue_event` GROUP BY `tenant_id`,`ad_account_id`,"
+                        + sourceExpression + ",`external_event_id` HAVING COUNT(*) > 1 "
+                        + "ORDER BY `tenant_id`,`ad_account_id`,`source_type`,`external_event_id`");
+        if (indexExists("skit_ad_revenue_event", "uk_skit_revenue_event_external")) {
+            String actual = jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY, String.class,
+                    "skit_ad_revenue_event", "uk_skit_revenue_event_external");
+            if (!"0:tenant_id,provider,external_event_id".equals(actual)) {
+                throw new IllegalStateException("Incompatible legacy revenue idempotency index "
+                        + "skit_ad_revenue_event.uk_skit_revenue_event_external: expected="
+                        + "0:tenant_id,provider,external_event_id, actual=" + actual);
+            }
+        }
+    }
+
     private void validateExistingInviteRegistryOwners() {
         if (!tableExists("skit_invite_code_registry")) {
             return;
@@ -1500,7 +1612,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                             + "FROM `skit_agent` `a` JOIN `skit_invite_code_registry` `r` "
                             + "ON `r`.`normalized_code`=UPPER(TRIM(`a`.`root_invite_code`)) "
                             + "WHERE `a`.`deleted`=b'0' AND (`r`.`owner_type`<>'AGENT' OR `r`.`tenant_id`<>`a`.`tenant_id` "
-                            + "OR `r`.`agent_id`<>`a`.`id` OR `r`.`member_id` IS NOT NULL) ORDER BY `a`.`tenant_id`,`a`.`id`");
+                            + "OR `r`.`agent_id`<>`a`.`id` OR `r`.`member_id` IS NOT NULL "
+                            + "OR `r`.`status`<>'ACTIVE') ORDER BY `a`.`tenant_id`,`a`.`id`");
             assertNoTask2PreflightRows("invite registry active agent code mismatch",
                     "SELECT 'skit_agent' AS `owner_table`,`a`.`tenant_id`,`a`.`id` AS `owner_id`,"
                             + "UPPER(TRIM(`a`.`root_invite_code`)) AS `expected_code`,`r`.`normalized_code` AS `actual_code`,"
@@ -1517,7 +1630,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                             + "FROM `skit_member` `m` JOIN `skit_invite_code_registry` `r` "
                             + "ON `r`.`normalized_code`=UPPER(TRIM(`m`.`invite_code`)) "
                             + "WHERE `m`.`deleted`=b'0' AND (`r`.`owner_type`<>'MEMBER' OR `r`.`tenant_id`<>`m`.`tenant_id` "
-                            + "OR `r`.`member_id`<>`m`.`id` OR `r`.`agent_id` IS NOT NULL) ORDER BY `m`.`tenant_id`,`m`.`id`");
+                            + "OR `r`.`member_id`<>`m`.`id` OR `r`.`agent_id` IS NOT NULL "
+                            + "OR `r`.`status`<>'ACTIVE') ORDER BY `m`.`tenant_id`,`m`.`id`");
             assertNoTask2PreflightRows("invite registry active member code mismatch",
                     "SELECT 'skit_member' AS `owner_table`,`m`.`tenant_id`,`m`.`id` AS `owner_id`,"
                             + "UPPER(TRIM(`m`.`invite_code`)) AS `expected_code`,`r`.`normalized_code` AS `actual_code`,"
@@ -1526,6 +1640,23 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                             + "WHERE `m`.`deleted`=b'0' AND `r`.`normalized_code`<>UPPER(TRIM(`m`.`invite_code`)) "
                             + "ORDER BY `m`.`tenant_id`,`m`.`id`");
         }
+    }
+
+    private void validateTask2InviteRegistryCoverage() {
+        assertNoTask2PreflightRows("agent without its exact active invite registry owner",
+                "SELECT 'AGENT' AS `owner_type`,`a`.`tenant_id`,`a`.`id` AS `owner_id`,"
+                        + "UPPER(TRIM(`a`.`root_invite_code`)) AS `normalized_code` FROM `skit_agent` `a` "
+                        + "LEFT JOIN `skit_invite_code_registry` `r` ON `r`.`tenant_id`=`a`.`tenant_id` "
+                        + "AND `r`.`owner_type`='AGENT' AND `r`.`agent_id`=`a`.`id` AND `r`.`member_id` IS NULL "
+                        + "AND `r`.`status`='ACTIVE' AND `r`.`normalized_code`=UPPER(TRIM(`a`.`root_invite_code`)) "
+                        + "WHERE `a`.`deleted`=b'0' AND `r`.`id` IS NULL ORDER BY `a`.`tenant_id`,`a`.`id`");
+        assertNoTask2PreflightRows("member without its exact active invite registry owner",
+                "SELECT 'MEMBER' AS `owner_type`,`m`.`tenant_id`,`m`.`id` AS `owner_id`,"
+                        + "UPPER(TRIM(`m`.`invite_code`)) AS `normalized_code` FROM `skit_member` `m` "
+                        + "LEFT JOIN `skit_invite_code_registry` `r` ON `r`.`tenant_id`=`m`.`tenant_id` "
+                        + "AND `r`.`owner_type`='MEMBER' AND `r`.`member_id`=`m`.`id` AND `r`.`agent_id` IS NULL "
+                        + "AND `r`.`status`='ACTIVE' AND `r`.`normalized_code`=UPPER(TRIM(`m`.`invite_code`)) "
+                        + "WHERE `m`.`deleted`=b'0' AND `r`.`id` IS NULL ORDER BY `m`.`tenant_id`,`m`.`id`");
     }
 
     private void validateTask2Reference(String childTable, String childColumn, String parentTable) {
@@ -1632,6 +1763,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 true, requireAll);
         validateRequiredIndex("skit_ad_revenue_event", "uk_skit_revenue_source_idem",
                 "tenant_id,ad_account_id,source_type,external_event_id", true, requireAll);
+        validateRequiredIndex("skit_ad_revenue_event", "idx_skit_revenue_event_external",
+                "tenant_id,provider,external_event_id", false, requireAll);
         validateRequiredIndex("skit_ad_revenue_event", "uk_skit_revenue_inbox_source",
                 "tenant_id,callback_inbox_id,source_type", true, requireAll);
         validateRequiredIndex("skit_ad_revenue_event", "uk_skit_revenue_session_source",
@@ -1932,7 +2065,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private void ensureTask2Trigger(Task2TriggerSpec spec) {
         List<String> existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY, String.class, spec.trigger);
         if (existing.isEmpty()) {
-            jdbcTemplate.execute(addTriggerSql(spec.table, spec.trigger, spec.action));
+            jdbcTemplate.execute(addTriggerSql(spec.table, spec.trigger, spec.event, spec.action));
             existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY, String.class, spec.trigger);
         }
         validateTask2TriggerDefinition(spec, existing);
@@ -1940,7 +2073,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
     private void validateTask2TriggerDefinition(Task2TriggerSpec spec, List<String> existing) {
         String actual = existing.size() == 1 ? normalizeTriggerDefinition(existing.get(0)) : null;
-        String expected = normalizeTriggerDefinition("BEFORE:UPDATE:" + spec.table + ":" + spec.action);
+        String expected = normalizeTriggerDefinition("BEFORE:" + spec.event + ":" + spec.table + ":" + spec.action);
         if (!expected.equals(actual)) {
             throw new IllegalStateException("Incompatible existing trigger " + spec.trigger
                     + ": expected=" + expected + ", actual=" + actual);
@@ -2084,10 +2217,13 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return count != null && count > 0;
     }
 
+    private boolean indexExists(String table, String index) {
+        Integer count = jdbcTemplate.queryForObject(INDEX_EXISTS_QUERY, Integer.class, table, index);
+        return count != null && count > 0;
+    }
+
     private void dropIndexIfExists(String table, String index) {
-        Integer count = jdbcTemplate.queryForObject(INDEX_EXISTS_QUERY,
-                Integer.class, table, index);
-        if (count != null && count > 0) {
+        if (indexExists(table, index)) {
             jdbcTemplate.execute(dropIndexSql(table, index));
         }
     }
