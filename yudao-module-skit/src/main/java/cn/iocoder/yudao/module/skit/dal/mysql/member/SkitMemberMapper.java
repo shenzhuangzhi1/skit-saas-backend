@@ -6,11 +6,17 @@ import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
 @Mapper
 public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
+
+    @Select("SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `id`=#{id} "
+            + "AND `deleted`=b'0' FOR UPDATE")
+    SkitMemberDO selectByTenantAndIdForUpdate(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
     default SkitMemberDO selectByMobile(String mobile) {
         return selectOne(SkitMemberDO::getMobile, mobile);

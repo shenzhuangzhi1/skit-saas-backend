@@ -17,6 +17,9 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.OwnerType;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.ResolvedOwner;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.enums.oauth2.OAuth2ClientConstants;
 import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
@@ -53,6 +56,8 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     @Resource
     private SkitAgentMapper agentMapper;
     @Resource
+    private SkitInviteCodeRegistryService inviteCodeRegistryService;
+    @Resource
     private TenantService tenantService;
     @Resource
     private PasswordEncoder passwordEncoder;
@@ -64,27 +69,35 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AuthResult register(RegisterCommand command) {
-        InvitationTarget invitation = resolveTarget(normalizeCode(command.getInviteCode()));
-        if (!Objects.equals(invitation.tenantId, command.getTenantId())) {
+        String inviteCode = normalizeCode(command.getInviteCode());
+        ResolvedOwner discovered = requireActiveOwner(inviteCode);
+        if (!Objects.equals(discovered.getTenantId(), command.getTenantId())) {
             throw exception(MEMBER_APP_CONTEXT_INVALID);
         }
-        return inTenant(invitation.tenantId, () -> {
+        return inTenant(discovered.getTenantId(), () -> {
+            tenantService.validTenant(discovered.getTenantId());
+            SkitMemberDO inviter = lockAndValidateInviter(discovered, inviteCode);
+            ResolvedOwner locked = inviteCodeRegistryService.lockActive(discovered.getOwnerType(),
+                    discovered.getTenantId(), discovered.getOwnerId(), inviteCode);
+            validateLockedOwner(discovered, locked, inviteCode);
+            validateOwningAgent(discovered, inviter);
             if (memberMapper.selectByMobile(command.getMobile()) != null) {
                 throw exception(MEMBER_MOBILE_EXISTS);
             }
-            SkitMemberDO inviter = invitation.inviterId == null ? null : memberMapper.selectById(invitation.inviterId);
-            if (invitation.inviterId != null && (inviter == null || CommonStatusEnum.isDisable(inviter.getStatus()))) {
-                throw exception(INVITE_CODE_INVALID);
-            }
+            String memberInviteCode = generateUniqueInviteCode();
             SkitMemberDO member = SkitMemberDO.builder()
                     .mobile(command.getMobile()).password(passwordEncoder.encode(command.getPassword()))
                     .nickname(StrUtil.blankToDefault(command.getNickname(), command.getMobile()))
-                    .inviterId(invitation.inviterId).inviteCode(generateUniqueInviteCode())
+                    .inviterId(inviter == null ? null : inviter.getId()).inviteCode(memberInviteCode)
                     .depth(inviter == null ? 0 : inviter.getDepth() + 1)
                     .status(CommonStatusEnum.ENABLE.getStatus()).registerIp(command.getRegisterIp()).build();
             memberMapper.insert(member);
-            buildClosure(member.getId(), invitation.inviterId);
-            return createToken(member, invitation.tenantId);
+            if (member.getId() == null) {
+                throw new IllegalStateException("Member insert did not return an id");
+            }
+            inviteCodeRegistryService.claimMember(discovered.getTenantId(), member.getId(), memberInviteCode);
+            buildClosure(member.getId(), inviter == null ? null : inviter.getId());
+            return createToken(member, discovered.getTenantId());
         });
     }
 
@@ -144,20 +157,23 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     @Override
     public InvitationView resolveInvitation(String inviteCode) {
         InvitationTarget target = resolveTarget(normalizeCode(inviteCode));
-        TenantDO tenant = tenantService.getTenant(target.tenantId);
-        SkitAgentDO agent = agentMapper.selectByTenantId(target.tenantId);
-        InvitationView result = new InvitationView();
-        result.setValid(true);
-        result.setType(target.inviterId == null ? "AGENT" : "MEMBER");
-        result.setTenantId(target.tenantId);
-        result.setTenantCode(agent.getTenantCode());
-        result.setTenantName(tenant == null ? agent.getTenantCode() : tenant.getName());
-        result.setInviterId(target.inviterId);
-        if (target.inviterId != null) {
-            SkitMemberDO inviter = inTenant(target.tenantId, () -> memberMapper.selectById(target.inviterId));
-            result.setInviterNickname(inviter == null ? null : inviter.getNickname());
-        }
-        return result;
+        return inTenant(target.tenantId, () -> {
+            TenantDO tenant = tenantService.getTenant(target.tenantId);
+            SkitAgentDO agent = agentMapper.selectByTenantId(target.tenantId);
+            validateTenantAgent(target.tenantId, agent);
+            InvitationView result = new InvitationView();
+            result.setValid(true);
+            result.setType(target.inviterId == null ? "AGENT" : "MEMBER");
+            result.setTenantId(target.tenantId);
+            result.setTenantCode(agent.getTenantCode());
+            result.setTenantName(tenant == null ? agent.getTenantCode() : tenant.getName());
+            result.setInviterId(target.inviterId);
+            if (target.inviterId != null) {
+                SkitMemberDO inviter = memberMapper.selectById(target.inviterId);
+                result.setInviterNickname(inviter == null ? null : inviter.getNickname());
+            }
+            return result;
+        });
     }
 
     @Override
@@ -320,22 +336,111 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         return result;
     }
 
+    private ResolvedOwner requireActiveOwner(String inviteCode) {
+        ResolvedOwner owner = inviteCodeRegistryService.resolveActive(inviteCode);
+        if (!isActiveOwner(owner, inviteCode)) {
+            throw exception(INVITE_CODE_INVALID);
+        }
+        return owner;
+    }
+
+    private SkitMemberDO lockAndValidateInviter(ResolvedOwner owner, String inviteCode) {
+        if (owner.getOwnerType() == OwnerType.AGENT) {
+            SkitAgentDO agent = agentMapper.selectByTenantIdForUpdate(owner.getTenantId());
+            validateAgentOwner(owner, agent, inviteCode);
+            return null;
+        }
+        if (owner.getOwnerType() == OwnerType.MEMBER) {
+            SkitMemberDO member = memberMapper.selectByTenantAndIdForUpdate(owner.getTenantId(), owner.getOwnerId());
+            validateMemberOwner(owner, member, inviteCode);
+            return member;
+        }
+        throw exception(INVITE_CODE_INVALID);
+    }
+
+    private void validateOwningAgent(ResolvedOwner owner, SkitMemberDO inviter) {
+        if (owner.getOwnerType() == OwnerType.AGENT) {
+            return; // The agent row was already locked and validated first.
+        }
+        if (inviter == null) {
+            throw exception(INVITE_CODE_INVALID);
+        }
+        validateTenantAgent(owner.getTenantId(), agentMapper.selectByTenantId(owner.getTenantId()));
+    }
+
+    private void validateAgentOwner(ResolvedOwner owner, SkitAgentDO agent, String inviteCode) {
+        if (owner.getOwnerType() != OwnerType.AGENT || agent == null
+                || !Objects.equals(owner.getTenantId(), agent.getTenantId())
+                || !Objects.equals(owner.getOwnerId(), agent.getId())
+                || agent.getArchivedTime() != null || !sameCode(agent.getRootInviteCode(), inviteCode)) {
+            throw exception(INVITE_CODE_INVALID);
+        }
+    }
+
+    private void validateMemberOwner(ResolvedOwner owner, SkitMemberDO member, String inviteCode) {
+        if (owner.getOwnerType() != OwnerType.MEMBER || member == null
+                || !Objects.equals(owner.getTenantId(), member.getTenantId())
+                || !Objects.equals(owner.getOwnerId(), member.getId())
+                || !CommonStatusEnum.isEnable(member.getStatus())
+                || !sameCode(member.getInviteCode(), inviteCode)) {
+            throw exception(INVITE_CODE_INVALID);
+        }
+    }
+
+    private void validateTenantAgent(Long tenantId, SkitAgentDO agent) {
+        if (agent == null || !Objects.equals(tenantId, agent.getTenantId()) || agent.getArchivedTime() != null) {
+            throw exception(INVITE_CODE_INVALID);
+        }
+    }
+
+    private void validateLockedOwner(ResolvedOwner discovered, ResolvedOwner locked, String inviteCode) {
+        if (!isActiveOwner(locked, inviteCode)
+                || !Objects.equals(discovered.getId(), locked.getId())
+                || !Objects.equals(discovered.getTenantId(), locked.getTenantId())
+                || discovered.getOwnerType() != locked.getOwnerType()
+                || !Objects.equals(discovered.getOwnerId(), locked.getOwnerId())) {
+            throw exception(INVITE_CODE_INVALID);
+        }
+    }
+
+    private boolean isActiveOwner(ResolvedOwner owner, String inviteCode) {
+        return owner != null && owner.getId() != null && owner.getId() > 0
+                && owner.getTenantId() != null && owner.getTenantId() > 0
+                && owner.getOwnerType() != null && owner.getOwnerId() != null && owner.getOwnerId() > 0
+                && ((owner.getOwnerType() == OwnerType.AGENT && owner.getAgentId() != null
+                        && owner.getMemberId() == null)
+                    || (owner.getOwnerType() == OwnerType.MEMBER && owner.getMemberId() != null
+                        && owner.getAgentId() == null))
+                && "ACTIVE".equals(owner.getStatus()) && owner.getRotatedAt() == null
+                && sameCode(owner.getNormalizedCode() == null ? owner.getCode() : owner.getNormalizedCode(), inviteCode);
+    }
+
+    private boolean sameCode(String left, String right) {
+        if (StrUtil.isBlank(left) || StrUtil.isBlank(right)) {
+            return false;
+        }
+        return left.trim().toUpperCase(Locale.ROOT).equals(right.trim().toUpperCase(Locale.ROOT));
+    }
+
     private InvitationTarget resolveTarget(String inviteCode) {
-        SkitAgentDO agent = agentMapper.selectByRootInviteCode(inviteCode);
-        if (agent != null) {
-            tenantService.validTenant(agent.getTenantId());
-            return new InvitationTarget(agent.getTenantId(), null);
-        }
-        SkitMemberDO inviter = withoutTenant(() -> memberMapper.selectByInviteCode(inviteCode));
-        if (inviter == null || CommonStatusEnum.isDisable(inviter.getStatus())) {
-            throw exception(INVITE_CODE_INVALID);
-        }
-        SkitAgentDO inviterAgent = agentMapper.selectByTenantId(inviter.getTenantId());
-        if (inviterAgent == null) {
-            throw exception(INVITE_CODE_INVALID);
-        }
-        tenantService.validTenant(inviter.getTenantId());
-        return new InvitationTarget(inviter.getTenantId(), inviter.getId());
+        ResolvedOwner owner = requireActiveOwner(inviteCode);
+        return inTenant(owner.getTenantId(), () -> {
+            Long inviterId;
+            if (owner.getOwnerType() == OwnerType.AGENT) {
+                SkitAgentDO agent = agentMapper.selectByTenantId(owner.getTenantId());
+                validateAgentOwner(owner, agent, inviteCode);
+                inviterId = null;
+            } else if (owner.getOwnerType() == OwnerType.MEMBER) {
+                SkitMemberDO member = memberMapper.selectById(owner.getOwnerId());
+                validateMemberOwner(owner, member, inviteCode);
+                validateTenantAgent(owner.getTenantId(), agentMapper.selectByTenantId(owner.getTenantId()));
+                inviterId = member.getId();
+            } else {
+                throw exception(INVITE_CODE_INVALID);
+            }
+            tenantService.validTenant(owner.getTenantId());
+            return new InvitationTarget(owner.getTenantId(), inviterId);
+        });
     }
 
     private String generateUniqueInviteCode() {
@@ -345,8 +450,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
                 builder.append(INVITE_ALPHABET[SECURE_RANDOM.nextInt(INVITE_ALPHABET.length)]);
             }
             String code = builder.toString();
-            if (agentMapper.selectByRootInviteCode(code) == null
-                    && withoutTenant(() -> memberMapper.selectByInviteCode(code)) == null) {
+            if (!inviteCodeRegistryService.isClaimed(code)) {
                 return code;
             }
         }
@@ -363,12 +467,6 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     private <T> T inTenant(Long tenantId, Supplier<T> supplier) {
         AtomicReference<T> result = new AtomicReference<>();
         TenantUtils.execute(tenantId, () -> result.set(supplier.get()));
-        return result.get();
-    }
-
-    private <T> T withoutTenant(Supplier<T> supplier) {
-        AtomicReference<T> result = new AtomicReference<>();
-        TenantUtils.executeIgnore(() -> result.set(supplier.get()));
         return result.get();
     }
 
