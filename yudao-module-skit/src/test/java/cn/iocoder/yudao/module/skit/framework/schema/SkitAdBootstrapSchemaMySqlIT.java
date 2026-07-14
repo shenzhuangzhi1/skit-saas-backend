@@ -48,11 +48,13 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         // Runtime-first installation must expose the same singleton keys before either bootstrap is applied.
         initializeSkitSchema();
         assertLegacySingletonIndexes();
+        assertPolicySnapshotImmutabilityTriggers();
         executeBootstrap(standalone);
         executeBootstrap(standalone);
         initializeSkitSchema();
         new SkitSchemaInitializer(jdbc()).validateTask2TableSignatures(true);
         assertLegacySingletonIndexes();
+        assertPolicySnapshotImmutabilityTriggers();
     }
 
     private void installAndVerify(String script) throws Exception {
@@ -67,12 +69,22 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         initializeSkitSchema();
         new SkitSchemaInitializer(jdbc()).validateTask2TableSignatures(true);
         assertLegacySingletonIndexes();
+        assertPolicySnapshotImmutabilityTriggers();
     }
 
     private void assertLegacySingletonIndexes() {
         assertExactUniqueIndex("skit_admin_record", "uk_skit_admin_record_tenant_page_row",
                 "tenant_id,page_key,row_key");
         assertExactUniqueIndex("skit_system_config", "uk_skit_system_config_tenant", "tenant_id");
+    }
+
+    private void assertPolicySnapshotImmutabilityTriggers() {
+        Integer triggerCount = jdbc().queryForObject("SELECT COUNT(*) FROM information_schema.TRIGGERS "
+                        + "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='skit_ad_policy_snapshot' "
+                        + "AND TRIGGER_NAME IN ('trg_skit_policy_snapshot_immutable',"
+                        + "'trg_skit_policy_snapshot_no_delete')",
+                Integer.class);
+        assertEquals(2, triggerCount);
     }
 
     private void assertExactUniqueIndex(String table, String index, String columns) {

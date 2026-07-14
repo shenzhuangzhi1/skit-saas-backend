@@ -88,8 +88,8 @@ public class SkitCommissionServiceImpl implements SkitCommissionService {
         Set<Integer> levels = new HashSet<>();
         int total = 0;
         for (RuleView rule : rules) {
-            if (rule == null || rule.getLevel() == null || rule.getLevel() < 0 || rule.getLevel() > 100) {
-                throw exception(COMMISSION_RULE_INVALID, "level 必须在 0 到 100 之间");
+            if (rule == null || rule.getLevel() == null || rule.getLevel() < 0) {
+                throw exception(COMMISSION_RULE_INVALID, "level 必须大于等于 0");
             }
             if (!levels.add(rule.getLevel())) {
                 throw exception(COMMISSION_RULE_INVALID, "level 不能重复");

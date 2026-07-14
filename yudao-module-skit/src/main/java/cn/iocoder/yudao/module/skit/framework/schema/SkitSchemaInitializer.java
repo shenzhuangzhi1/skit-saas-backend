@@ -270,6 +270,15 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                                     "member_id", "creator", "create_time", "deleted")),
                     new Task2TriggerSpec("skit_invite_code_registry", "trg_skit_invite_registry_no_delete", "DELETE",
                             rejectDeleteAction("invite code registry rows cannot be deleted"))));
+    private static final int POLICY_SNAPSHOT_IMMUTABILITY_MIGRATION_VERSION = 2026071402;
+    private static final String POLICY_SNAPSHOT_IMMUTABLE_ACTION =
+            "BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='policy snapshot rows are immutable'; END";
+    private static final List<Task2TriggerSpec> POLICY_SNAPSHOT_IMMUTABILITY_TRIGGER_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2TriggerSpec("skit_ad_policy_snapshot", "trg_skit_policy_snapshot_immutable",
+                            POLICY_SNAPSHOT_IMMUTABLE_ACTION),
+                    new Task2TriggerSpec("skit_ad_policy_snapshot", "trg_skit_policy_snapshot_no_delete", "DELETE",
+                            POLICY_SNAPSHOT_IMMUTABLE_ACTION)));
     private static final Pattern DEFAULT_DEFINITION_PATTERN = Pattern.compile(
             "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern GENERATED_DEFINITION_PATTERN = Pattern.compile(
@@ -507,6 +516,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 domainIntegritySteps()));
         result.add(migrationFromSteps(SkitAdSchemaDdl.VERSION,
                 "add tenant-safe verified advertising and finance schema", task2SchemaSteps()));
+        result.add(migrationFromSteps(POLICY_SNAPSHOT_IMMUTABILITY_MIGRATION_VERSION,
+                "enforce ad policy snapshot immutability", policySnapshotImmutabilitySteps()));
         return sortedMigrations(result);
     }
 
@@ -1511,6 +1522,14 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private List<SchemaStep> task2ParentTriggerSteps() {
         List<SchemaStep> steps = new ArrayList<>();
         for (Task2TriggerSpec spec : TASK_2_PARENT_TRIGGER_SPECS) {
+            steps.add(task2TriggerStep(spec));
+        }
+        return steps;
+    }
+
+    private List<SchemaStep> policySnapshotImmutabilitySteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (Task2TriggerSpec spec : POLICY_SNAPSHOT_IMMUTABILITY_TRIGGER_SPECS) {
             steps.add(task2TriggerStep(spec));
         }
         return steps;

@@ -5695,6 +5695,16 @@ BEFORE DELETE ON `skit_invite_code_registry` FOR EACH ROW
 BEGIN
   SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invite code registry rows cannot be deleted';
 END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_policy_snapshot_immutable`
+BEFORE UPDATE ON `skit_ad_policy_snapshot` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'policy snapshot rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_policy_snapshot_no_delete`
+BEFORE DELETE ON `skit_ad_policy_snapshot` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'policy snapshot rows are immutable';
+END$$
 DELIMITER ;
 
 -- SKIT_CANONICAL_SCHEMA_END

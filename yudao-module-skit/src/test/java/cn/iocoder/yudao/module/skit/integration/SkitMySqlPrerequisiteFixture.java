@@ -20,9 +20,12 @@ final class SkitMySqlPrerequisiteFixture {
                 + "PRIMARY KEY (`id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         jdbc.execute("CREATE TABLE `system_tenant` ("
                 + "`id` bigint NOT NULL AUTO_INCREMENT,"
+                + "`name` varchar(30) NOT NULL DEFAULT '',"
                 + "`package_id` bigint NOT NULL,"
                 + "`contact_user_id` bigint DEFAULT NULL,"
                 + "`contact_mobile` varchar(11) DEFAULT NULL,"
+                + "`status` tinyint NOT NULL DEFAULT 0,"
+                + "`expire_time` datetime NOT NULL DEFAULT '2099-01-01 00:00:00',"
                 + "`updater` varchar(64) DEFAULT '',"
                 + "`update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                 + "`deleted` bit(1) NOT NULL DEFAULT b'0',"

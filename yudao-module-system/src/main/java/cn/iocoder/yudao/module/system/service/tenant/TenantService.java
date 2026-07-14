@@ -68,6 +68,14 @@ public interface TenantService {
      */
     TenantDO getTenant(Long id);
 
+    /**
+     * Locks and returns one tenant row in the caller's active transaction.
+     *
+     * @param id tenant id
+     * @return tenant, or {@code null} when it does not exist
+     */
+    TenantDO getTenantForUpdate(Long id);
+
     /** Batch-loads tenants while preserving mapped fields such as websites. */
     List<TenantDO> getTenantList(Collection<Long> ids);
 

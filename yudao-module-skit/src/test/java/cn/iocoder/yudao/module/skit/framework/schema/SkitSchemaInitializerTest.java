@@ -97,6 +97,43 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
+    void shouldDeclarePolicySnapshotImmutabilityAsSeparateChecksumManifest() throws Exception {
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate);
+        Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<SkitSchemaInitializer.Migration> migrations =
+                (List<SkitSchemaInitializer.Migration>) field.get(initializer);
+
+        SkitSchemaInitializer.Migration task2 = null;
+        SkitSchemaInitializer.Migration immutability = null;
+        for (SkitSchemaInitializer.Migration migration : migrations) {
+            if (migration.getVersion() == 2026071401) {
+                task2 = migration;
+            } else if (migration.getVersion() == 2026071402) {
+                immutability = migration;
+            }
+        }
+
+        assertEquals("64e450e4b8048a00b0ce7fbbe9f4b162ec519b5cd3f2c83d12470d92fe72fdbf",
+                task2 == null ? null : task2.getChecksum(), "released Task 2 checksum must remain byte-stable");
+        assertEquals("enforce ad policy snapshot immutability",
+                immutability == null ? null : immutability.getDescription());
+        assertEquals(2, immutability == null ? -1 : immutability.getManifest().size());
+        String manifest = immutability == null ? "" : String.join("\n", immutability.getManifest());
+        assertTrue(manifest.contains("skit_ad_policy_snapshot"));
+        assertTrue(manifest.contains("trg_skit_policy_snapshot_immutable"));
+        assertTrue(manifest.contains("trg_skit_policy_snapshot_no_delete"));
+        assertTrue(manifest.contains("java.lang.String:UPDATE"));
+        assertTrue(manifest.contains("java.lang.String:DELETE"));
+        assertTrue(manifest.contains("policy snapshot rows are immutable"));
+        assertEquals("11f815a76c7f15bacfc9d9a29a60121f6736ec18bbd712a02a0190ff69c8c18d",
+                immutability == null ? null : immutability.getChecksum());
+        assertNotEquals(task2 == null ? null : task2.getChecksum(),
+                immutability == null ? null : immutability.getChecksum());
+    }
+
+    @Test
     void shouldExecutePendingMigrationsInVersionOrder() {
         List<String> executionOrder = new ArrayList<>();
         SkitSchemaInitializer.Migration third = migration(3, "third", executionOrder);

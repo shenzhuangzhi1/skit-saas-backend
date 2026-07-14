@@ -18,6 +18,14 @@ public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
             + "AND `deleted`=b'0' FOR UPDATE")
     SkitMemberDO selectByTenantAndIdForUpdate(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
+    @Select({"<script>",
+            "SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `deleted`=b'0' AND `id` IN",
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "FOR UPDATE",
+            "</script>"})
+    List<SkitMemberDO> selectByTenantAndIdsForUpdate(@Param("tenantId") Long tenantId,
+                                                      @Param("ids") List<Long> ids);
+
     default SkitMemberDO selectByMobile(String mobile) {
         return selectOne(SkitMemberDO::getMobile, mobile);
     }
