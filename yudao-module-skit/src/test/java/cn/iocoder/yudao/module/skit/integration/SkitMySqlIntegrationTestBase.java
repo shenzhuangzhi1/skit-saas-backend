@@ -54,7 +54,10 @@ public abstract class SkitMySqlIntegrationTestBase {
         transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         try {
             SkitMySqlPrerequisiteFixture.install(jdbcTemplate);
-            new SkitSchemaInitializer(jdbcTemplate).run(null);
+            beforeSkitSchemaInitialization(jdbcTemplate);
+            if (initializeSkitSchemaInBeforeAll()) {
+                initializeSkitSchema();
+            }
         } catch (RuntimeException | Error exception) {
             adminJdbc.execute("DROP DATABASE IF EXISTS `" + schemaName + "`");
             throw exception;
@@ -72,6 +75,24 @@ public abstract class SkitMySqlIntegrationTestBase {
 
     protected final JdbcTemplate jdbc() {
         return jdbcTemplate;
+    }
+
+    /**
+     * Installs a legacy fixture after system prerequisites but before the production initializer.
+     * Normal integration tests intentionally inherit the no-op implementation.
+     */
+    protected void beforeSkitSchemaInitialization(JdbcTemplate jdbc) {
+    }
+
+    /**
+     * Lets a migration-failure test invoke the initializer inside its assertion.
+     */
+    protected boolean initializeSkitSchemaInBeforeAll() {
+        return true;
+    }
+
+    protected final void initializeSkitSchema() {
+        new SkitSchemaInitializer(jdbcTemplate).run(null);
     }
 
     protected final DataSource dataSource() {

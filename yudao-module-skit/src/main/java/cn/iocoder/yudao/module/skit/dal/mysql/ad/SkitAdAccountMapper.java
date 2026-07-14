@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -14,6 +16,10 @@ import java.util.List;
 
 @Mapper
 public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
+
+    @Select("SELECT `id` FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} AND `id`=#{id} "
+            + "AND `deleted`=b'0' FOR UPDATE")
+    Long lockByTenantAndId(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
     default SkitAdAccountDO selectByProvider(String provider) {
         return selectOne(SkitAdAccountDO::getProvider, provider);

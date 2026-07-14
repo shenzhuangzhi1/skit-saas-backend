@@ -72,6 +72,7 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
         }
 
         BigDecimal gross = normalizeMoney(command.getGrossAmount());
+        long grossAmountUnits = toMoneyUnits(gross);
         SkitAdRevenueEventDO existing = eventMapper.selectByProviderAndExternalEventId(
                 provider, command.getExternalEventId());
         if (existing != null) {
@@ -95,6 +96,14 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
                 .occurredTime(normalizeOccurredTime(command))
                 .completed(Boolean.TRUE.equals(command.getCompleted())).mock(Boolean.TRUE.equals(command.getMock()))
                 .status(ignored ? REVENUE_EVENT_IGNORED : REVENUE_EVENT_ESTIMATED)
+                .sourceType(REVENUE_SOURCE_LEGACY_CLIENT)
+                .sourceAmountUnits(grossAmountUnits).estimatedAmountUnits(grossAmountUnits)
+                .reconciledAmountUnits(0L).amountScale(MONEY_SCALE).sourceCurrency(LEGACY_CURRENCY_CNY)
+                .matchStatus(REVENUE_MATCH_LEGACY_UNMATCHED)
+                .sourceVerificationStatus(REVENUE_VERIFICATION_LEGACY_UNVERIFIED)
+                .rewardQualificationStatus(REWARD_QUALIFICATION_NOT_APPLICABLE)
+                .reconciliationStatus(REVENUE_RECONCILIATION_NON_SETTLEABLE)
+                .version(0).legacyUnverified(true)
                 .rawData(command.getRawData()).build();
         if (ignored) {
             if (!insertEvent(event)) {
@@ -128,12 +137,20 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
             ledgerMapper.insert(SkitCommissionLedgerDO.builder().eventId(event.getId())
                     .beneficiaryType(BENEFICIARY_MEMBER).beneficiaryMemberId(allocation.getMemberId())
                     .levelNo(allocation.getLevelNo()).grossAmount(gross).rateBps(allocation.getRateBps())
-                    .amount(allocation.getAmount()).ruleVersion(snapshot.getVersion()).status(LEDGER_ESTIMATED).build());
+                    .amount(allocation.getAmount()).ruleVersion(snapshot.getVersion()).status(LEDGER_ESTIMATED)
+                    .entryType(LEDGER_ENTRY_LEGACY_ESTIMATE).balanceBucket(LEDGER_BALANCE_NON_SETTLEABLE)
+                    .currency(LEGACY_CURRENCY_CNY).grossAmountUnits(grossAmountUnits)
+                    .amountUnits(toMoneyUnits(allocation.getAmount())).amountScale(MONEY_SCALE)
+                    .revisionNo(0).legacyUnverified(true).build());
         }
         ledgerMapper.insert(SkitCommissionLedgerDO.builder().eventId(event.getId())
                 .beneficiaryType(BENEFICIARY_AGENT).beneficiaryMemberId(AGENT_BENEFICIARY_ID)
                 .levelNo(AGENT_LEDGER_LEVEL).grossAmount(gross).rateBps(distribution.getAgentRateBps())
-                .amount(distribution.getAgentAmount()).ruleVersion(snapshot.getVersion()).status(LEDGER_ESTIMATED).build());
+                .amount(distribution.getAgentAmount()).ruleVersion(snapshot.getVersion()).status(LEDGER_ESTIMATED)
+                .entryType(LEDGER_ENTRY_LEGACY_ESTIMATE).balanceBucket(LEDGER_BALANCE_NON_SETTLEABLE)
+                .currency(LEGACY_CURRENCY_CNY).grossAmountUnits(grossAmountUnits)
+                .amountUnits(toMoneyUnits(distribution.getAgentAmount())).amountScale(MONEY_SCALE)
+                .revisionNo(0).legacyUnverified(true).build());
         return buildReportResult(event, false);
     }
 
@@ -266,5 +283,9 @@ public class SkitRevenueServiceImpl implements SkitRevenueService {
 
     private LocalDateTime normalizeOccurredTime(ReportCommand command) {
         return reportValidator.normalizeOccurredTime(command.getOccurredTime());
+    }
+
+    private static long toMoneyUnits(BigDecimal amount) {
+        return amount.movePointRight(MONEY_SCALE).longValueExact();
     }
 }

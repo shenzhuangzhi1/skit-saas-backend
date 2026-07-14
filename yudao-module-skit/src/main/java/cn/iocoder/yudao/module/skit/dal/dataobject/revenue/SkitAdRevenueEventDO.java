@@ -33,4 +33,30 @@ public class SkitAdRevenueEventDO extends TenantBaseDO {
     private Integer ruleVersion;
     private String rawData;
 
+    /** Task 2 canonical provenance and reconciliation fields. */
+    private Long adSessionId;
+    private Long callbackInboxId;
+    private Long policySnapshotId;
+    private Long reconciliationBucketId;
+    private Long reconciliationRevisionId;
+    private String sourceType;
+    private String providerTransactionId;
+    private String providerShowId;
+    private String sdkRequestId;
+    private String adsourceId;
+    private Long sourceAmountUnits;
+    private Long estimatedAmountUnits;
+    private Long reconciledAmountUnits;
+    private Integer amountScale;
+    private String sourceCurrency;
+    private String matchStatus;
+    private String sourceVerificationStatus;
+    private String rewardQualificationStatus;
+    private String reconciliationStatus;
+    private LocalDateTime reconciledAt;
+    private LocalDateTime verifiedAt;
+    private byte[] payloadHash;
+    private Integer version;
+    private Boolean legacyUnverified;
+
 }

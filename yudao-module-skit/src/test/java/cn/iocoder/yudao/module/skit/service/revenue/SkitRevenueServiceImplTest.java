@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -122,12 +123,37 @@ class SkitRevenueServiceImplTest {
         assertFalse(result.getIdempotent());
         assertMoney("2.50000000", result.getEstimatedCommissionAmount());
         assertEquals(3, insertedLedgers.size());
+        ArgumentCaptor<SkitAdRevenueEventDO> eventCaptor = ArgumentCaptor.forClass(SkitAdRevenueEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertLegacyEventQuarantine(eventCaptor.getValue(), 1_000_000_000L);
         assertLedger(insertedLedgers.get(0), BENEFICIARY_MEMBER, SOURCE_MEMBER_ID, 0,
                 2500, "2.50000000", 5);
         assertLedger(insertedLedgers.get(1), BENEFICIARY_MEMBER, PARENT_MEMBER_ID, 1,
                 1000, "1.00000000", 5);
         assertLedger(insertedLedgers.get(2), BENEFICIARY_AGENT, AGENT_BENEFICIARY_ID, AGENT_LEDGER_LEVEL,
                 6500, "6.50000000", 5);
+    }
+
+    @Test
+    void legacyIgnoredRowIsAlsoUnverifiedAndPermanentlyNonsettleable() {
+        mockCurrentMemberAndAccount();
+        when(eventMapper.selectByProviderAndExternalEventId(PROVIDER_PANGLE, "event-ignored")).thenReturn(null);
+        when(adAccountService.getEnabledPublicConfig(PROVIDER_PANGLE)).thenReturn(publicConfig());
+        when(eventMapper.insert(any(SkitAdRevenueEventDO.class))).thenAnswer(invocation -> {
+            SkitAdRevenueEventDO event = invocation.getArgument(0);
+            event.setId(EVENT_ID);
+            return 1;
+        });
+        SkitRevenueService.ReportCommand command = reportCommand("event-ignored");
+        command.setCompleted(false);
+
+        SkitRevenueService.ReportResult result = revenueService.report(SOURCE_MEMBER_ID, command);
+
+        assertEquals("IGNORED", result.getStatus());
+        ArgumentCaptor<SkitAdRevenueEventDO> eventCaptor = ArgumentCaptor.forClass(SkitAdRevenueEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertLegacyEventQuarantine(eventCaptor.getValue(), 1_000_000_000L);
+        verifyNoInteractions(ledgerMapper, closureMapper, commissionService);
     }
 
     @Test
@@ -239,6 +265,30 @@ class SkitRevenueServiceImplTest {
         assertMoney(amount, ledger.getAmount());
         assertEquals(version, ledger.getRuleVersion());
         assertEquals(LEDGER_ESTIMATED, ledger.getStatus());
+        assertEquals(LEDGER_ENTRY_LEGACY_ESTIMATE, ledger.getEntryType());
+        assertEquals(LEDGER_BALANCE_NON_SETTLEABLE, ledger.getBalanceBucket());
+        assertEquals(LEGACY_CURRENCY_CNY, ledger.getCurrency());
+        assertEquals(1_000_000_000L, ledger.getGrossAmountUnits());
+        assertEquals(new BigDecimal(amount).movePointRight(MONEY_SCALE).longValueExact(),
+                ledger.getAmountUnits());
+        assertEquals(MONEY_SCALE, ledger.getAmountScale());
+        assertEquals(0, ledger.getRevisionNo());
+        assertTrue(ledger.getLegacyUnverified());
+    }
+
+    private void assertLegacyEventQuarantine(SkitAdRevenueEventDO event, long amountUnits) {
+        assertEquals(REVENUE_SOURCE_LEGACY_CLIENT, event.getSourceType());
+        assertEquals(amountUnits, event.getSourceAmountUnits());
+        assertEquals(amountUnits, event.getEstimatedAmountUnits());
+        assertEquals(0L, event.getReconciledAmountUnits());
+        assertEquals(MONEY_SCALE, event.getAmountScale());
+        assertEquals(LEGACY_CURRENCY_CNY, event.getSourceCurrency());
+        assertEquals(REVENUE_MATCH_LEGACY_UNMATCHED, event.getMatchStatus());
+        assertEquals(REVENUE_VERIFICATION_LEGACY_UNVERIFIED, event.getSourceVerificationStatus());
+        assertEquals(REWARD_QUALIFICATION_NOT_APPLICABLE, event.getRewardQualificationStatus());
+        assertEquals(REVENUE_RECONCILIATION_NON_SETTLEABLE, event.getReconciliationStatus());
+        assertEquals(0, event.getVersion());
+        assertTrue(event.getLegacyUnverified());
     }
 
     private void assertMoney(String expected, BigDecimal actual) {

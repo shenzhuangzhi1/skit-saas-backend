@@ -81,6 +81,16 @@ mybatis-plus:
     # 生产由部署环境注入；local/dev 配置只提供明确的非生产默认值。
     password: ${SKIT_AD_ENCRYPTION_KEY:}
 
+# Skit verified-ad credential envelopes use a dedicated AES-GCM implementation.
+# Additional map entries may retain explicitly selected old at-rest keys for bounded reads.
+# Key values are environment-sourced ASCII with an exact 16, 24, or 32-byte length; never inline them here.
+skit:
+  ad:
+    credential-encryption:
+      current-key-id: ${SKIT_AD_CREDENTIAL_KEY_ID:primary}
+      keys:
+        primary: ${SKIT_AD_CREDENTIAL_KEY:}
+
 mybatis-plus-join:
   banner: false # 是否打印 mybatis plus join banner，默认true
   sub-table-logic: true # 全局启用副表逻辑删除，默认true。关闭后关联查询不会加副表逻辑删除

@@ -7,6 +7,8 @@ import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -77,10 +79,12 @@ class SkitSchemaInitializerTest {
                 (List<SkitSchemaInitializer.Migration>) field.get(initializer);
         Map<Integer, String> expected = new HashMap<>();
         expected.put(2026071201, "bddb923e2d6f5b5d1def6ff115499d2cc32b59aa68959a11ae04caf2af916651");
+        expected.put(2026071250, "aa1000728588be79866149967180d83f6a97d83f02013cfd6db3bc70ebf9a34d");
         expected.put(2026071301, "b507341e6fbd47d275fba15494723510e7c3d410f4a6d1146ac1c594df0ce220");
         expected.put(2026071302, "18cdd108bae5ed0d8700aa31d2483b5030d8a7ac4143b18fa7d8310818f6c6c4");
         expected.put(2026071303, "ece068f30e1b6abe5344f1e6f1f179c55cae0a93c6e3e23bd8f511b7522a5a21");
         expected.put(2026071304, "666a0061892df38cb1cf0e4762d223580703e5f5682eb784775f53fe37f4f0ef");
+        expected.put(2026071401, "1f0c58b8c1ad2c2879bf78dc73ac73b3e4c0b51315664974d1575ecfb0543da5");
 
         Set<Integer> verifiedVersions = new HashSet<>();
         for (SkitSchemaInitializer.Migration migration : migrations) {
@@ -195,6 +199,78 @@ class SkitSchemaInitializerTest {
         assertTrue(exception.getMessage().contains("stored-checksum"));
         assertTrue(exception.getMessage().contains(migration.getChecksum()));
         assertTrue(executionOrder.isEmpty());
+    }
+
+    @Test
+    void shouldValidateEveryInstalledChecksumBeforeExecutingPendingMigration() {
+        List<String> executionOrder = new ArrayList<>();
+        SkitSchemaInitializer.Migration pending = migration(1, "pending", executionOrder);
+        SkitSchemaInitializer.Migration installed = migration(2, "installed", executionOrder);
+        when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.singletonList(
+                appliedMigration(installed.getVersion(), "tampered-checksum")));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new SkitSchemaInitializer(jdbcTemplate, Arrays.asList(pending, installed)).run(null));
+
+        assertTrue(exception.getMessage().contains("version 2"));
+        assertTrue(executionOrder.isEmpty(), "no pending migration may execute before full-history validation");
+    }
+
+    @Test
+    void shouldRejectUnknownInstalledMigrationVersionBeforeDdl() {
+        List<String> executionOrder = new ArrayList<>();
+        SkitSchemaInitializer.Migration known = migration(1, "known", executionOrder);
+        when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.singletonList(
+                appliedMigration(99, "future-checksum")));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new SkitSchemaInitializer(jdbcTemplate, Collections.singletonList(known)).run(null));
+
+        assertTrue(exception.getMessage().contains("Unknown installed schema migration version 99"));
+        assertTrue(executionOrder.isEmpty(), "unknown history must stop migration before pending DDL");
+    }
+
+    @Test
+    void shouldRejectSameNamedGeneratedColumnWithDifferentActiveSlotExpression() throws Exception {
+        Map<String, Object> definition = new HashMap<>();
+        definition.put("COLUMN_TYPE", "bigint");
+        definition.put("IS_NULLABLE", "YES");
+        definition.put("COLUMN_DEFAULT", null);
+        definition.put("EXTRA", "STORED GENERATED");
+        definition.put("GENERATION_EXPRESSION", "case when (`active` = 0) then `ad_account_id` else NULL end");
+        when(jdbcTemplate.queryForList(contains("GENERATION_EXPRESSION"),
+                eq("skit_ad_callback_key"), eq("active_account_id")))
+                .thenReturn(Collections.singletonList(definition));
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+        Method validator = SkitSchemaInitializer.class.getDeclaredMethod("validateColumnDefinition",
+                String.class, String.class, String.class);
+        validator.setAccessible(true);
+
+        InvocationTargetException exception = assertThrows(InvocationTargetException.class,
+                () -> validator.invoke(initializer, "skit_ad_callback_key", "active_account_id",
+                        "bigint GENERATED ALWAYS AS (CASE WHEN `active` = b'1' AND `revoked_at` IS NULL "
+                                + "THEN `ad_account_id` ELSE NULL END) STORED"));
+
+        assertTrue(exception.getCause() instanceof IllegalStateException);
+        assertTrue(exception.getCause().getMessage().contains("generation"));
+    }
+
+    @Test
+    void shouldPreserveMeaningfulParenthesesWhenComparingCheckDefinitions() throws Exception {
+        when(jdbcTemplate.queryForList(contains("CHECK_CLAUSE"), eq(String.class),
+                eq("skit_example"), eq("ck_skit_example")))
+                .thenReturn(Collections.singletonList("(`a` = 1 AND `b` = 2) OR `c` = 3"));
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate, Collections.emptyList());
+        Method addCheck = SkitSchemaInitializer.class.getDeclaredMethod("addCheckIfMissing",
+                String.class, String.class, String.class);
+        addCheck.setAccessible(true);
+
+        InvocationTargetException exception = assertThrows(InvocationTargetException.class,
+                () -> addCheck.invoke(initializer, "skit_example", "ck_skit_example",
+                        "`a` = 1 AND (`b` = 2 OR `c` = 3)"));
+
+        assertTrue(exception.getCause() instanceof IllegalStateException);
+        assertTrue(exception.getCause().getMessage().contains("Incompatible existing check constraint"));
     }
 
     @Test
