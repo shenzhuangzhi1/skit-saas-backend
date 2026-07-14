@@ -18,6 +18,10 @@ public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
             + "AND `deleted`=b'0' FOR UPDATE")
     SkitMemberDO selectByTenantAndIdForUpdate(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
+    @Select("SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `id`=#{id} "
+            + "AND `deleted`=b'0' FOR SHARE")
+    SkitMemberDO selectByTenantAndIdForShare(@Param("tenantId") Long tenantId, @Param("id") Long id);
+
     @Select({"<script>",
             "SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `deleted`=b'0' AND `id` IN",
             "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
@@ -25,6 +29,14 @@ public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
             "</script>"})
     List<SkitMemberDO> selectByTenantAndIdsForUpdate(@Param("tenantId") Long tenantId,
                                                       @Param("ids") List<Long> ids);
+
+    @Select({"<script>",
+            "SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `deleted`=b'0' AND `id` IN",
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "FOR SHARE",
+            "</script>"})
+    List<SkitMemberDO> selectByTenantAndIdsForShare(@Param("tenantId") Long tenantId,
+                                                     @Param("ids") List<Long> ids);
 
     default SkitMemberDO selectByMobile(String mobile) {
         return selectOne(SkitMemberDO::getMobile, mobile);

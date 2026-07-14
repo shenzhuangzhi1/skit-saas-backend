@@ -12,10 +12,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
@@ -40,36 +44,91 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
                     "bootstrap is missing Task 2 table " + table);
         }
 
-        installAndVerify(standalone);
+        Map<String, String> standaloneFingerprints = installAndVerify(standalone);
+        assertEquals(SkitAdSchemaSignature.expectedTask5HardenedFingerprints(), standaloneFingerprints,
+                "released Task 5 tables must retain their complete final fingerprints");
         dropSkitTables();
-        installAndVerify(main);
+        Map<String, String> mainFingerprints = installAndVerify(main);
+        assertEquals(standaloneFingerprints, mainFingerprints,
+                "both direct bootstraps must install the same hardened table signatures");
         dropSkitTables();
 
         // Runtime-first installation must expose the same singleton keys before either bootstrap is applied.
         initializeSkitSchema();
+        assertEquals(standaloneFingerprints, task5HardenedFingerprints(),
+                "the runtime migration and direct bootstrap must converge byte-for-byte in information_schema");
         assertLegacySingletonIndexes();
         assertPolicySnapshotImmutabilityTriggers();
         executeBootstrap(standalone);
         executeBootstrap(standalone);
         initializeSkitSchema();
-        new SkitSchemaInitializer(jdbc()).validateTask2TableSignatures(true);
+        validateCanonicalSchema();
         assertLegacySingletonIndexes();
         assertPolicySnapshotImmutabilityTriggers();
     }
 
-    private void installAndVerify(String script) throws Exception {
+    @Test
+    void hardenedFinalFingerprintRejectsReleasedColumnAndIndexDrift() throws Exception {
+        Path repository = repositoryRoot();
+        dropSkitTables();
+        executeBootstrap(canonicalBlock(repository.resolve("sql/mysql/skit-saas.sql")));
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbc());
+        initializer.validateTask5SchemaHardening(true);
+        String baseline = SkitAdSchemaSignature.fingerprint(jdbc(), "skit_ad_session");
+
+        try {
+            jdbc().execute("ALTER TABLE `skit_ad_session` MODIFY COLUMN `scenario_id` varchar(65) NOT NULL");
+            assertThrows(IllegalStateException.class, () -> initializer.validateTask5SchemaHardening(true));
+        } finally {
+            jdbc().execute("ALTER TABLE `skit_ad_session` MODIFY COLUMN `scenario_id` varchar(64) NOT NULL");
+        }
+
+        try {
+            jdbc().execute("ALTER TABLE `skit_ad_session` DROP INDEX `uk_skit_ad_session_show`");
+            jdbc().execute("ALTER TABLE `skit_ad_session` ADD UNIQUE INDEX `uk_skit_ad_session_show` "
+                    + "(`tenant_id`,`provider_show_id`)");
+            assertThrows(IllegalStateException.class, () -> initializer.validateTask5SchemaHardening(true));
+        } finally {
+            jdbc().execute("ALTER TABLE `skit_ad_session` DROP INDEX `uk_skit_ad_session_show`");
+            jdbc().execute("ALTER TABLE `skit_ad_session` ADD UNIQUE INDEX `uk_skit_ad_session_show` "
+                    + "(`tenant_id`,`ad_account_id`,`provider_show_id`)");
+        }
+
+        assertEquals(baseline, SkitAdSchemaSignature.fingerprint(jdbc(), "skit_ad_session"));
+    }
+
+    private Map<String, String> installAndVerify(String script) throws Exception {
         executeBootstrap(script);
         executeBootstrap(script);
-        new SkitSchemaInitializer(jdbc()).validateTask2TableSignatures(true);
+        validateCanonicalSchema();
+        Map<String, String> directFingerprints = task5HardenedFingerprints();
         assertLegacySingletonIndexes();
 
         // A direct bootstrap and a runtime-managed install must converge. Running the initializer
         // twice also proves that its immutable manifest accepts the already-final SQL schema.
         initializeSkitSchema();
         initializeSkitSchema();
-        new SkitSchemaInitializer(jdbc()).validateTask2TableSignatures(true);
+        validateCanonicalSchema();
+        assertEquals(directFingerprints, task5HardenedFingerprints(),
+                "initializer must accept the final bootstrap without reshaping hardened tables");
         assertLegacySingletonIndexes();
         assertPolicySnapshotImmutabilityTriggers();
+        return directFingerprints;
+    }
+
+    private void validateCanonicalSchema() {
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbc());
+        initializer.validateTask2TableSignatures(true);
+        initializer.validateTask5SchemaHardening(true);
+    }
+
+    private Map<String, String> task5HardenedFingerprints() {
+        Map<String, String> fingerprints = new LinkedHashMap<>();
+        for (String table : Arrays.asList("skit_ad_session", "skit_content_entitlement",
+                "skit_entitlement_grant", "skit_native_player_grant")) {
+            fingerprints.put(table, SkitAdSchemaSignature.fingerprint(jdbc(), table));
+        }
+        return fingerprints;
     }
 
     private void assertLegacySingletonIndexes() {

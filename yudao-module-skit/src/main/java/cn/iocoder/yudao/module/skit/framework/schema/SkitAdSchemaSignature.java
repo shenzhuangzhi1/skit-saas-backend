@@ -17,6 +17,7 @@ import java.util.Map;
 public final class SkitAdSchemaSignature {
 
     private static final Map<String, String> EXPECTED_FINGERPRINTS;
+    private static final Map<String, String> EXPECTED_TASK_5_HARDENED_FINGERPRINTS;
 
     static {
         Map<String, String> fingerprints = new LinkedHashMap<>();
@@ -38,6 +39,17 @@ public final class SkitAdSchemaSignature {
         fingerprints.put("skit_tenant_ad_capability", "49fbe067f81d784e4b4b135988509b6783f2d46702c9f3f5e09d1dd5ae99e866");
         fingerprints.put("skit_invite_code_registry", "b51c7dd17b504e1d034ad3c50267e84713097209f7d1617229eeff2b19c8c42a");
         EXPECTED_FINGERPRINTS = Collections.unmodifiableMap(fingerprints);
+
+        Map<String, String> task5Fingerprints = new LinkedHashMap<>();
+        task5Fingerprints.put("skit_ad_session",
+                "f649db9f7a89ad00c82f5926dd73172bf000e949d0505349b98ab74fbd4f3882");
+        task5Fingerprints.put("skit_content_entitlement",
+                "c800aab0369a1b674589ca3acf7e0231a14daad3df81a39c17d7af080f8856a4");
+        task5Fingerprints.put("skit_entitlement_grant",
+                "fff30f3be8e05d4d41e9154b7943eca9d2ddc96af54c264b6b5e7cb755637566");
+        task5Fingerprints.put("skit_native_player_grant",
+                "db8743aa9673bb67d6e6aaff4ed116bae07952ba90e22760f0632b83eee48a93");
+        EXPECTED_TASK_5_HARDENED_FINGERPRINTS = Collections.unmodifiableMap(task5Fingerprints);
     }
 
     private static final String TABLE_QUERY = "SELECT CONCAT(ENGINE,'|',TABLE_COLLATION) "
@@ -79,6 +91,10 @@ public final class SkitAdSchemaSignature {
 
     static Map<String, String> expectedFingerprints() {
         return EXPECTED_FINGERPRINTS;
+    }
+
+    static Map<String, String> expectedTask5HardenedFingerprints() {
+        return EXPECTED_TASK_5_HARDENED_FINGERPRINTS;
     }
 
     private static void appendSection(List<String> manifest, String section, List<String> rows) {

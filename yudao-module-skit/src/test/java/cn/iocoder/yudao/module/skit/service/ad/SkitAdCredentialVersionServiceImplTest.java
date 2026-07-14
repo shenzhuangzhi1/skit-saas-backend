@@ -40,6 +40,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Base64;
@@ -137,6 +138,25 @@ class SkitAdCredentialVersionServiceImplTest {
         order.verify(callbackKeyMapper).selectMaxVersion(TENANT_ID, ACCOUNT_ID);
         order.verify(callbackKeyMapper).selectActiveForUpdate(TENANT_ID, ACCOUNT_ID);
         order.verify(callbackKeyMapper).insert(any(SkitAdCallbackKeyDO.class));
+    }
+
+    @Test
+    void shanghaiClockRetiresCallbackCredentialUsingSystemLocalDateTime() {
+        ZoneId shanghai = ZoneId.of("Asia/Shanghai");
+        SkitAdCredentialVersionServiceImpl shanghaiService = service(
+                new SequenceSecureRandom(sequence(0)), crypto, Clock.fixed(NOW, shanghai));
+        SkitAdCallbackKeyDO prior = callbackRow(1, true);
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(callbackKeyMapper.selectMaxVersion(TENANT_ID, ACCOUNT_ID)).thenReturn(1);
+        when(callbackKeyMapper.selectActiveForUpdate(TENANT_ID, ACCOUNT_ID)).thenReturn(prior);
+        when(callbackKeyMapper.retireActiveVersion(anyLong(), anyLong(), anyLong(),
+                any(LocalDateTime.class))).thenReturn(1);
+        when(callbackKeyMapper.insert(any(SkitAdCallbackKeyDO.class))).thenReturn(1);
+
+        shanghaiService.rotateCallbackKey(TENANT_ID, ACCOUNT_ID, Duration.ofMinutes(15));
+
+        verify(callbackKeyMapper).retireActiveVersion(TENANT_ID, ACCOUNT_ID, prior.getId(),
+                LocalDateTime.ofInstant(NOW.plus(Duration.ofMinutes(15)), shanghai));
     }
 
     @Test

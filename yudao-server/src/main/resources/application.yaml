@@ -90,6 +90,12 @@ skit:
       current-key-id: ${SKIT_AD_CREDENTIAL_KEY_ID:primary}
       current-key: ${SKIT_AD_CREDENTIAL_KEY:}
       keys: {}
+    # Deterministic HMAC material reconstructs hash-only session customData for safe active-session reuse.
+    # Keep retired versions until every corresponding reward acceptance window and callback retry has elapsed.
+    session-token:
+      current-key-version: ${SKIT_AD_SESSION_TOKEN_KEY_VERSION:1}
+      current-key: ${SKIT_AD_SESSION_TOKEN_KEY:}
+      keys: {}
 
 mybatis-plus-join:
   banner: false # 是否打印 mybatis plus join banner，默认true

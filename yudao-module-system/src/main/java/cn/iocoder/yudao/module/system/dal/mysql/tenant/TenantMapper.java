@@ -18,6 +18,9 @@ public interface TenantMapper extends BaseMapperX<TenantDO> {
     @Select("SELECT * FROM `system_tenant` WHERE `id`=#{id} AND `deleted`=b'0' FOR UPDATE")
     TenantDO selectByIdForUpdate(@Param("id") Long id);
 
+    @Select("SELECT * FROM `system_tenant` WHERE `id`=#{id} AND `deleted`=b'0' FOR SHARE")
+    TenantDO selectByIdForShare(@Param("id") Long id);
+
     default PageResult<TenantDO> selectPage(TenantPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<TenantDO>()
                 .likeIfPresent(TenantDO::getName, reqVO.getName())

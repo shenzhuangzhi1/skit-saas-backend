@@ -36,6 +36,7 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
@@ -91,9 +92,9 @@ class SkitPolicySnapshotServiceImplTest {
     @BeforeEach
     void setTenant() {
         TenantContextHolder.setTenantId(TENANT_ID);
-        lenient().when(memberMapper.selectByTenantAndIdsForUpdate(anyLong(), anyList()))
+        lenient().when(memberMapper.selectByTenantAndIdsForShare(anyLong(), anyList()))
                 .thenAnswer(invocation -> ((List<Long>) invocation.getArgument(1)).stream()
-                        .map(id -> memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, id))
+                        .map(id -> memberMapper.selectByTenantAndIdForShare(TENANT_ID, id))
                         .filter(java.util.Objects::nonNull)
                         .collect(Collectors.toList()));
     }
@@ -109,19 +110,19 @@ class SkitPolicySnapshotServiceImplTest {
         List<SkitCommissionRuleDO> rules = Arrays.asList(
                 rule(11L, 0, 4000), rule(11L, 1, 2000),
                 rule(11L, 2, 1000), rule(11L, 3, 500));
-        when(planMapper.selectActiveForUpdate(TENANT_ID)).thenReturn(plan);
-        when(tenantService.getTenantForUpdate(TENANT_ID)).thenReturn(enabledTenant());
-        when(ruleMapper.selectListByPlanId(11L)).thenReturn(rules);
-        when(closureMapper.selectAncestors(SOURCE_MEMBER_ID)).thenReturn(Arrays.asList(
+        when(planMapper.selectActiveForShare(TENANT_ID)).thenReturn(plan);
+        when(tenantService.getTenantForShare(TENANT_ID)).thenReturn(enabledTenant());
+        when(ruleMapper.selectListByPlanIdForShare(TENANT_ID, 11L)).thenReturn(rules);
+        when(closureMapper.selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID)).thenReturn(Arrays.asList(
                 closure(SOURCE_MEMBER_ID, 0), closure(90L, 1),
                 closure(80L, 2), closure(10L, 3)));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, SOURCE_MEMBER_ID))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, SOURCE_MEMBER_ID))
                 .thenReturn(member(SOURCE_MEMBER_ID, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 90L))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 90L))
                 .thenReturn(member(90L, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 80L))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 80L))
                 .thenReturn(member(80L, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 10L))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 10L))
                 .thenReturn(member(10L, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
         when(snapshotMapper.insert(any(SkitAdPolicySnapshotDO.class))).thenAnswer(invocation -> {
             SkitAdPolicySnapshotDO row = invocation.getArgument(0);
@@ -183,18 +184,40 @@ class SkitPolicySnapshotServiceImplTest {
         assertArrayEquals(sha256(expectedJson), row.getSnapshotHash());
         assertEquals(result.getPolicySnapshotAt(), row.getPolicySnapshotAt());
 
-        InOrder order = inOrder(planMapper, tenantService, ruleMapper, closureMapper, memberMapper, snapshotMapper);
-        order.verify(planMapper).selectActiveForUpdate(TENANT_ID);
-        order.verify(tenantService).getTenantForUpdate(TENANT_ID);
-        order.verify(ruleMapper).selectListByPlanId(11L);
-        order.verify(closureMapper).selectAncestors(SOURCE_MEMBER_ID);
-        order.verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, 10L);
-        order.verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, 80L);
-        order.verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, 90L);
-        order.verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, SOURCE_MEMBER_ID);
+        InOrder order = inOrder(tenantService, planMapper, ruleMapper, closureMapper, memberMapper, snapshotMapper);
+        order.verify(tenantService).getTenantForShare(TENANT_ID);
+        order.verify(planMapper).selectActiveForShare(TENANT_ID);
+        order.verify(ruleMapper).selectListByPlanIdForShare(TENANT_ID, 11L);
+        order.verify(closureMapper).selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID);
+        order.verify(memberMapper).selectByTenantAndIdForShare(TENANT_ID, 10L);
+        order.verify(memberMapper).selectByTenantAndIdForShare(TENANT_ID, 80L);
+        order.verify(memberMapper).selectByTenantAndIdForShare(TENANT_ID, 90L);
+        order.verify(memberMapper).selectByTenantAndIdForShare(TENANT_ID, SOURCE_MEMBER_ID);
         order.verify(snapshotMapper).insert(any(SkitAdPolicySnapshotDO.class));
-        verify(memberMapper).selectByTenantAndIdsForUpdate(
+        verify(memberMapper).selectByTenantAndIdsForShare(
                 TENANT_ID, Arrays.asList(10L, 80L, 90L, SOURCE_MEMBER_ID));
+    }
+
+    @Test
+    void shanghaiClockSnapshotsThePolicyAtSystemLocalTime() {
+        ZoneId shanghai = ZoneId.of("Asia/Shanghai");
+        mockPlanAndTenant(11L, 7, Collections.singletonList(rule(11L, 0, 7000)));
+        when(closureMapper.selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID))
+                .thenReturn(Collections.singletonList(closure(SOURCE_MEMBER_ID, 0)));
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, SOURCE_MEMBER_ID))
+                .thenReturn(member(SOURCE_MEMBER_ID, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
+        assignSnapshotIds(502L);
+        SkitPolicySnapshotServiceImpl shanghaiService = new SkitPolicySnapshotServiceImpl(
+                planMapper, ruleMapper, closureMapper, memberMapper, snapshotMapper,
+                tenantService, Clock.fixed(FIXED_CLOCK.instant(), shanghai));
+
+        SkitPolicySnapshotService.PolicySnapshot snapshot =
+                shanghaiService.createSnapshot(SOURCE_MEMBER_ID);
+
+        assertEquals(LocalDateTime.of(2026, 7, 14, 18, 11, 12),
+                snapshot.getPolicySnapshotAt());
+        assertTrue(snapshot.getSnapshotJson()
+                .contains("\"policySnapshotAt\":\"2026-07-14T18:11:12\""));
     }
 
     @Test
@@ -202,17 +225,17 @@ class SkitPolicySnapshotServiceImplTest {
         mockPlanAndTenant(11L, 7, Arrays.asList(
                 rule(11L, 0, 5000), rule(11L, 1, 1000),
                 rule(11L, 2, 1000), rule(11L, 3, 1000), rule(11L, 101, 500)));
-        when(closureMapper.selectAncestors(SOURCE_MEMBER_ID)).thenReturn(Arrays.asList(
+        when(closureMapper.selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID)).thenReturn(Arrays.asList(
                 closure(SOURCE_MEMBER_ID, 0), closure(90L, 1), closure(80L, 2), closure(70L, 3),
                 closure(60L, 4)));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, SOURCE_MEMBER_ID))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, SOURCE_MEMBER_ID))
                 .thenReturn(member(SOURCE_MEMBER_ID, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 90L))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 90L))
                 .thenReturn(member(90L, TENANT_ID, CommonStatusEnum.DISABLE.getStatus()));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 80L)).thenReturn(null);
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 70L))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 80L)).thenReturn(null);
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 70L))
                 .thenReturn(member(70L, 99L, CommonStatusEnum.ENABLE.getStatus()));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, 60L))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, 60L))
                 .thenReturn(member(60L, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
         assignSnapshotIds(601L);
 
@@ -237,9 +260,9 @@ class SkitPolicySnapshotServiceImplTest {
     @Test
     void sourceMemberMustBeEnabledInTheCurrentTenant() {
         mockPlanAndTenant(11L, 7, Collections.singletonList(rule(11L, 0, 10000)));
-        when(closureMapper.selectAncestors(SOURCE_MEMBER_ID))
+        when(closureMapper.selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID))
                 .thenReturn(Collections.singletonList(closure(SOURCE_MEMBER_ID, 0)));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, SOURCE_MEMBER_ID))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, SOURCE_MEMBER_ID))
                 .thenReturn(member(SOURCE_MEMBER_ID, TENANT_ID, CommonStatusEnum.DISABLE.getStatus()));
 
         ServiceException failure = assertThrows(ServiceException.class,
@@ -251,16 +274,16 @@ class SkitPolicySnapshotServiceImplTest {
 
     @Test
     void rejectsPlanOrRuleStateThatCannotBeAValidPublishedPolicy() {
-        when(planMapper.selectActiveForUpdate(TENANT_ID))
+        when(planMapper.selectActiveForShare(TENANT_ID))
                 .thenReturn(activePlan(11L, 7, 99L));
 
         assertThrows(IllegalStateException.class, () -> service().createSnapshot(SOURCE_MEMBER_ID));
         verifyNoInteractions(ruleMapper, closureMapper, memberMapper, snapshotMapper);
 
-        when(planMapper.selectActiveForUpdate(TENANT_ID))
+        when(planMapper.selectActiveForShare(TENANT_ID))
                 .thenReturn(activePlan(11L, 7, TENANT_ID));
-        when(tenantService.getTenantForUpdate(TENANT_ID)).thenReturn(enabledTenant());
-        when(ruleMapper.selectListByPlanId(11L)).thenReturn(Arrays.asList(
+        when(tenantService.getTenantForShare(TENANT_ID)).thenReturn(enabledTenant());
+        when(ruleMapper.selectListByPlanIdForShare(TENANT_ID, 11L)).thenReturn(Arrays.asList(
                 rule(11L, 0, 7000), rule(11L, 1, 4000)));
 
         ServiceException invalidTotal = assertThrows(ServiceException.class,
@@ -282,8 +305,7 @@ class SkitPolicySnapshotServiceImplTest {
 
     @Test
     void tenantMustStillBeEnabledWhenThePublishedPlanIsLocked() {
-        when(planMapper.selectActiveForUpdate(TENANT_ID)).thenReturn(activePlan(11L, 7, TENANT_ID));
-        when(tenantService.getTenantForUpdate(TENANT_ID)).thenReturn(new TenantDO().setId(TENANT_ID)
+        when(tenantService.getTenantForShare(TENANT_ID)).thenReturn(new TenantDO().setId(TENANT_ID)
                 .setStatus(CommonStatusEnum.DISABLE.getStatus()));
 
         assertThrows(IllegalStateException.class, () -> service().createSnapshot(SOURCE_MEMBER_ID));
@@ -293,16 +315,16 @@ class SkitPolicySnapshotServiceImplTest {
 
     @Test
     void publishingANewPlanNeverMutatesAnExistingSnapshotPayloadOrHash() {
-        when(planMapper.selectActiveForUpdate(TENANT_ID)).thenReturn(
+        when(planMapper.selectActiveForShare(TENANT_ID)).thenReturn(
                 activePlan(11L, 1, TENANT_ID), activePlan(12L, 2, TENANT_ID));
-        when(tenantService.getTenantForUpdate(TENANT_ID)).thenReturn(enabledTenant());
-        when(ruleMapper.selectListByPlanId(11L))
+        when(tenantService.getTenantForShare(TENANT_ID)).thenReturn(enabledTenant());
+        when(ruleMapper.selectListByPlanIdForShare(TENANT_ID, 11L))
                 .thenReturn(Collections.singletonList(rule(11L, 0, 7000)));
-        when(ruleMapper.selectListByPlanId(12L))
+        when(ruleMapper.selectListByPlanIdForShare(TENANT_ID, 12L))
                 .thenReturn(Collections.singletonList(rule(12L, 0, 2500)));
-        when(closureMapper.selectAncestors(SOURCE_MEMBER_ID))
+        when(closureMapper.selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID))
                 .thenReturn(Collections.singletonList(closure(SOURCE_MEMBER_ID, 0)));
-        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, SOURCE_MEMBER_ID))
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, SOURCE_MEMBER_ID))
                 .thenReturn(member(SOURCE_MEMBER_ID, TENANT_ID, CommonStatusEnum.ENABLE.getStatus()));
         assignSnapshotIds(701L, 702L);
 
@@ -333,7 +355,7 @@ class SkitPolicySnapshotServiceImplTest {
     void rejectsDuplicateOrGappedClosureDistancesBeforeLockingBeneficiaries() {
         mockPlanAndTenant(11L, 7, Arrays.asList(
                 rule(11L, 0, 5000), rule(11L, 1, 1000), rule(11L, 2, 1000)));
-        when(closureMapper.selectAncestors(SOURCE_MEMBER_ID)).thenReturn(
+        when(closureMapper.selectAncestorsForShare(TENANT_ID, SOURCE_MEMBER_ID)).thenReturn(
                 Arrays.asList(closure(SOURCE_MEMBER_ID, 0), closure(80L, 2)),
                 Arrays.asList(closure(SOURCE_MEMBER_ID, 0), closure(90L, 1), closure(80L, 1)));
 
@@ -434,10 +456,10 @@ class SkitPolicySnapshotServiceImplTest {
     }
 
     private void mockPlanAndTenant(Long planId, int version, List<SkitCommissionRuleDO> rules) {
-        when(planMapper.selectActiveForUpdate(TENANT_ID))
+        when(planMapper.selectActiveForShare(TENANT_ID))
                 .thenReturn(activePlan(planId, version, TENANT_ID));
-        when(tenantService.getTenantForUpdate(TENANT_ID)).thenReturn(enabledTenant());
-        when(ruleMapper.selectListByPlanId(planId)).thenReturn(rules);
+        when(tenantService.getTenantForShare(TENANT_ID)).thenReturn(enabledTenant());
+        when(ruleMapper.selectListByPlanIdForShare(TENANT_ID, planId)).thenReturn(rules);
     }
 
     private void assignSnapshotIds(Long... ids) {

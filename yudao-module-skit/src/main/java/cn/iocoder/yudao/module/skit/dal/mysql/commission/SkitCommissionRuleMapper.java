@@ -4,6 +4,8 @@ import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitCommissionRuleDO;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
@@ -15,5 +17,10 @@ public interface SkitCommissionRuleMapper extends BaseMapperX<SkitCommissionRule
                 .eq(SkitCommissionRuleDO::getPlanId, planId)
                 .orderByAsc(SkitCommissionRuleDO::getLevelNo));
     }
+
+    @Select("SELECT * FROM `skit_commission_rule` WHERE `tenant_id`=#{tenantId} "
+            + "AND `plan_id`=#{planId} AND `deleted`=b'0' FOR SHARE")
+    List<SkitCommissionRuleDO> selectListByPlanIdForShare(@Param("tenantId") Long tenantId,
+                                                          @Param("planId") Long planId);
 
 }

@@ -279,6 +279,72 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                             POLICY_SNAPSHOT_IMMUTABLE_ACTION),
                     new Task2TriggerSpec("skit_ad_policy_snapshot", "trg_skit_policy_snapshot_no_delete", "DELETE",
                             POLICY_SNAPSHOT_IMMUTABLE_ACTION)));
+    private static final int TASK_5_SCHEMA_HARDENING_MIGRATION_VERSION = 2026071403;
+    private static final List<Task2ColumnSpec> TASK_5_SCHEMA_COLUMN_SPECS = Collections.unmodifiableList(
+            Arrays.asList(
+                    new Task2ColumnSpec("skit_ad_session", "session_token_key_version",
+                            "int NOT NULL DEFAULT 1"),
+                    new Task2ColumnSpec("skit_ad_session", "access_mode",
+                            "varchar(32) NOT NULL DEFAULT 'MEMBER_OAUTH'"),
+                    new Task2ColumnSpec("skit_ad_session", "native_player_grant_id", "bigint DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_session", "active_scope_released_at", "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_session", "active_scope_release_reason",
+                            "varchar(32) DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_native_player_grant", "version", "int NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_entitlement_grant", "entitlement_id", "bigint NOT NULL",
+                            "bigint DEFAULT NULL")));
+    private static final List<Task2ForeignKeySpec> TASK_5_SCHEMA_FOREIGN_KEY_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ForeignKeySpec("skit_ad_session", "fk_skit_ad_session_player_grant",
+                            "tenant_id,native_player_grant_id,member_id,drama_id", "skit_native_player_grant",
+                            "tenant_id,id,member_id,drama_id"),
+                    new Task2ForeignKeySpec("skit_entitlement_grant", "fk_skit_grant_session_binding",
+                            "tenant_id,ad_session_id,member_id,drama_id,episode_no,provider_transaction_id",
+                            "skit_ad_session",
+                            "tenant_id,id,member_id,drama_id,episode_from,provider_transaction_id"),
+                    new Task2ForeignKeySpec("skit_entitlement_grant", "fk_skit_grant_entitlement_binding",
+                            "tenant_id,entitlement_id,member_id,drama_id,episode_no", "skit_content_entitlement",
+                            "tenant_id,id,member_id,drama_id,episode_no")));
+    private static final List<Task2CheckSpec> TASK_5_SCHEMA_CHECK_SPECS = Collections.unmodifiableList(
+            Arrays.asList(
+                    new Task2CheckSpec("skit_ad_session", "ck_skit_ad_session_token_key_version",
+                            "`session_token_key_version` > 0"),
+                    new Task2CheckSpec("skit_ad_session", "ck_skit_ad_session_access_mode",
+                            "(`access_mode` = 'MEMBER_OAUTH' AND `native_player_grant_id` IS NULL) OR "
+                                    + "(`access_mode` = 'NATIVE_PLAYER_GRANT' "
+                                    + "AND `native_player_grant_id` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_ad_session", "ck_skit_ad_session_scope_release_pair",
+                            "(`active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
+                                    + "AND `active_scope_release_reason` IS NULL) OR (`active_scope_hash` IS NULL "
+                                    + "AND `active_scope_released_at` IS NOT NULL "
+                                    + "AND `active_scope_release_reason` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_ad_session", "ck_skit_ad_session_scope_release_lifecycle",
+                            "(`active_scope_release_reason` IS NULL "
+                                    + "AND `active_scope_hash` IS NOT NULL "
+                                    + "AND `active_scope_released_at` IS NULL "
+                                    + "AND `reward_verification_status` = 'PENDING' "
+                                    + "AND `entitlement_status` = 'NONE' AND `entitled_at` IS NULL) OR "
+                                    + "(`active_scope_release_reason` = 'VERIFY_TIMEOUT' "
+                                    + "AND `active_scope_hash` IS NULL "
+                                    + "AND `active_scope_released_at` IS NOT NULL "
+                                    + "AND `reward_verification_status` = 'VERIFY_TIMEOUT' "
+                                    + "AND `entitlement_status` = 'NONE' AND `entitled_at` IS NULL) OR "
+                                    + "(`active_scope_release_reason` = 'REWARD_REJECTED' "
+                                    + "AND `active_scope_hash` IS NULL "
+                                    + "AND `active_scope_released_at` IS NOT NULL "
+                                    + "AND `reward_verification_status` = 'REJECTED' "
+                                    + "AND `entitlement_status` = 'NONE' AND `entitled_at` IS NULL) OR "
+                                    + "(`active_scope_release_reason` = 'ENTITLEMENT_GRANTED' "
+                                    + "AND `active_scope_hash` IS NULL "
+                                    + "AND `active_scope_released_at` IS NOT NULL "
+                                    + "AND `reward_verification_status` = 'SIGNED_VERIFIED' "
+                                    + "AND `entitlement_status` IN ('GRANTED','SECURITY_REVOKED') "
+                                    + "AND `entitled_at` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_native_player_grant", "ck_skit_player_grant_version",
+                            "`version` >= 0"),
+                    new Task2CheckSpec("skit_native_player_grant", "ck_skit_player_grant_lifecycle",
+                            "(`status` IN ('ACTIVE','EXPIRED') AND `revoked_at` IS NULL) OR "
+                                    + "(`status` = 'REVOKED' AND `revoked_at` IS NOT NULL)")));
     private static final Pattern DEFAULT_DEFINITION_PATTERN = Pattern.compile(
             "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern GENERATED_DEFINITION_PATTERN = Pattern.compile(
@@ -432,6 +498,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         if (hasPendingTask2Migration(appliedMigrations)) {
             validateTask2Preflight();
         }
+        if (!appliedMigrations.containsKey(TASK_5_SCHEMA_HARDENING_MIGRATION_VERSION)) {
+            validateTask5SchemaHardeningPreflight();
+        }
         for (Migration migration : migrations) {
             if (appliedMigrations.containsKey(migration.getVersion())) {
                 continue;
@@ -518,6 +587,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "add tenant-safe verified advertising and finance schema", task2SchemaSteps()));
         result.add(migrationFromSteps(POLICY_SNAPSHOT_IMMUTABILITY_MIGRATION_VERSION,
                 "enforce ad policy snapshot immutability", policySnapshotImmutabilitySteps()));
+        result.add(migrationFromSteps(TASK_5_SCHEMA_HARDENING_MIGRATION_VERSION,
+                "harden Task 5 ad session and entitlement bindings", task5SchemaHardeningSteps()));
         return sortedMigrations(result);
     }
 
@@ -1535,6 +1606,32 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return steps;
     }
 
+    private List<SchemaStep> task5SchemaHardeningSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (Task2ColumnSpec spec : TASK_5_SCHEMA_COLUMN_SPECS) {
+            steps.add(task2ColumnStep(spec));
+        }
+        steps.add(addIndexStep("skit_ad_session", "uk_skit_ad_session_grant_scope",
+                "`tenant_id`,`id`,`member_id`,`drama_id`,`episode_from`,`provider_transaction_id`", true));
+        steps.add(addIndexStep("skit_native_player_grant", "uk_skit_player_grant_scope_id",
+                "`tenant_id`,`id`,`member_id`,`drama_id`", true));
+        steps.add(addIndexStep("skit_native_player_grant", "idx_skit_player_grant_lookup",
+                "`tenant_id`,`member_id`,`drama_id`,`status`,`expires_at`,`id`", false));
+        steps.add(addIndexStep("skit_content_entitlement", "uk_skit_entitlement_grant_binding",
+                "`tenant_id`,`id`,`member_id`,`drama_id`,`episode_no`", true));
+        for (Task2ForeignKeySpec spec : TASK_5_SCHEMA_FOREIGN_KEY_SPECS) {
+            steps.add(addForeignKeyStep(spec.table, spec.constraint, quoteColumns(spec.columns),
+                    spec.referencedTable, quoteColumns(spec.referencedColumns)));
+        }
+        for (Task2CheckSpec spec : TASK_5_SCHEMA_CHECK_SPECS) {
+            steps.add(addCheckStep(spec.table, spec.constraint, spec.expression));
+        }
+        steps.add(schemaStep("validate-task5-schema-hardening", () -> validateTask5SchemaHardening(true),
+                "task5-ad-session-entitlement-signatures-v2",
+                SkitAdSchemaSignature.expectedTask5HardenedFingerprints()));
+        return steps;
+    }
+
     void seedStandardAgentPackage() {
         seedStandardAgentPackageStep().execute();
     }
@@ -1564,6 +1661,133 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateTask2LedgerBeneficiaries();
         validateTask2TenantOwners();
         validateTask2LegacyMoney();
+    }
+
+    private void validateTask5SchemaHardeningPreflight() {
+        validateTask5SchemaHardening(false);
+        if (tableExists("skit_ad_session")) {
+            boolean hasScopeReleasedAt = columnExists("skit_ad_session", "active_scope_released_at");
+            boolean hasScopeReleaseReason = columnExists("skit_ad_session", "active_scope_release_reason");
+            if (hasScopeReleasedAt && hasScopeReleaseReason) {
+                assertNoTask5PreflightRows("active scope release evidence",
+                        "SELECT `tenant_id`,`id`,`reward_verification_status`,`entitlement_status` "
+                                + "FROM `skit_ad_session` WHERE NOT (((`active_scope_hash` IS NOT NULL "
+                                + "AND `active_scope_released_at` IS NULL "
+                                + "AND `active_scope_release_reason` IS NULL) OR (`active_scope_hash` IS NULL "
+                                + "AND `active_scope_released_at` IS NOT NULL "
+                                + "AND `active_scope_release_reason` IS NOT NULL)) AND "
+                                + "((`active_scope_release_reason` IS NULL "
+                                + "AND `active_scope_hash` IS NOT NULL "
+                                + "AND `active_scope_released_at` IS NULL "
+                                + "AND `reward_verification_status`='PENDING' "
+                                + "AND `entitlement_status`='NONE' AND `entitled_at` IS NULL) OR "
+                                + "(`active_scope_release_reason`='VERIFY_TIMEOUT' "
+                                + "AND `active_scope_hash` IS NULL "
+                                + "AND `active_scope_released_at` IS NOT NULL "
+                                + "AND `reward_verification_status`='VERIFY_TIMEOUT' "
+                                + "AND `entitlement_status`='NONE' AND `entitled_at` IS NULL) OR "
+                                + "(`active_scope_release_reason`='REWARD_REJECTED' "
+                                + "AND `active_scope_hash` IS NULL "
+                                + "AND `active_scope_released_at` IS NOT NULL "
+                                + "AND `reward_verification_status`='REJECTED' "
+                                + "AND `entitlement_status`='NONE' AND `entitled_at` IS NULL) OR "
+                                + "(`active_scope_release_reason`='ENTITLEMENT_GRANTED' "
+                                + "AND `active_scope_hash` IS NULL "
+                                + "AND `active_scope_released_at` IS NOT NULL "
+                                + "AND `reward_verification_status`='SIGNED_VERIFIED' "
+                                + "AND `entitlement_status` IN ('GRANTED','SECURITY_REVOKED') "
+                                + "AND `entitled_at` IS NOT NULL))) ORDER BY `tenant_id`,`id` LIMIT 100");
+            } else {
+                String partialReleaseEvidence = hasScopeReleasedAt
+                        ? " OR `active_scope_released_at` IS NOT NULL" : "";
+                partialReleaseEvidence += hasScopeReleaseReason
+                        ? " OR `active_scope_release_reason` IS NOT NULL" : "";
+                assertNoTask5PreflightRows("active scope release evidence",
+                        "SELECT `tenant_id`,`id`,`reward_verification_status`,`entitlement_status` "
+                                + "FROM `skit_ad_session` WHERE `active_scope_hash` IS NULL "
+                                + "OR `reward_verification_status`<>'PENDING' "
+                                + "OR `entitlement_status`<>'NONE' OR `entitled_at` IS NOT NULL"
+                                + partialReleaseEvidence + " "
+                                + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            }
+            boolean hasAccessMode = columnExists("skit_ad_session", "access_mode");
+            boolean hasNativePlayerGrantId = columnExists("skit_ad_session", "native_player_grant_id");
+            if (hasAccessMode && hasNativePlayerGrantId) {
+                assertNoTask5PreflightRows("session access proof pairing",
+                        "SELECT `tenant_id`,`id`,`access_mode`,`native_player_grant_id` FROM `skit_ad_session` "
+                                + "WHERE NOT ((`access_mode`='MEMBER_OAUTH' AND `native_player_grant_id` IS NULL) "
+                                + "OR (`access_mode`='NATIVE_PLAYER_GRANT' "
+                                + "AND `native_player_grant_id` IS NOT NULL)) "
+                                + "ORDER BY `tenant_id`,`id` LIMIT 100");
+                if (tableExists("skit_native_player_grant")) {
+                    assertNoTask5PreflightRows("same-tenant native player grant binding",
+                            "SELECT `s`.`tenant_id`,`s`.`id`,`s`.`native_player_grant_id` "
+                                    + "FROM `skit_ad_session` `s` LEFT JOIN `skit_native_player_grant` `g` "
+                                    + "ON `g`.`tenant_id`=`s`.`tenant_id` "
+                                    + "AND `g`.`id`=`s`.`native_player_grant_id` "
+                                    + "AND `g`.`member_id`=`s`.`member_id` AND `g`.`drama_id`=`s`.`drama_id` "
+                                    + "WHERE `s`.`access_mode`='NATIVE_PLAYER_GRANT' AND `g`.`id` IS NULL "
+                                    + "ORDER BY `s`.`tenant_id`,`s`.`id` LIMIT 100");
+                }
+            } else if (hasAccessMode) {
+                assertNoTask5PreflightRows("session access proof pairing",
+                        "SELECT `tenant_id`,`id`,`access_mode` FROM `skit_ad_session` "
+                                + "WHERE `access_mode`<>'MEMBER_OAUTH' "
+                                + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            } else if (hasNativePlayerGrantId) {
+                assertNoTask5PreflightRows("session access proof pairing",
+                        "SELECT `tenant_id`,`id`,`native_player_grant_id` FROM `skit_ad_session` "
+                                + "WHERE `native_player_grant_id` IS NOT NULL "
+                                + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            }
+            if (columnExists("skit_ad_session", "session_token_key_version")) {
+                assertNoTask5PreflightRows("session token key version",
+                        "SELECT `tenant_id`,`id`,`session_token_key_version` FROM `skit_ad_session` "
+                                + "WHERE `session_token_key_version` <= 0 ORDER BY `tenant_id`,`id` LIMIT 100");
+            }
+        }
+        if (tableExists("skit_native_player_grant")) {
+            assertNoTask5PreflightRows("native player grant lifecycle",
+                    "SELECT `tenant_id`,`id`,`status`,`revoked_at` FROM `skit_native_player_grant` WHERE NOT "
+                            + "((`status` IN ('ACTIVE','EXPIRED') AND `revoked_at` IS NULL) OR "
+                            + "(`status`='REVOKED' AND `revoked_at` IS NOT NULL)) "
+                            + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            if (columnExists("skit_native_player_grant", "version")) {
+                assertNoTask5PreflightRows("native player grant CAS version",
+                        "SELECT `tenant_id`,`id`,`version` FROM `skit_native_player_grant` "
+                                + "WHERE `version` < 0 ORDER BY `tenant_id`,`id` LIMIT 100");
+            }
+        }
+        if (tableExists("skit_entitlement_grant")) {
+            assertNoTask5PreflightRows("non-null entitlement grant binding",
+                    "SELECT `tenant_id`,`id`,`ad_session_id`,`entitlement_id` FROM `skit_entitlement_grant` "
+                            + "WHERE `entitlement_id` IS NULL ORDER BY `tenant_id`,`id` LIMIT 100");
+            if (tableExists("skit_ad_session")) {
+                assertNoTask5PreflightRows("same-tenant session grant binding",
+                        "SELECT `g`.`tenant_id`,`g`.`id`,`g`.`ad_session_id` FROM `skit_entitlement_grant` `g` "
+                                + "LEFT JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`g`.`tenant_id` "
+                                + "AND `s`.`id`=`g`.`ad_session_id` AND `s`.`member_id`=`g`.`member_id` "
+                                + "AND `s`.`drama_id`=`g`.`drama_id` AND `s`.`episode_from`=`g`.`episode_no` "
+                                + "AND `s`.`provider_transaction_id`=`g`.`provider_transaction_id` "
+                                + "WHERE `s`.`id` IS NULL ORDER BY `g`.`tenant_id`,`g`.`id` LIMIT 100");
+            }
+            if (tableExists("skit_content_entitlement")) {
+                assertNoTask5PreflightRows("same-tenant entitlement grant binding",
+                        "SELECT `g`.`tenant_id`,`g`.`id`,`g`.`entitlement_id` FROM `skit_entitlement_grant` `g` "
+                                + "LEFT JOIN `skit_content_entitlement` `e` ON `e`.`tenant_id`=`g`.`tenant_id` "
+                                + "AND `e`.`id`=`g`.`entitlement_id` AND `e`.`member_id`=`g`.`member_id` "
+                                + "AND `e`.`drama_id`=`g`.`drama_id` AND `e`.`episode_no`=`g`.`episode_no` "
+                                + "WHERE `e`.`id` IS NULL ORDER BY `g`.`tenant_id`,`g`.`id` LIMIT 100");
+            }
+        }
+    }
+
+    private void assertNoTask5PreflightRows(String diagnostic, String sql) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+        if (!rows.isEmpty()) {
+            throw new IllegalStateException("Task 5 schema preflight rejected " + diagnostic
+                    + " before any Task 5 DDL. Evidence=" + rows);
+        }
     }
 
     private void validateTask2LegacySingletons() {
@@ -1807,6 +2031,112 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "int NOT NULL DEFAULT 0", requireAll);
     }
 
+    void validateTask5SchemaHardening(boolean requireAll) {
+        for (Task2ColumnSpec spec : TASK_5_SCHEMA_COLUMN_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 5 schema is missing required table " + spec.table);
+                }
+                continue;
+            }
+            if (!columnExists(spec.table, spec.column)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 5 schema is missing required column "
+                            + spec.table + "." + spec.column);
+                }
+                continue;
+            }
+            if (!requireAll && spec.compatibleLegacyDefinition != null
+                    && columnDefinitionMatches(spec.table, spec.column, spec.compatibleLegacyDefinition)) {
+                continue;
+            }
+            validateColumnDefinition(spec.table, spec.column, spec.definition);
+        }
+        validateTask5Index("skit_ad_session", "uk_skit_ad_session_grant_scope",
+                "tenant_id,id,member_id,drama_id,episode_from,provider_transaction_id", true, requireAll);
+        validateTask5Index("skit_native_player_grant", "uk_skit_player_grant_scope_id",
+                "tenant_id,id,member_id,drama_id", true, requireAll);
+        validateTask5Index("skit_native_player_grant", "idx_skit_player_grant_lookup",
+                "tenant_id,member_id,drama_id,status,expires_at,id", false, requireAll);
+        validateTask5Index("skit_content_entitlement", "uk_skit_entitlement_grant_binding",
+                "tenant_id,id,member_id,drama_id,episode_no", true, requireAll);
+        for (Task2ForeignKeySpec spec : TASK_5_SCHEMA_FOREIGN_KEY_SPECS) {
+            validateTask5ForeignKey(spec, requireAll);
+        }
+        for (Task2CheckSpec spec : TASK_5_SCHEMA_CHECK_SPECS) {
+            validateTask5Check(spec, requireAll);
+        }
+        if (requireAll) {
+            validateTask5HardenedTableFingerprints();
+        }
+    }
+
+    private void validateTask5HardenedTableFingerprints() {
+        for (Map.Entry<String, String> expected
+                : SkitAdSchemaSignature.expectedTask5HardenedFingerprints().entrySet()) {
+            validateExactTableFingerprint("Task 5 hardened", expected.getKey(), expected.getValue(), true);
+        }
+    }
+
+    private void validateTask5Index(String table, String index, String columns,
+                                    boolean unique, boolean requireAll) {
+        if (!tableExists(table)) {
+            if (requireAll) {
+                throw new IllegalStateException("Task 5 schema is missing required table " + table);
+            }
+            return;
+        }
+        String actual = jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY, String.class, table, index);
+        if (actual == null && !requireAll) {
+            return;
+        }
+        String expected = (unique ? "0:" : "1:") + columns;
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("Incompatible Task 5 index " + table + "." + index
+                    + ": expected=" + expected + ", actual=" + actual);
+        }
+    }
+
+    private void validateTask5ForeignKey(Task2ForeignKeySpec spec, boolean requireAll) {
+        if (!tableExists(spec.table)) {
+            if (requireAll) {
+                throw new IllegalStateException("Task 5 schema is missing required table " + spec.table);
+            }
+            return;
+        }
+        String actual = jdbcTemplate.queryForObject(FOREIGN_KEY_DEFINITION_QUERY,
+                String.class, spec.table, spec.constraint);
+        if (actual == null && !requireAll) {
+            return;
+        }
+        String expected = spec.columns + "->" + spec.referencedTable + "(" + spec.referencedColumns
+                + "):RESTRICT:RESTRICT";
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("Incompatible Task 5 foreign key " + spec.table + "."
+                    + spec.constraint + ": expected=" + expected + ", actual=" + actual);
+        }
+    }
+
+    private void validateTask5Check(Task2CheckSpec spec, boolean requireAll) {
+        if (!tableExists(spec.table)) {
+            if (requireAll) {
+                throw new IllegalStateException("Task 5 schema is missing required table " + spec.table);
+            }
+            return;
+        }
+        List<String> existing = jdbcTemplate.queryForList(CHECK_DEFINITION_QUERY,
+                String.class, spec.table, spec.constraint);
+        if (existing.isEmpty() && !requireAll) {
+            return;
+        }
+        String actual = existing.isEmpty() ? null : normalizeCheckExpression(existing.get(0));
+        String expected = normalizeCheckExpression(spec.expression);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("Incompatible Task 5 check constraint " + spec.table + "."
+                    + spec.constraint + ": expected=" + expected + ", actual=" + actual);
+        }
+    }
+
     private void validateTask2ParentExtensionColumns(boolean requireAll) {
         for (Task2ColumnSpec spec : TASK_2_PARENT_COLUMN_SPECS) {
             if (!tableExists(spec.table)) {
@@ -1896,20 +2226,31 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     }
 
     private void validateTask2OwnedTableFingerprints(boolean requireAll) {
+        boolean task5Hardened = columnExists("skit_ad_session", "session_token_key_version");
         for (Map.Entry<String, String> expected : SkitAdSchemaSignature.expectedFingerprints().entrySet()) {
-            if (!tableExists(expected.getKey())) {
-                if (requireAll) {
-                    throw new IllegalStateException("Task 2 schema is missing required table " + expected.getKey());
-                }
-                continue;
+            String expectedFingerprint = expected.getValue();
+            if (task5Hardened) {
+                expectedFingerprint = SkitAdSchemaSignature.expectedTask5HardenedFingerprints()
+                        .getOrDefault(expected.getKey(), expectedFingerprint);
             }
-            String actual = SkitAdSchemaSignature.fingerprint(jdbcTemplate, expected.getKey());
-            if (!expected.getValue().equals(actual)) {
-                throw new IllegalStateException("Incompatible canonical Task 2 table " + expected.getKey()
-                        + ": expected fingerprint=" + expected.getValue() + ", actual fingerprint=" + actual
-                        + ". A same-named column, index, foreign key, check, generated expression, or table "
-                        + "property differs from the released schema.");
+            validateExactTableFingerprint("Task 2", expected.getKey(), expectedFingerprint, requireAll);
+        }
+    }
+
+    private void validateExactTableFingerprint(String schemaLabel, String table, String expected,
+                                               boolean requireTable) {
+        if (!tableExists(table)) {
+            if (requireTable) {
+                throw new IllegalStateException(schemaLabel + " schema is missing required table " + table);
             }
+            return;
+        }
+        String actual = SkitAdSchemaSignature.fingerprint(jdbcTemplate, table);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("Incompatible canonical " + schemaLabel + " table " + table
+                    + ": expected fingerprint=" + expected + ", actual fingerprint=" + actual
+                    + ". A same-named column, index, foreign key, check, generated expression, or table "
+                    + "property differs from the released schema.");
         }
     }
 

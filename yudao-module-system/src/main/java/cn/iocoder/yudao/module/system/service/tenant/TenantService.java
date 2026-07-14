@@ -76,6 +76,14 @@ public interface TenantService {
      */
     TenantDO getTenantForUpdate(Long id);
 
+    /**
+     * Takes a compatible shared lock on one tenant eligibility row in the caller transaction.
+     *
+     * @param id tenant id
+     * @return tenant, or {@code null} when it does not exist
+     */
+    TenantDO getTenantForShare(Long id);
+
     /** Batch-loads tenants while preserving mapped fields such as websites. */
     List<TenantDO> getTenantList(Collection<Long> ids);
 

@@ -23,6 +23,10 @@ public interface SkitCommissionPlanMapper extends BaseMapperX<SkitCommissionPlan
             + "AND `status`=0 AND `deleted`=b'0' FOR UPDATE")
     SkitCommissionPlanDO selectActiveForUpdate(@Param("tenantId") Long tenantId);
 
+    @Select("SELECT * FROM `skit_commission_plan` WHERE `tenant_id`=#{tenantId} "
+            + "AND `status`=0 AND `deleted`=b'0' FOR SHARE")
+    SkitCommissionPlanDO selectActiveForShare(@Param("tenantId") Long tenantId);
+
     default SkitCommissionPlanDO selectLatest() {
         return selectOne(new LambdaQueryWrapperX<SkitCommissionPlanDO>()
                 .orderByDesc(SkitCommissionPlanDO::getVersion)

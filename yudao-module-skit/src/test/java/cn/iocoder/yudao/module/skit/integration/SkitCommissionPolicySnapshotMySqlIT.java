@@ -409,8 +409,8 @@ class SkitCommissionPolicySnapshotMySqlIT extends SkitMySqlIntegrationTestBase {
         @Bean
         TenantService tenantService(TenantMapper tenantMapper, TenantLockGate tenantLockGate) {
             TenantService service = mock(TenantService.class);
-            when(service.getTenantForUpdate(anyLong())).thenAnswer(invocation -> {
-                TenantDO tenant = tenantMapper.selectByIdForUpdate(invocation.getArgument(0));
+            when(service.getTenantForShare(anyLong())).thenAnswer(invocation -> {
+                TenantDO tenant = tenantMapper.selectByIdForShare(invocation.getArgument(0));
                 tenantLockGate.afterLock();
                 return tenant;
             });

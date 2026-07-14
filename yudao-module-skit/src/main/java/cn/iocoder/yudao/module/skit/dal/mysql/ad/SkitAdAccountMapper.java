@@ -21,6 +21,16 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
             + "AND `deleted`=b'0' FOR UPDATE")
     Long lockByTenantAndId(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
+    @Select("SELECT `id`,`tenant_id`,`provider`,`app_id`,`config_data`,`status` "
+            + "FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
+            + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR UPDATE")
+    List<SkitAdAccountDO> selectEnabledTakuForUpdate(@Param("tenantId") Long tenantId);
+
+    @Select("SELECT `id`,`tenant_id`,`provider`,`app_id`,`config_data`,`status` "
+            + "FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
+            + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR SHARE")
+    List<SkitAdAccountDO> selectEnabledTakuForShare(@Param("tenantId") Long tenantId);
+
     default SkitAdAccountDO selectByProvider(String provider) {
         return selectOne(SkitAdAccountDO::getProvider, provider);
     }

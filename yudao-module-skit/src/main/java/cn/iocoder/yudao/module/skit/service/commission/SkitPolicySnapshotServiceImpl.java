@@ -28,7 +28,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -86,7 +85,7 @@ public class SkitPolicySnapshotServiceImpl implements SkitPolicySnapshotService 
                                          SkitAdPolicySnapshotMapper snapshotMapper,
                                          TenantService tenantService) {
         this(planMapper, ruleMapper, closureMapper, memberMapper, snapshotMapper,
-                tenantService, Clock.systemUTC());
+                tenantService, Clock.systemDefaultZone());
     }
 
     SkitPolicySnapshotServiceImpl(SkitCommissionPlanMapper planMapper,
@@ -111,20 +110,21 @@ public class SkitPolicySnapshotServiceImpl implements SkitPolicySnapshotService 
         requirePositive(sourceMemberId, "sourceMemberId");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
 
-        SkitCommissionPlanDO plan = requireActivePlan(tenantId);
         TenantDO tenant = requireEnabledTenant(tenantId);
+        SkitCommissionPlanDO plan = requireActivePlan(tenantId);
         List<SkitCommissionRuleDO> rules = validateAndSortRules(
-                ruleMapper.selectListByPlanId(plan.getId()), tenantId, plan.getId());
+                ruleMapper.selectListByPlanIdForShare(tenantId, plan.getId()), tenantId, plan.getId());
         List<SkitMemberClosureDO> chain = validateAndSortChain(
-                closureMapper.selectAncestors(sourceMemberId), tenantId, sourceMemberId);
-        Map<Integer, LockedMember> lockedMembers = lockChainMembers(chain, tenantId, sourceMemberId);
+                closureMapper.selectAncestorsForShare(tenantId, sourceMemberId), tenantId, sourceMemberId);
+        Map<Integer, LockedMember> lockedMembers = readChainMembersForShare(
+                chain, tenantId, sourceMemberId);
         requireEnabledSource(lockedMembers.get(0), tenantId, sourceMemberId);
 
         List<ChainNode> chainSnapshot = buildChain(chain, lockedMembers);
         List<BeneficiarySlot> beneficiaries = buildBeneficiaries(rules, chainSnapshot);
         int configuredRateBps = configuredRateBps(beneficiaries);
         int eligibleRateBps = eligibleRateBps(beneficiaries);
-        LocalDateTime snapshottedAt = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).withNano(0);
+        LocalDateTime snapshottedAt = LocalDateTime.now(clock).withNano(0);
         String snapshotJson = canonicalJson(SNAPSHOT_SCHEMA_VERSION, tenantId, tenant.getStatus(),
                 plan.getId(), plan.getVersion(), sourceMemberId, snapshottedAt, chainSnapshot,
                 beneficiaries, configuredRateBps, eligibleRateBps);
@@ -179,7 +179,7 @@ public class SkitPolicySnapshotServiceImpl implements SkitPolicySnapshotService 
     }
 
     private SkitCommissionPlanDO requireActivePlan(Long tenantId) {
-        SkitCommissionPlanDO plan = planMapper.selectActiveForUpdate(tenantId);
+        SkitCommissionPlanDO plan = planMapper.selectActiveForShare(tenantId);
         if (plan == null) {
             throw exception(COMMISSION_PLAN_NOT_EXISTS);
         }
@@ -192,7 +192,7 @@ public class SkitPolicySnapshotServiceImpl implements SkitPolicySnapshotService 
     }
 
     private TenantDO requireEnabledTenant(Long tenantId) {
-        TenantDO tenant = tenantService.getTenantForUpdate(tenantId);
+        TenantDO tenant = tenantService.getTenantForShare(tenantId);
         tenantService.validTenant(tenantId);
         if (tenant == null || !tenantId.equals(tenant.getId())
                 || !CommonStatusEnum.ENABLE.getStatus().equals(tenant.getStatus())) {
@@ -264,15 +264,15 @@ public class SkitPolicySnapshotServiceImpl implements SkitPolicySnapshotService 
         return chain;
     }
 
-    private Map<Integer, LockedMember> lockChainMembers(List<SkitMemberClosureDO> chain,
-                                                         Long tenantId, Long sourceMemberId) {
+    private Map<Integer, LockedMember> readChainMembersForShare(List<SkitMemberClosureDO> chain,
+                                                                Long tenantId, Long sourceMemberId) {
         List<Long> memberIds = new ArrayList<>();
         for (SkitMemberClosureDO edge : chain) {
             memberIds.add(edge.getAncestorId());
         }
         Collections.sort(memberIds);
         Set<Long> expectedMemberIds = new HashSet<>(memberIds);
-        List<SkitMemberDO> lockedRows = memberMapper.selectByTenantAndIdsForUpdate(tenantId, memberIds);
+        List<SkitMemberDO> lockedRows = memberMapper.selectByTenantAndIdsForShare(tenantId, memberIds);
         Map<Long, SkitMemberDO> memberById = new HashMap<>();
         if (lockedRows != null) {
             for (SkitMemberDO member : lockedRows) {

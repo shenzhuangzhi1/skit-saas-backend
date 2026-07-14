@@ -36,4 +36,12 @@ public interface ErrorCodeConstants {
 
     ErrorCode APP_RELEASE_PROFILE_INVALID = new ErrorCode(1_030_006_000, "App 发布档案不合法：{}");
 
+    ErrorCode AD_SESSION_INVALID = new ErrorCode(1_030_007_000, "广告会话请求不合法");
+    ErrorCode AD_SESSION_NOT_EXISTS = new ErrorCode(1_030_007_001, "广告会话不存在");
+    ErrorCode AD_SESSION_ACCOUNT_UNAVAILABLE = new ErrorCode(1_030_007_002, "当前代理商尚未启用可用的 Taku 广告账号");
+    ErrorCode AD_SESSION_STATE_CONFLICT = new ErrorCode(1_030_007_003, "广告会话状态已变化，请刷新后重试");
+    ErrorCode AD_SESSION_EVENT_CONFLICT = new ErrorCode(1_030_007_004, "客户端广告事件与既有证据冲突");
+    ErrorCode AD_PLAYER_GRANT_INVALID = new ErrorCode(1_030_007_005, "原生播放器授权无效或已过期");
+    ErrorCode AD_ENTITLEMENT_INVALID = new ErrorCode(1_030_007_006, "内容权益授予条件不成立");
+
 }

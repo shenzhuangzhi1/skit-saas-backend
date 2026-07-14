@@ -19,7 +19,6 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
@@ -45,7 +44,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
                                               SkitAdRewardSecretVersionMapper rewardSecretMapper,
                                               SkitAdCredentialCryptoService cryptoService) {
         this(accountMapper, callbackKeyMapper, rewardSecretMapper, cryptoService,
-                Clock.systemUTC(), new SecureRandom());
+                Clock.systemDefaultZone(), new SecureRandom());
     }
 
     SkitAdCredentialVersionServiceImpl(SkitAdAccountMapper accountMapper,
@@ -320,7 +319,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
     }
 
     private LocalDateTime now() {
-        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+        return LocalDateTime.now(clock);
     }
 
     private static byte[] sha256(String value) {

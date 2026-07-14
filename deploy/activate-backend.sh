@@ -9,12 +9,16 @@ cd "${DEPLOY_PATH}"
 
 persisted_credential_key=""
 persisted_credential_key_id=""
+persisted_session_token_key=""
+persisted_session_token_key_version=""
 set -a
 if [ -f .env ]; then
   # shellcheck disable=SC1091
   . ./.env
   persisted_credential_key="${SKIT_AD_CREDENTIAL_KEY:-}"
   persisted_credential_key_id="${SKIT_AD_CREDENTIAL_KEY_ID:-}"
+  persisted_session_token_key="${SKIT_AD_SESSION_TOKEN_KEY:-}"
+  persisted_session_token_key_version="${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-}"
 fi
 if [ -f server.env ]; then
   # shellcheck disable=SC1091
@@ -27,6 +31,10 @@ set +a
 if [ -n "${persisted_credential_key}" ]; then
   SKIT_AD_CREDENTIAL_KEY="${persisted_credential_key}"
   SKIT_AD_CREDENTIAL_KEY_ID="${persisted_credential_key_id:-primary}"
+fi
+if [ -n "${persisted_session_token_key}" ]; then
+  SKIT_AD_SESSION_TOKEN_KEY="${persisted_session_token_key}"
+  SKIT_AD_SESSION_TOKEN_KEY_VERSION="${persisted_session_token_key_version:-1}"
 fi
 
 upsert_env() {
@@ -175,6 +183,44 @@ if [ "${SKIT_AD_CREDENTIAL_KEY}" = "${SKIT_AD_ENCRYPTION_KEY}" ]; then
   exit 1
 fi
 
+# Session customData is authenticated with its own key. Keeping this key independent means an
+# advertising credential rotation cannot invalidate active reward sessions, and a signing-key
+# rotation cannot decrypt provider secrets. Generate it once and keep the server-side .env value.
+if [ -z "${SKIT_AD_SESSION_TOKEN_KEY:-}" ]; then
+  while :; do
+    if command -v openssl >/dev/null 2>&1; then
+      SKIT_AD_SESSION_TOKEN_KEY="$(openssl rand -hex 32)"
+    else
+      SKIT_AD_SESSION_TOKEN_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    fi
+    if [ "${SKIT_AD_SESSION_TOKEN_KEY}" != "${SKIT_AD_ENCRYPTION_KEY}" ] &&
+       [ "${SKIT_AD_SESSION_TOKEN_KEY}" != "${SKIT_AD_CREDENTIAL_KEY}" ]; then
+      break
+    fi
+  done
+fi
+if [ "${#SKIT_AD_SESSION_TOKEN_KEY}" -lt 32 ]; then
+  echo "SKIT_AD_SESSION_TOKEN_KEY must contain at least 32 single-byte characters."
+  exit 1
+fi
+if [[ ! "${SKIT_AD_SESSION_TOKEN_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+  echo "SKIT_AD_SESSION_TOKEN_KEY contains unsafe characters for server-side environment persistence."
+  exit 1
+fi
+if [ "${SKIT_AD_SESSION_TOKEN_KEY}" = "${SKIT_AD_ENCRYPTION_KEY}" ] ||
+   [ "${SKIT_AD_SESSION_TOKEN_KEY}" = "${SKIT_AD_CREDENTIAL_KEY}" ]; then
+  echo "SKIT_AD_SESSION_TOKEN_KEY must not reuse an encryption or credential key."
+  exit 1
+fi
+
+SKIT_AD_SESSION_TOKEN_KEY_VERSION="${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-1}"
+if [[ ! "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}" =~ ^[1-9][0-9]{0,9}$ ]] ||
+   { [ "${#SKIT_AD_SESSION_TOKEN_KEY_VERSION}" -eq 10 ] &&
+     [[ "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}" > "2147483647" ]]; }; then
+  echo "SKIT_AD_SESSION_TOKEN_KEY_VERSION must be a positive 32-bit integer."
+  exit 1
+fi
+
 SKIT_AD_CREDENTIAL_KEY_ID="${SKIT_AD_CREDENTIAL_KEY_ID:-primary}"
 if [[ ! "${SKIT_AD_CREDENTIAL_KEY_ID}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
   echo "SKIT_AD_CREDENTIAL_KEY_ID must contain 1 to 64 safe identifier characters."
@@ -192,6 +238,8 @@ upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
 upsert_env SKIT_AD_ENCRYPTION_KEY "${SKIT_AD_ENCRYPTION_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY "${SKIT_AD_CREDENTIAL_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY_ID "${SKIT_AD_CREDENTIAL_KEY_ID}"
+upsert_env SKIT_AD_SESSION_TOKEN_KEY "${SKIT_AD_SESSION_TOKEN_KEY}"
+upsert_env SKIT_AD_SESSION_TOKEN_KEY_VERSION "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}"
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"

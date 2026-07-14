@@ -25,12 +25,15 @@ Set these secrets in each repository that deploys to the server:
 - `MYSQL_ROOT_PASSWORD`: production MySQL root password.
 
 The backend activation script generates independent secure random values for the legacy
-`SKIT_AD_ENCRYPTION_KEY` and credential-envelope `SKIT_AD_CREDENTIAL_KEY` on the first
-release, assigns the envelope key id `SKIT_AD_CREDENTIAL_KEY_ID=primary`, and stores all
-three values in the server-side `.env`; later SaaS and App releases reuse them automatically.
-To use managed keys instead, inject the values before the first backend activation. The
-credential-envelope key must not equal the legacy field-encryption key. Never rotate either
-key without first completing the corresponding credential re-encryption procedure.
+`SKIT_AD_ENCRYPTION_KEY`, credential-envelope `SKIT_AD_CREDENTIAL_KEY`, and advertising-session
+signature `SKIT_AD_SESSION_TOKEN_KEY` on the first release. It assigns the envelope key id
+`SKIT_AD_CREDENTIAL_KEY_ID=primary`, assigns the signature key version
+`SKIT_AD_SESSION_TOKEN_KEY_VERSION=1`, and stores every value in the server-side `.env`; later
+SaaS and App releases reuse them automatically. To use managed keys instead, inject the values
+before the first backend activation. The session signature key must contain at least 32 safe
+ASCII characters, its version must be a positive 32-bit integer, and it must not equal either
+advertising encryption key. Never rotate a key without first completing the corresponding
+credential re-encryption or active-session compatibility procedure.
 
 Activation never infers from a missing local marker that database credentials are
 legacy ciphertext, so ordinary releases and disaster recovery cannot silently clear

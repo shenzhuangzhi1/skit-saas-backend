@@ -23,7 +23,9 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -131,6 +133,57 @@ class SkitSchemaInitializerTest {
                 immutability == null ? null : immutability.getChecksum());
         assertNotEquals(task2 == null ? null : task2.getChecksum(),
                 immutability == null ? null : immutability.getChecksum());
+    }
+
+    @Test
+    void shouldDeclareTask5SchemaHardeningAsNewImmutableChecksumManifest() throws Exception {
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate);
+        Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<SkitSchemaInitializer.Migration> migrations =
+                (List<SkitSchemaInitializer.Migration>) field.get(initializer);
+
+        SkitSchemaInitializer.Migration task2 = null;
+        SkitSchemaInitializer.Migration policyImmutability = null;
+        SkitSchemaInitializer.Migration task5Hardening = null;
+        for (SkitSchemaInitializer.Migration migration : migrations) {
+            if (migration.getVersion() == 2026071401) {
+                task2 = migration;
+            } else if (migration.getVersion() == 2026071402) {
+                policyImmutability = migration;
+            } else if (migration.getVersion() == 2026071403) {
+                task5Hardening = migration;
+            }
+        }
+
+        assertEquals("64e450e4b8048a00b0ce7fbbe9f4b162ec519b5cd3f2c83d12470d92fe72fdbf",
+                task2 == null ? null : task2.getChecksum(), "released 2026071401 checksum must remain byte-stable");
+        assertEquals("11f815a76c7f15bacfc9d9a29a60121f6736ec18bbd712a02a0190ff69c8c18d",
+                policyImmutability == null ? null : policyImmutability.getChecksum(),
+                "released 2026071402 checksum must remain byte-stable");
+        assertNotNull(task5Hardening, "Task 5 schema hardening must be an additive migration");
+        assertEquals("harden Task 5 ad session and entitlement bindings", task5Hardening.getDescription());
+        String manifest = String.join("\n", task5Hardening.getManifest());
+        assertTrue(manifest.contains("session_token_key_version"));
+        assertTrue(manifest.contains("`session_token_key_version` int NOT NULL DEFAULT 1"),
+                "the persisted key-version contract must cover Java's positive 32-bit range");
+        assertFalse(manifest.contains("`session_token_key_version` smallint"));
+        assertTrue(manifest.contains("access_mode"));
+        assertTrue(manifest.contains("native_player_grant_id"));
+        assertTrue(manifest.contains("active_scope_released_at"));
+        assertTrue(manifest.contains("active_scope_release_reason"));
+        assertTrue(manifest.contains("uk_skit_ad_session_grant_scope"));
+        assertTrue(manifest.contains("episode_from"));
+        assertTrue(manifest.contains("uk_skit_entitlement_grant_binding"));
+        assertTrue(manifest.contains("fk_skit_grant_session_binding"));
+        assertTrue(manifest.contains("fk_skit_grant_entitlement_binding"));
+        assertTrue(manifest.contains("f649db9f7a89ad00c82f5926dd73172bf000e949d0505349b98ab74fbd4f3882"));
+        assertTrue(manifest.contains("version"));
+        assertEquals("88b57c75266fc10a56dfef4ce17fedfd0683bb63e4e80c1f6cd9353698355892",
+                task5Hardening.getChecksum(), "released 2026071403 checksum must remain byte-stable");
+        assertNotEquals(task2.getChecksum(), task5Hardening.getChecksum());
+        assertNotEquals(policyImmutability.getChecksum(), task5Hardening.getChecksum());
     }
 
     @Test
