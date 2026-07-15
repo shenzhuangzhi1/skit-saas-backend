@@ -141,7 +141,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         appReleaseService.ensureProfile(tenantId, tenantCode);
         TenantUtils.execute(tenantId, () -> {
             adAccountService.ensureDefaultAccounts();
-            saveAdSettings(createReqVO, false);
+            saveAdSettings(createReqVO);
             commissionService.ensureDefaultPlan();
         });
         if (cn.iocoder.yudao.framework.common.enums.CommonStatusEnum.isDisable(createReqVO.getStatus())) {
@@ -170,12 +170,6 @@ public class SkitAgentServiceImpl implements SkitAgentService {
                 .setId(agent.getId())
                 .setRemark(updateReqVO.getRemark() == null ? agent.getRemark() : updateReqVO.getRemark()));
 
-        Long tenantId = agent.getTenantId();
-        TenantUtils.execute(tenantId, () -> {
-            adAccountService.ensureDefaultAccounts();
-            saveAdSettings(updateReqVO, true);
-            commissionService.ensureDefaultPlan();
-        });
         if (!Objects.equals(tenant.getStatus(), updateReqVO.getStatus())) {
             syncBoundAdministratorStatus(tenant, updateReqVO.getStatus());
         }
@@ -388,23 +382,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
                 () -> adminUserService.updateUserStatus(tenant.getContactUserId(), status));
     }
 
-    private void saveAdSettings(SkitAgentUpdateReqVO source, boolean preserveMissing) {
-        SkitAdAccountService.Settings settings = adAccountService.getSettings();
-        settings.setPangleUsername(merge(trimNonSecret(source.getPangleUsername()), settings.getPangleUsername(), true));
-        settings.setPangleAppId(merge(trimNonSecret(source.getPangleAppId()), settings.getPangleAppId(), true));
-        settings.setPangleAppSecret(source.getPangleAppSecret());
-        settings.setPanglePlacementId(merge(trimNonSecret(source.getPanglePlacementId()), settings.getPanglePlacementId(), true));
-        settings.setPangleEnabled(resolveEnabled(source.getPangleEnabled(), settings.getPangleEnabled()));
-        settings.setTakuUsername(merge(trimNonSecret(source.getTakuUsername()), settings.getTakuUsername(), true));
-        settings.setTakuAppId(merge(trimNonSecret(source.getTakuAppId()), settings.getTakuAppId(), true));
-        settings.setTakuAppKey(source.getTakuAppKey());
-        settings.setTakuAppSecret(source.getTakuAppSecret());
-        settings.setTakuPlacementId(merge(trimNonSecret(source.getTakuPlacementId()), settings.getTakuPlacementId(), true));
-        settings.setTakuEnabled(resolveEnabled(source.getTakuEnabled(), settings.getTakuEnabled()));
-        adAccountService.saveSettings(settings);
-    }
-
-    private void saveAdSettings(SkitAgentCreateReqVO source, boolean preserveMissing) {
+    private void saveAdSettings(SkitAgentCreateReqVO source) {
         SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
         settings.setPangleUsername(trimNonSecret(source.getPangleUsername()));
         settings.setPangleAppId(trimNonSecret(source.getPangleAppId()));
@@ -420,16 +398,8 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         adAccountService.saveSettings(settings);
     }
 
-    private String merge(String requested, String existing, boolean preserveMissing) {
-        return preserveMissing && requested == null ? existing : requested;
-    }
-
     private String trimNonSecret(String value) {
         return value == null ? null : StrUtil.trim(value);
-    }
-
-    private Boolean resolveEnabled(Boolean requested, Boolean existing) {
-        return requested != null ? requested : Boolean.TRUE.equals(existing);
     }
 
     private String generateRootInviteCode() {

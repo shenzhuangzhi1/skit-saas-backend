@@ -195,30 +195,14 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
-    void updateAgentPreservesIdentityPasswordAndMissingSecrets() {
+    void updateAgentDoesNotTouchAdSettingsOrCommissionWhenUpdatingProfile() {
         mockExistingAgent();
-        SkitAdAccountService.Settings existing = new SkitAdAccountService.Settings();
-        existing.setPangleUsername("pangle-user");
-        existing.setPangleAppId("pangle-app");
-        existing.setPanglePlacementId("pangle-slot");
-        existing.setPangleEnabled(true);
-        existing.setTakuUsername("taku-user");
-        existing.setTakuAppId("taku-app");
-        existing.setTakuPlacementId("taku-slot");
-        existing.setTakuEnabled(true);
-        when(adAccountService.getSettings()).thenReturn(existing);
-        SkitAgentUpdateReqVO request = updateRequest();
 
-        agentService.updateAgent(request);
+        agentService.updateAgent(updateRequest());
 
-        ArgumentCaptor<SkitAdAccountService.Settings> captor =
-                ArgumentCaptor.forClass(SkitAdAccountService.Settings.class);
-        verify(adAccountService).saveSettings(captor.capture());
-        assertEquals("pangle-user", captor.getValue().getPangleUsername());
-        assertEquals("taku-app", captor.getValue().getTakuAppId());
-        assertNull(captor.getValue().getPangleAppSecret());
-        assertNull(captor.getValue().getTakuAppKey());
-        assertNull(captor.getValue().getTakuAppSecret());
+        verify(tenantService).updateTenant(any(TenantSaveReqVO.class));
+        verify(agentMapper).updateById(any(SkitAgentDO.class));
+        verifyNoInteractions(adAccountService, commissionService);
         verify(adminUserService, never()).updateUserPassword(anyLong(), anyString());
         verify(adminUserService, never()).updateUserIdentity(anyLong(), anyString(), anyString());
     }
