@@ -24,6 +24,22 @@ CREATE TABLE IF NOT EXISTS `skit_identity_migration_audit` (
   KEY `idx_skit_identity_migration_value` (`migration_version`,`identity_type`,`old_value`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史管理端身份修复审计';
 
+CREATE TABLE IF NOT EXISTS `skit_admin_record_migration_audit` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
+  `migration_version` int NOT NULL COMMENT '迁移版本',
+  `source_id` bigint NOT NULL COMMENT '被修复管理记录',
+  `tenant_id` bigint NOT NULL COMMENT '所属租户',
+  `page_key` varchar(64) NOT NULL COMMENT '页面键',
+  `original_row_key` varchar(128) NOT NULL COMMENT '原业务行键',
+  `repaired_row_key` varchar(128) NOT NULL COMMENT '修复后业务行键',
+  `retained_id` bigint NOT NULL COMMENT '保留原业务行键的记录',
+  `algorithm` varchar(64) NOT NULL COMMENT '修复算法',
+  `repaired_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '修复时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_admin_record_migration_source` (`migration_version`,`source_id`),
+  KEY `idx_skit_admin_record_migration_scope` (`tenant_id`,`page_key`,`original_row_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史后台记录键修复审计';
+
 -- SKIT_CANONICAL_SCHEMA_BEGIN
 
 CREATE TABLE IF NOT EXISTS `skit_admin_record` (

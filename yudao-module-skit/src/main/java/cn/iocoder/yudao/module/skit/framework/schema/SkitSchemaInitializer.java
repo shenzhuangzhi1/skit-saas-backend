@@ -852,6 +852,41 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     "(`runtime_update_public_key`='' AND `runtime_update_key_fingerprint`='') OR "
                             + "(`runtime_update_public_key`<>'' AND "
                             + "REGEXP_LIKE(`runtime_update_key_fingerprint`,'^[0-9a-f]{64}$'))");
+    private static final int LEGACY_ADMIN_RECORD_REPAIR_MIGRATION_VERSION = 2026071502;
+    private static final String LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM =
+            "rekey-legacy-admin-singletons-v1";
+    private static final int ADMIN_RECORD_ROW_KEY_MAX_LENGTH = 128;
+    private static final String CREATE_ADMIN_RECORD_MIGRATION_AUDIT_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_admin_record_migration_audit` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`migration_version` int NOT NULL,"
+                    + "`source_id` bigint NOT NULL,`tenant_id` bigint NOT NULL,"
+                    + "`page_key` varchar(64) NOT NULL,`original_row_key` varchar(128) NOT NULL,"
+                    + "`repaired_row_key` varchar(128) NOT NULL,`retained_id` bigint NOT NULL,"
+                    + "`algorithm` varchar(64) NOT NULL,"
+                    + "`repaired_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY (`id`),"
+                    + "UNIQUE KEY `uk_skit_admin_record_migration_source` "
+                    + "(`migration_version`,`source_id`),"
+                    + "KEY `idx_skit_admin_record_migration_scope` "
+                    + "(`tenant_id`,`page_key`,`original_row_key`))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String DUPLICATE_ADMIN_RECORD_MEMBERS_QUERY =
+            "SELECT `r`.`id`,`r`.`tenant_id`,`r`.`page_key`,`r`.`row_key`,`d`.`retained_id` "
+                    + "FROM `skit_admin_record` `r` JOIN (SELECT `tenant_id`,`page_key`,`row_key`,"
+                    + "COALESCE(MIN(CASE WHEN `deleted`=b'0' THEN `id` END),MIN(`id`)) AS `retained_id` "
+                    + "FROM `skit_admin_record` "
+                    + "GROUP BY `tenant_id`,`page_key`,`row_key` HAVING COUNT(*)>1) `d` "
+                    + "ON `d`.`tenant_id`=`r`.`tenant_id` AND `d`.`page_key`=`r`.`page_key` "
+                    + "AND `d`.`row_key`=`r`.`row_key` "
+                    + "ORDER BY `r`.`tenant_id`,`r`.`page_key`,`d`.`retained_id`,`r`.`id`";
+    private static final String ADMIN_RECORD_ROW_KEY_EXISTS_QUERY =
+            "SELECT COUNT(*) FROM `skit_admin_record` WHERE `tenant_id`=? AND `page_key`=? AND `row_key`=?";
+    private static final String INSERT_ADMIN_RECORD_MIGRATION_AUDIT_SQL =
+            "INSERT INTO `skit_admin_record_migration_audit` (`migration_version`,`source_id`,`tenant_id`,"
+                    + "`page_key`,`original_row_key`,`repaired_row_key`,`retained_id`,`algorithm`,`repaired_on`) "
+                    + "VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)";
+    private static final String UPDATE_LEGACY_ADMIN_RECORD_ROW_KEY_SQL =
+            "UPDATE `skit_admin_record` SET `row_key`=?,`update_time`=`update_time` "
+                    + "WHERE `id`=? AND `tenant_id`=? AND `page_key`=? AND `row_key`=?";
     private static final Pattern DEFAULT_DEFINITION_PATTERN = Pattern.compile(
             "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern GENERATED_DEFINITION_PATTERN = Pattern.compile(
@@ -1382,6 +1417,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "add signed runtime update manifest state", task17RuntimeUpdateSteps()));
         result.add(migrationFromSteps(TENANT_RUNTIME_UPDATE_TRUST_ROOT_MIGRATION_VERSION,
                 "add tenant runtime update trust roots", tenantRuntimeUpdateTrustRootSteps()));
+        result.add(migrationFromSteps(LEGACY_ADMIN_RECORD_REPAIR_MIGRATION_VERSION,
+                "audit and normalize legacy admin record singleton keys",
+                legacyAdminRecordRepairSteps()));
         return sortedMigrations(result);
     }
 
@@ -2089,6 +2127,123 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateNoActiveUserIdentityDuplicates();
     }
 
+    void normalizeLegacyAdminRecordSingletons() {
+        if (!tableExists("skit_admin_record")) {
+            return;
+        }
+        DataSource dataSource = jdbcTemplate.getDataSource();
+        if (dataSource == null) { // Isolated unit tests use a mock JdbcTemplate without a DataSource.
+            normalizeLegacyAdminRecordSingletonsInCurrentTransaction();
+            return;
+        }
+        TransactionTemplate transactionTemplate =
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        transactionTemplate.execute(status -> {
+            normalizeLegacyAdminRecordSingletonsInCurrentTransaction();
+            return null;
+        });
+    }
+
+    private void normalizeLegacyAdminRecordSingletonsInCurrentTransaction() {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(DUPLICATE_ADMIN_RECORD_MEMBERS_QUERY);
+        if (rows.isEmpty()) {
+            return;
+        }
+        List<AdminRecordKeyRepair> repairs = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            long sourceId = requiredLong(row, "id");
+            long retainedId = requiredLong(row, "retained_id");
+            if (sourceId == retainedId) {
+                continue;
+            }
+            long tenantId = requiredLong(row, "tenant_id");
+            String pageKey = requiredString(row, "page_key");
+            String originalRowKey = requiredString(row, "row_key");
+            String repairedRowKey = allocateLegacyAdminRecordRowKey(
+                    sourceId, tenantId, pageKey, originalRowKey);
+            repairs.add(new AdminRecordKeyRepair(sourceId, tenantId, pageKey,
+                    originalRowKey, repairedRowKey, retainedId));
+        }
+        for (AdminRecordKeyRepair repair : repairs) {
+            int auditRows = jdbcTemplate.update(INSERT_ADMIN_RECORD_MIGRATION_AUDIT_SQL,
+                    LEGACY_ADMIN_RECORD_REPAIR_MIGRATION_VERSION, repair.sourceId, repair.tenantId,
+                    repair.pageKey, repair.originalRowKey, repair.repairedRowKey, repair.retainedId,
+                    LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM);
+            if (auditRows != 1) {
+                throw new IllegalStateException("Could not audit legacy admin record key repair for id "
+                        + repair.sourceId);
+            }
+            int changedRows = jdbcTemplate.update(UPDATE_LEGACY_ADMIN_RECORD_ROW_KEY_SQL,
+                    repair.repairedRowKey, repair.sourceId, repair.tenantId,
+                    repair.pageKey, repair.originalRowKey);
+            if (changedRows != 1) {
+                throw new IllegalStateException("Admin record changed while migration was planning repair for id "
+                        + repair.sourceId + " (tenant=" + repair.tenantId + ", page=" + repair.pageKey + ")");
+            }
+        }
+        validateTask2AdminRecordSingletons();
+        log.warn("[normalizeLegacyAdminRecordSingletons][re-keyed and audited {} legacy duplicate rows]",
+                repairs.size());
+    }
+
+    private String allocateLegacyAdminRecordRowKey(long sourceId, long tenantId,
+                                                    String pageKey, String originalRowKey) {
+        String sourceSuffix = Long.toString(sourceId, 36);
+        for (int attempt = 0; attempt < 100000; attempt++) {
+            String counterSuffix = attempt == 0 ? "" : "-" + Integer.toString(attempt, 36);
+            String suffix = "~legacy-dup-" + sourceSuffix + counterSuffix;
+            int baseLength = ADMIN_RECORD_ROW_KEY_MAX_LENGTH - suffix.codePointCount(0, suffix.length());
+            if (baseLength < 0) {
+                throw new IllegalStateException("Legacy admin repair suffix exceeds row key capacity for id "
+                        + sourceId);
+            }
+            String candidate = truncateToCodePoints(originalRowKey, baseLength) + suffix;
+            Integer existing = jdbcTemplate.queryForObject(ADMIN_RECORD_ROW_KEY_EXISTS_QUERY,
+                    Integer.class, tenantId, pageKey, candidate);
+            if (existing == null || existing == 0) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("Could not allocate a unique legacy admin row key for id " + sourceId);
+    }
+
+    private static String truncateToCodePoints(String value, int maximumCodePoints) {
+        int count = value.codePointCount(0, value.length());
+        if (count <= maximumCodePoints) {
+            return value;
+        }
+        return value.substring(0, value.offsetByCodePoints(0, maximumCodePoints));
+    }
+
+    private static String requiredString(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        if (value == null) {
+            throw new IllegalStateException("Migration query returned null " + key + ": " + row);
+        }
+        return value.toString();
+    }
+
+    private static final class AdminRecordKeyRepair {
+
+        private final long sourceId;
+        private final long tenantId;
+        private final String pageKey;
+        private final String originalRowKey;
+        private final String repairedRowKey;
+        private final long retainedId;
+
+        private AdminRecordKeyRepair(long sourceId, long tenantId, String pageKey,
+                                     String originalRowKey, String repairedRowKey, long retainedId) {
+            this.sourceId = sourceId;
+            this.tenantId = tenantId;
+            this.pageKey = pageKey;
+            this.originalRowKey = originalRowKey;
+            this.repairedRowKey = repairedRowKey;
+            this.retainedId = retainedId;
+        }
+
+    }
+
     private Map<Long, AgentIdentityBinding> loadAgentIdentityBindings(List<Map<String, Object>> rows) {
         Map<Long, AgentIdentityBinding> result = new LinkedHashMap<>();
         Map<String, Long> targetOwners = new HashMap<>();
@@ -2764,13 +2919,25 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return steps;
     }
 
+    private List<SchemaStep> legacyAdminRecordRepairSteps() {
+        return Arrays.asList(executeSqlStep(CREATE_ADMIN_RECORD_MIGRATION_AUDIT_TABLE_SQL),
+                schemaStep(LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM,
+                        this::normalizeLegacyAdminRecordSingletons,
+                        LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM, DUPLICATE_ADMIN_RECORD_MEMBERS_QUERY,
+                        ADMIN_RECORD_ROW_KEY_EXISTS_QUERY, INSERT_ADMIN_RECORD_MIGRATION_AUDIT_SQL,
+                        UPDATE_LEGACY_ADMIN_RECORD_ROW_KEY_SQL, "~legacy-dup-<base36Id>[-<base36Counter>]"),
+                schemaStep("validate-legacy-admin-record-repair-schema",
+                        this::validateLegacyAdminRecordRepairSchema,
+                        "skit-admin-record-repair-audit-v1"));
+    }
+
     void seedStandardAgentPackage() {
         seedStandardAgentPackageStep().execute();
     }
 
     private void validateTask2Preflight() {
         validateTask2TableSignatures(false);
-        validateTask2LegacySingletons();
+        validateTask2SystemConfigSingleton();
         if (tableExists("skit_agent") && tableExists("skit_member")) {
             assertNoTask2PreflightRows("normalized global invite-code collision",
                     TASK_2_INVITE_COLLISIONS_QUERY);
@@ -2793,6 +2960,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateTask2LedgerBeneficiaries();
         validateTask2TenantOwners();
         validateTask2LegacyMoney();
+        // This is deliberately after every fail-closed Task 2 check. Admin records have a
+        // lossless second identity (row_key), so legacy duplicates can be normalized and
+        // audited. System configuration and tenant/FK collisions remain manual blockers.
+        executeSteps(legacyAdminRecordRepairSteps());
+        validateTask2AdminRecordSingletons();
     }
 
     private void validateTask5SchemaHardeningPreflight() {
@@ -3063,18 +3235,57 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         }
     }
 
-    private void validateTask2LegacySingletons() {
+    private void validateTask2AdminRecordSingletons() {
         if (tableExists("skit_admin_record")) {
             assertNoTask2PreflightRows("legacy admin record singleton duplicate",
                     "SELECT `tenant_id`,`page_key`,`row_key`,GROUP_CONCAT(`id` ORDER BY `id`) AS `owner_ids` "
                             + "FROM `skit_admin_record` GROUP BY `tenant_id`,`page_key`,`row_key` "
                             + "HAVING COUNT(*) > 1 ORDER BY `tenant_id`,`page_key`,`row_key`");
         }
+    }
+
+    private void validateTask2SystemConfigSingleton() {
         if (tableExists("skit_system_config")) {
             assertNoTask2PreflightRows("legacy system config singleton duplicate",
                     "SELECT `tenant_id`,GROUP_CONCAT(`id` ORDER BY `id`) AS `owner_ids` "
                             + "FROM `skit_system_config` GROUP BY `tenant_id` HAVING COUNT(*) > 1 "
                             + "ORDER BY `tenant_id`");
+        }
+    }
+
+    private void validateLegacyAdminRecordRepairSchema() {
+        String table = "skit_admin_record_migration_audit";
+        if (!tableExists(table)) {
+            throw new IllegalStateException("Legacy admin record repair schema is missing required table " + table);
+        }
+        validateColumnDefinition(table, "migration_version", "int NOT NULL");
+        validateColumnDefinition(table, "source_id", "bigint NOT NULL");
+        validateColumnDefinition(table, "tenant_id", "bigint NOT NULL");
+        validateColumnDefinition(table, "page_key", "varchar(64) NOT NULL");
+        validateColumnDefinition(table, "original_row_key", "varchar(128) NOT NULL");
+        validateColumnDefinition(table, "repaired_row_key", "varchar(128) NOT NULL");
+        validateColumnDefinition(table, "retained_id", "bigint NOT NULL");
+        validateColumnDefinition(table, "algorithm", "varchar(64) NOT NULL");
+        validateRequiredIndex(table, "uk_skit_admin_record_migration_source",
+                "migration_version,source_id", true, true);
+        validateRequiredIndex(table, "idx_skit_admin_record_migration_scope",
+                "tenant_id,page_key,original_row_key", false, true);
+        if (tableExists("skit_admin_record")) {
+            List<Map<String, Object>> invalidAuditRows = jdbcTemplate.queryForList(
+                    "SELECT `a`.`id` AS `audit_id`,`a`.`source_id`,`a`.`tenant_id`,`a`.`page_key`,"
+                            + "`a`.`repaired_row_key`,`r`.`id` AS `record_id` "
+                            + "FROM `skit_admin_record_migration_audit` `a` "
+                            + "LEFT JOIN `skit_admin_record` `r` ON `r`.`id`=`a`.`source_id` "
+                            + "AND `r`.`tenant_id`=`a`.`tenant_id` AND `r`.`page_key`=`a`.`page_key` "
+                            + "AND `r`.`row_key`=`a`.`repaired_row_key` "
+                            + "WHERE `a`.`migration_version`=? AND (`a`.`algorithm`<>? OR `r`.`id` IS NULL) "
+                            + "ORDER BY `a`.`id` LIMIT 100",
+                    LEGACY_ADMIN_RECORD_REPAIR_MIGRATION_VERSION,
+                    LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM);
+            if (!invalidAuditRows.isEmpty()) {
+                throw new IllegalStateException("Legacy admin record repair audit does not match preserved rows: "
+                        + invalidAuditRows);
+            }
         }
     }
 

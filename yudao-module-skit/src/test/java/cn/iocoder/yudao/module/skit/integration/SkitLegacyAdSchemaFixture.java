@@ -108,15 +108,39 @@ final class SkitLegacyAdSchemaFixture {
         jdbc.update("UPDATE skit_commission_ledger SET beneficiary_member_id=302 WHERE id=701");
     }
 
-    static void installLegacySingletonDuplicates(JdbcTemplate jdbc) {
+    static void installLegacyAdminRecordDuplicates(JdbcTemplate jdbc) {
         jdbc.execute("CREATE TABLE skit_admin_record (id bigint NOT NULL AUTO_INCREMENT,tenant_id bigint NOT NULL,"
                 + "page_key varchar(64) NOT NULL,row_key varchar(128) NOT NULL,record_data longtext NOT NULL,"
                 + "status tinyint NOT NULL DEFAULT 0,sort int NOT NULL DEFAULT 0," + auditColumns()
                 + ",PRIMARY KEY (id))" + tableOptions());
+        String longRowKey = "x".repeat(128);
+        String occupiedRepairKey = longRowKey.substring(0, 115) + "~legacy-dup-w";
+        jdbc.update("INSERT INTO skit_admin_record "
+                        + "(id,tenant_id,page_key,row_key,record_data,status,sort,creator,create_time,updater,update_time,deleted) "
+                        + "VALUES (11,101,'tenant','duplicate','{\"name\":\"first\"}',0,1,'creator-11',"
+                        + "'2026-01-01 01:01:01','updater-11','2026-01-02 01:01:01',b'0'),"
+                        + "(12,101,'tenant','duplicate','{\"name\":\"second\"}',1,2,'creator-12',"
+                        + "'2026-01-01 01:01:02','updater-12','2026-01-02 01:01:02',b'0'),"
+                        + "(21,102,'tenant','duplicate','{\"name\":\"foreign-first\"}',0,3,'creator-21',"
+                        + "'2026-01-01 01:01:03','updater-21','2026-01-02 01:01:03',b'0'),"
+                        + "(22,102,'tenant','duplicate','{\"name\":\"foreign-second\"}',1,4,'creator-22',"
+                        + "'2026-01-01 01:01:04','updater-22','2026-01-02 01:01:04',b'1'),"
+                        + "(31,101,'edge',?,'{\"name\":\"long-first\"}',0,5,'creator-31',"
+                        + "'2026-01-01 01:01:05','updater-31','2026-01-02 01:01:05',b'0'),"
+                        + "(32,101,'edge',?,'{\"name\":\"long-second\"}',1,6,'creator-32',"
+                        + "'2026-01-01 01:01:06','updater-32','2026-01-02 01:01:06',b'0'),"
+                        + "(33,101,'edge',?,'{\"name\":\"occupied\"}',0,7,'creator-33',"
+                        + "'2026-01-01 01:01:07','updater-33','2026-01-02 01:01:07',b'0'),"
+                        + "(41,101,'active-priority','canonical','{\"name\":\"deleted-first\"}',0,8,'creator-41',"
+                        + "'2026-01-01 01:01:08','updater-41','2026-01-02 01:01:08',b'1'),"
+                        + "(42,101,'active-priority','canonical','{\"name\":\"active-second\"}',0,9,'creator-42',"
+                        + "'2026-01-01 01:01:09','updater-42','2026-01-02 01:01:09',b'0')",
+                longRowKey, longRowKey, occupiedRepairKey);
+    }
+
+    static void installLegacySystemConfigDuplicates(JdbcTemplate jdbc) {
         jdbc.execute("CREATE TABLE skit_system_config (id bigint NOT NULL AUTO_INCREMENT,tenant_id bigint NOT NULL,"
                 + "config_data longtext NOT NULL," + auditColumns() + ",PRIMARY KEY (id))" + tableOptions());
-        jdbc.update("INSERT INTO skit_admin_record (tenant_id,page_key,row_key,record_data) "
-                + "VALUES (101,'tenant','duplicate','{}'),(101,'tenant','duplicate','{}')");
         jdbc.update("INSERT INTO skit_system_config (tenant_id,config_data) VALUES (101,'{}'),(101,'{}')");
     }
 

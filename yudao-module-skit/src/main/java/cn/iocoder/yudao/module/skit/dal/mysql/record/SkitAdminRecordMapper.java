@@ -6,6 +6,7 @@ import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPageReqVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
 import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -14,6 +15,19 @@ import java.util.List;
 
 @Mapper
 public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
+
+    @Insert({"<script>",
+            "INSERT INTO `skit_admin_record` (`tenant_id`,`page_key`,`row_key`,`record_data`,",
+            "`status`,`sort`,`creator`,`updater`) VALUES",
+            "<foreach collection='records' item='record' separator=','>",
+            "(#{tenantId},#{record.pageKey},#{record.rowKey},#{record.recordData},",
+            "#{record.status},#{record.sort},'page-seed','page-seed')",
+            "</foreach>",
+            "ON DUPLICATE KEY UPDATE `id`=`id`",
+            "</script>"})
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is required and bound explicitly for every row
+    int insertSeedBatchIfAbsent(@Param("tenantId") Long tenantId,
+                                @Param("records") List<SkitAdminRecordDO> records);
 
     @Select("SELECT * FROM `skit_admin_record` WHERE `tenant_id`=#{tenantId} "
             + "AND `page_key`='drama' AND `deleted`=b'0' AND JSON_VALID(`record_data`) "

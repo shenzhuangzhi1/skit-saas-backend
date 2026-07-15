@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.skit.service.record;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordSaveReqVO;
@@ -31,6 +32,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
 
     private static final Map<String, PageSeedSpec> PAGE_SPECS = buildPageSpecs();
     private static final int MAX_SEED_ROWS = 2000;
+    private static final int SEED_INSERT_BATCH_SIZE = 200;
     private static final String SEED_VERSION = "2026-07-08.3";
 
     @Resource
@@ -106,7 +108,10 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Integer seedPage(String pageKey) {
-        PageSeedSpec spec = getSpec(pageKey);
+        PageSeedSpec spec = PAGE_SPECS.get(pageKey);
+        if (spec == null) {
+            return 0;
+        }
         if (skitAdminRecordMapper.selectCountByPageKey(spec.key) > 0) {
             return repairSeededPage(spec);
         }
@@ -132,6 +137,9 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     }
 
     private void ensureSeeded(String pageKey) {
+        if (!PAGE_SPECS.containsKey(pageKey)) {
+            return;
+        }
         seedPage(pageKey);
     }
 
@@ -186,8 +194,14 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         if (records.isEmpty()) {
             return 0;
         }
-        skitAdminRecordMapper.insertBatch(records);
-        return records.size();
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        int inserted = 0;
+        for (int fromIndex = 0; fromIndex < records.size(); fromIndex += SEED_INSERT_BATCH_SIZE) {
+            int toIndex = Math.min(fromIndex + SEED_INSERT_BATCH_SIZE, records.size());
+            inserted += skitAdminRecordMapper.insertSeedBatchIfAbsent(
+                    tenantId, records.subList(fromIndex, toIndex));
+        }
+        return inserted;
     }
 
     private static boolean needsSeedRepair(PageSeedSpec spec, Map<String, Object> recordData) {
@@ -378,7 +392,7 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
         if (spec != null) {
             return spec;
         }
-        return new PageSeedSpec(pageKey, 20, "id", "title", "status", "createtime");
+        return new PageSeedSpec(pageKey, 0);
     }
 
     private static Map<String, Object> buildRecordData(PageSeedSpec spec, int index) {

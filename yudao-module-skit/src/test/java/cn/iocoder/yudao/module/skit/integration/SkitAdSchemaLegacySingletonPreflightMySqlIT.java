@@ -10,7 +10,7 @@ class SkitAdSchemaLegacySingletonPreflightMySqlIT extends SkitMySqlIntegrationTe
 
     @Override
     protected void beforeSkitSchemaInitialization(JdbcTemplate jdbc) {
-        SkitLegacyAdSchemaFixture.installLegacySingletonDuplicates(jdbc);
+        SkitLegacyAdSchemaFixture.installLegacySystemConfigDuplicates(jdbc);
     }
 
     @Override
@@ -19,17 +19,16 @@ class SkitAdSchemaLegacySingletonPreflightMySqlIT extends SkitMySqlIntegrationTe
     }
 
     @Test
-    void duplicateLegacySingletonsFailBeforeAnyTask2Ddl() {
+    void duplicateLegacySystemConfigFailsBeforeAnyTask2Ddl() {
         IllegalStateException failure = assertThrows(IllegalStateException.class, this::initializeSkitSchema);
 
-        assertTrue(failure.getMessage().contains("legacy admin record singleton"));
-        SkitTask2SchemaAssertions.assertNoTask2Artifacts(jdbc());
-
-        jdbc().update("DELETE FROM skit_admin_record WHERE id=(SELECT duplicate_id FROM "
-                + "(SELECT MAX(id) AS duplicate_id FROM skit_admin_record) duplicate_row)");
-        failure = assertThrows(IllegalStateException.class, this::initializeSkitSchema);
         assertTrue(failure.getMessage().contains("legacy system config singleton"));
         SkitTask2SchemaAssertions.assertNoTask2Artifacts(jdbc());
+        Integer repairAuditTableCount = jdbc().queryForObject(
+                "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
+                        + "AND TABLE_NAME='skit_admin_record_migration_audit'", Integer.class);
+        org.junit.jupiter.api.Assertions.assertEquals(0, repairAuditTableCount,
+                "an unrelated fail-closed singleton must not trigger admin-record repair DDL");
     }
 
 }

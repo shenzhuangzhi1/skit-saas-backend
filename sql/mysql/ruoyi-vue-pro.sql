@@ -50,6 +50,26 @@ CREATE TABLE `skit_identity_migration_audit`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '历史管理端身份修复审计';
 
 -- ----------------------------
+-- Table structure for skit_admin_record_migration_audit
+-- ----------------------------
+DROP TABLE IF EXISTS `skit_admin_record_migration_audit`;
+CREATE TABLE `skit_admin_record_migration_audit`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
+  `migration_version` int NOT NULL COMMENT '迁移版本',
+  `source_id` bigint NOT NULL COMMENT '被修复管理记录',
+  `tenant_id` bigint NOT NULL COMMENT '所属租户',
+  `page_key` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '页面键',
+  `original_row_key` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '原业务行键',
+  `repaired_row_key` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '修复后业务行键',
+  `retained_id` bigint NOT NULL COMMENT '保留原业务行键的记录',
+  `algorithm` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '修复算法',
+  `repaired_on` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '修复时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_skit_admin_record_migration_source`(`migration_version` ASC, `source_id` ASC) USING BTREE,
+  INDEX `idx_skit_admin_record_migration_scope`(`tenant_id` ASC, `page_key` ASC, `original_row_key` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '历史后台记录键修复审计';
+
+-- ----------------------------
 -- Table structure for infra_api_access_log
 -- ----------------------------
 DROP TABLE IF EXISTS `infra_api_access_log`;
