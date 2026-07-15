@@ -991,6 +991,21 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final String STANDARD_AGENT_PACKAGE_NAME = "代理商标准套餐";
     private static final int STANDARD_AGENT_PACKAGE_STATUS = 0;
     private static final String STANDARD_AGENT_PACKAGE_MENU_IDS = "[]";
+    private static final int ADMIN_SUPER_ADMIN_BINDING_MIGRATION_VERSION = 2026071503;
+    private static final String ENSURE_ADMIN_SUPER_ADMIN_BINDING_SQL =
+            "INSERT INTO `system_user_role` (`user_id`,`role_id`,`creator`,`create_time`,`updater`,"
+                    + "`update_time`,`deleted`,`tenant_id`) "
+                    + "SELECT `u`.`id`,`r`.`id`,'skit-migration-2026071503',CURRENT_TIMESTAMP,"
+                    + "'skit-migration-2026071503',CURRENT_TIMESTAMP,b'0',`u`.`tenant_id` "
+                    + "FROM `system_users` `u` "
+                    + "JOIN `system_tenant` `t` ON `t`.`id`=`u`.`tenant_id` "
+                    + "AND `t`.`package_id` = 0 AND `t`.`deleted`=b'0' "
+                    + "JOIN `system_role` `r` ON `r`.`tenant_id`=`u`.`tenant_id` "
+                    + "AND `r`.`code`='super_admin' AND `r`.`deleted`=b'0' "
+                    + "WHERE `u`.`username`='admin' AND `u`.`deleted`=b'0' "
+                    + "AND NOT EXISTS (SELECT 1 FROM `system_user_role` `ur` "
+                    + "WHERE `ur`.`user_id`=`u`.`id` AND `ur`.`role_id`=`r`.`id` "
+                    + "AND `ur`.`tenant_id`=`u`.`tenant_id` AND `ur`.`deleted`=b'0')";
 
     private final JdbcTemplate jdbcTemplate;
     private final List<Migration> migrations;
@@ -1420,6 +1435,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         result.add(migrationFromSteps(LEGACY_ADMIN_RECORD_REPAIR_MIGRATION_VERSION,
                 "audit and normalize legacy admin record singleton keys",
                 legacyAdminRecordRepairSteps()));
+        result.add(migrationFromSteps(ADMIN_SUPER_ADMIN_BINDING_MIGRATION_VERSION,
+                "bind the platform admin account to super_admin",
+                Collections.singletonList(updateSqlStep(ENSURE_ADMIN_SUPER_ADMIN_BINDING_SQL))));
         return sortedMigrations(result);
     }
 

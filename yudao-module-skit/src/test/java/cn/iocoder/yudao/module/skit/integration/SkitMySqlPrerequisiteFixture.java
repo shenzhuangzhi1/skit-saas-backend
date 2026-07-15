@@ -50,6 +50,10 @@ final class SkitMySqlPrerequisiteFixture {
                 + "`tenant_id` bigint NOT NULL,"
                 + "`user_id` bigint NOT NULL,"
                 + "`role_id` bigint NOT NULL,"
+                + "`creator` varchar(64) DEFAULT '',"
+                + "`create_time` datetime DEFAULT CURRENT_TIMESTAMP,"
+                + "`updater` varchar(64) DEFAULT '',"
+                + "`update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
                 + "`deleted` bit(1) NOT NULL DEFAULT b'0',"
                 + "PRIMARY KEY (`id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
     }
