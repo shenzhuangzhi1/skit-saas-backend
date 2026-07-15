@@ -61,12 +61,7 @@ jobs:
       - name: Build server jar
         run: mvn -B -pl yudao-server -am -DskipTests package
 
-      - name: Login to GHCR
-        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
+      - name: Build Docker image
         run: |
           set -euo pipefail
           docker build \
@@ -74,6 +69,21 @@ jobs:
             --label org.opencontainers.image.revision="${GITHUB_SHA}" \
             -t "${IMAGE_NAME}:${IMAGE_TAG}" \
             yudao-server
+
+      - name: Verify packaged production startup
+        run: |
+          chmod +x deploy/test-production-image-startup.sh
+          IMAGE_NAME="${IMAGE_NAME}" IMAGE_TAG="${IMAGE_TAG}" \
+            ./deploy/test-production-image-startup.sh
+
+      - name: Login to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          set -euo pipefail
           docker push "${IMAGE_NAME}:${IMAGE_TAG}"
 
       - name: Prepare deployment files
@@ -85,6 +95,7 @@ jobs:
           cp deploy/cleanup-backend-release-env.sh .deploy/cleanup-backend-release-env.sh
           cp sql/mysql/ruoyi-vue-pro.sql .deploy/ruoyi-vue-pro.sql
           cp sql/mysql/skit-saas.sql .deploy/skit-saas.sql
+          cp sql/mysql/quartz.sql .deploy/quartz.sql
 
       - name: Detect deployment secrets
         id: deploy_config
@@ -197,6 +208,7 @@ jobs:
           .deploy/scp \
             ".deploy/ruoyi-vue-pro.sql" \
             ".deploy/skit-saas.sql" \
+            ".deploy/quartz.sql" \
             "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
 
       - name: Activate backend on server

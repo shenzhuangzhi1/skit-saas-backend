@@ -10,6 +10,10 @@ spring:
       - com.alibaba.druid.spring.boot.autoconfigure.DruidDataSourceAutoConfigure
       - org.springframework.ai.vectorstore.qdrant.autoconfigure.QdrantVectorStoreAutoConfiguration
       - org.springframework.ai.vectorstore.milvus.autoconfigure.MilvusVectorStoreAutoConfiguration
+      # Global WxJava clients are not tenant-safe and also require credentials at startup. Tenant
+      # integrations are built lazily from system_social_client by SocialClientServiceImpl.
+      - com.binarywang.spring.starter.wxjava.mp.config.WxMpAutoConfiguration
+      - com.binarywang.spring.starter.wxjava.miniapp.config.WxMaAutoConfiguration
   datasource:
     dynamic:
       primary: master
@@ -79,3 +83,19 @@ logging:
       apache:
         ibatis: INFO
       mybatis: INFO
+
+# Keep the optional WxJava starters on the project's HttpClient 5 / shared Redis path even when
+# production does not configure WeChat credentials. Without this neutral wiring the starters fall
+# back to their in-memory storage, whose initializer hard-loads the intentionally absent
+# HttpClient 4 TrustStrategy class and prevents the whole server from starting.
+wx:
+  mp:
+    config-storage:
+      type: RedisTemplate
+      key-prefix: wx
+      http-client-type: HttpComponents
+  miniapp:
+    config-storage:
+      type: RedisTemplate
+      key-prefix: wa
+      http-client-type: HttpComponents

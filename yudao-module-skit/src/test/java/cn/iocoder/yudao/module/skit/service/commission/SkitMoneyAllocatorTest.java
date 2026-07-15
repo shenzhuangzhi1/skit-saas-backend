@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.service.commission;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -9,11 +10,17 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class SkitMoneyAllocatorTest {
 
     private final SkitMoneyAllocator allocator = new SkitMoneyAllocator();
+
+    @Test
+    void shouldBeAvailableToSpringProjectionServices() {
+        assertTrue(SkitMoneyAllocator.class.isAnnotationPresent(Component.class));
+    }
 
     @Test
     void shouldAllocateViewerAndArbitraryAncestorsWithIntegerFloor() {

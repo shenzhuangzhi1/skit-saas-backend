@@ -16,6 +16,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,8 +27,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
  *
  * weixin-java 4.8.x 的 {@code AbstractWxMpConfigStorageConfiguration} / {@code AbstractWxMaConfigStorageConfiguration}
  * 在初始化 config storage 时，会无条件调用 {@code DefaultApacheHttpClientBuilder.get()}，后者在类加载时引用
- * Apache HttpClient 4.x 的 {@code org.apache.http.ssl.TrustStrategy} 等类，导致启动报
- * {@code NoClassDefFoundError}（Spring Boot 4.x / 新版 Spring Cloud Alibaba 不再传递 HttpClient 4.x）。
+ * Apache HttpClient 4.x 的 {@code org.apache.http.ssl.TrustStrategy} 等类。当前 WxJava snapshot
+ * 将这组兼容依赖标记为 provided，因此生产 Fat Jar 不包含它并会启动失败。
  *
  * 本配置类自行创建 {@link WxMpConfigStorage} / {@link WxMaConfig} bean，绕过官方的初始化逻辑，
  * 配合 {@code http-client-type: HttpComponents} 配置，只依赖 Apache HttpClient 5.x。
@@ -35,6 +36,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
  * @author 芋道源码
  */
 @Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties({WxMpProperties.class, WxMaProperties.class})
 @Slf4j
 public class YudaoWxClientConfiguration {
 

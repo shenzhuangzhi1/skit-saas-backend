@@ -236,6 +236,17 @@ public class SocialClientServiceImplTest extends BaseDbUnitTest {
     }
 
     @Test
+    public void testGetWxMpService_withoutGlobalDefault() {
+        Integer userType = randomPojo(UserTypeEnum.class).getValue();
+        ReflectUtil.setFieldValue(socialClientService, "wxMpService", null);
+        try {
+            assertServiceException(() -> socialClientService.getWxMpService(userType), SOCIAL_CLIENT_NOT_EXISTS);
+        } finally {
+            ReflectUtil.setFieldValue(socialClientService, "wxMpService", wxMpService);
+        }
+    }
+
+    @Test
     public void testGetWxMpService_clientDisable() {
         // 准备参数
         Integer userType = randomPojo(UserTypeEnum.class).getValue();
@@ -315,6 +326,17 @@ public class SocialClientServiceImplTest extends BaseDbUnitTest {
         WxMaService result = socialClientService.getWxMaService(userType);
         // 断言
         assertSame(wxMaService, result);
+    }
+
+    @Test
+    public void testGetWxMaService_withoutGlobalDefault() {
+        Integer userType = randomPojo(UserTypeEnum.class).getValue();
+        ReflectUtil.setFieldValue(socialClientService, "wxMaService", null);
+        try {
+            assertServiceException(() -> socialClientService.getWxMaService(userType), SOCIAL_CLIENT_NOT_EXISTS);
+        } finally {
+            ReflectUtil.setFieldValue(socialClientService, "wxMaService", wxMaService);
+        }
     }
 
     @Test

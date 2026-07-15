@@ -116,7 +116,7 @@ public class SocialClientServiceImpl implements SocialClientService {
     @Autowired(required = false) // 由于 justauth.enable 配置项，可以关闭 AuthRequestFactory 的功能，所以这里只能不强制注入
     private AuthRequestFactory authRequestFactory;
 
-    @Resource
+    @Autowired(required = false) // 多租户生产环境仅使用数据库中的租户级微信配置，不创建全局默认客户端
     private WxMpService wxMpService;
     @Resource
     private WxMpProperties wxMpProperties;
@@ -142,7 +142,7 @@ public class SocialClientServiceImpl implements SocialClientService {
 
             });
 
-    @Resource
+    @Autowired(required = false) // 多租户生产环境仅使用数据库中的租户级微信配置，不创建全局默认客户端
     private WxMaService wxMaService;
     @Resource
     private WxMaProperties wxMaProperties;
@@ -253,6 +253,9 @@ public class SocialClientServiceImpl implements SocialClientService {
             return wxMpServiceCache.getUnchecked(client.getClientId() + ":" + client.getClientSecret());
         }
         // 第二步，不存在 DB 配置项，则使用 application-*.yaml 对应的 WxMpService 对象
+        if (wxMpService == null) {
+            throw exception(SOCIAL_CLIENT_NOT_EXISTS);
+        }
         return wxMpService;
     }
 
@@ -440,6 +443,9 @@ public class SocialClientServiceImpl implements SocialClientService {
             return wxMaServiceCache.getUnchecked(client.getClientId() + ":" + client.getClientSecret());
         }
         // 第二步，不存在 DB 配置项，则使用 application-*.yaml 对应的 WxMaService 对象
+        if (wxMaService == null) {
+            throw exception(SOCIAL_CLIENT_NOT_EXISTS);
+        }
         return wxMaService;
     }
 

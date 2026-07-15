@@ -1,5 +1,7 @@
 package cn.iocoder.yudao.module.skit.service.commission;
 
+import org.springframework.stereotype.Component;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -16,6 +18,7 @@ import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.RATE_BASE;
  * their floored share; every other unit remains with the agent. One invocation never mixes
  * currencies or precisions.</p>
  */
+@Component
 public class SkitMoneyAllocator {
 
     /**

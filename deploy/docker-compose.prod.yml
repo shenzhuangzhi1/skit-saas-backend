@@ -18,6 +18,7 @@ services:
       - mysql_data:/var/lib/mysql
       - ./mysql/init/ruoyi-vue-pro.sql:/docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql:ro
       - ./mysql/init/skit-saas.sql:/docker-entrypoint-initdb.d/02-skit-saas.sql:ro
+      - ./mysql/init/quartz.sql:/docker-entrypoint-initdb.d/03-quartz.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
       interval: 10s

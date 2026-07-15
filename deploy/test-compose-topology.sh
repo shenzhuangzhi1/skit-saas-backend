@@ -6,6 +6,10 @@ compose_file="${repo_root}/deploy/docker-compose.prod.yml"
 base_config="${repo_root}/yudao-server/src/main/resources/application.yaml"
 runtime_config="${repo_root}/yudao-server/src/main/resources/application-runtime.yaml"
 prod_config="${repo_root}/yudao-server/src/main/resources/application-prod.yaml"
+startup_smoke="${repo_root}/deploy/test-production-image-startup.sh"
+server_pom="${repo_root}/yudao-server/pom.xml"
+activation_script="${repo_root}/deploy/activate-backend.sh"
+workflow="${repo_root}/.github/workflows/cicd.yml"
 
 yaml_value() {
   file="$1"
@@ -105,6 +109,59 @@ if [[ ! -f "${prod_config}" ]]; then
   echo "FAIL: production overlay is missing: ${prod_config}" >&2
   exit 1
 fi
+for required_startup_guard in \
+    "trap 'exit 129' HUP" \
+    "trap 'exit 130' INT" \
+    "trap 'exit 143' TERM" \
+    'required_healthy_samples=5' \
+    "'{{.RestartCount}} {{.State.Status}}'"; do
+  if ! grep -Fq -- "${required_startup_guard}" "${startup_smoke}"; then
+    echo "FAIL: packaged startup smoke is missing guard ${required_startup_guard}" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq '<artifactId>spring-boot-starter-actuator</artifactId>' "${server_pom}"; then
+  echo "FAIL: packaged server must include Actuator for the production health gate" >&2
+  exit 1
+fi
+if ! grep -Fq './mysql/init/quartz.sql:/docker-entrypoint-initdb.d/03-quartz.sql:ro' \
+    "${compose_file}"; then
+  echo "FAIL: fresh production databases must initialize the Quartz scheduler schema" >&2
+  exit 1
+fi
+for quartz_release_contract in \
+    "${startup_smoke}|sql/mysql/quartz.sql" \
+    "${startup_smoke}|JobPersistenceException" \
+    "${activation_script}|docker-compose.prod.yml ruoyi-vue-pro.sql skit-saas.sql quartz.sql" \
+    "${activation_script}|information_schema.TABLES" \
+    "${activation_script}|information_schema.COLUMNS" \
+    "${activation_script}|information_schema.TABLE_CONSTRAINTS" \
+    "${activation_script}|quartz_schema_state_after" \
+    "${activation_script}|required_healthy_samples=5" \
+    "${activation_script}|up -d --no-deps --force-recreate backend" \
+    "${activation_script}|JobPersistenceException" \
+    "${activation_script}|< mysql/init/quartz.sql" \
+    "${repo_root}/deploy/test-activation-encryption-key.sh|MYSQL_SECRET_ARG_SENTINEL" \
+    "${workflow}|.deploy/quartz.sql"; do
+  contract_file="${quartz_release_contract%%|*}"
+  contract_text="${quartz_release_contract#*|}"
+  if ! grep -Fq -- "${contract_text}" "${contract_file}"; then
+    echo "FAIL: Quartz release contract is missing ${contract_text} in ${contract_file}" >&2
+    exit 1
+  fi
+done
+if grep -Fq -- 'docker_cmd logs --since' "${activation_script}"; then
+  echo "FAIL: a forced-new backend must be validated from its complete startup log" >&2
+  exit 1
+fi
+for global_wx_auto_configuration in \
+    'com.binarywang.spring.starter.wxjava.mp.config.WxMpAutoConfiguration' \
+    'com.binarywang.spring.starter.wxjava.miniapp.config.WxMaAutoConfiguration'; do
+  if ! grep -Fq -- "- ${global_wx_auto_configuration}" "${runtime_config}"; then
+    echo "FAIL: production must disable the global, non-tenant-safe ${global_wx_auto_configuration}" >&2
+    exit 1
+  fi
+done
 assert_yaml_value "${runtime_config}" "server.port" "48080"
 assert_yaml_value "${runtime_config}" "spring.datasource.dynamic.primary" "master"
 assert_yaml_value "${runtime_config}" "spring.redis.host" '${REDIS_HOST:redis}'
@@ -112,7 +169,11 @@ assert_yaml_value "${runtime_config}" "spring.redis.port" '${REDIS_PORT:6379}'
 assert_yaml_value "${runtime_config}" "spring.quartz.job-store-type" "jdbc"
 assert_yaml_value "${runtime_config}" "spring.quartz.jdbc.initialize-schema" "NEVER"
 assert_yaml_value "${runtime_config}" "logging.level.cn.iocoder.yudao.module" "INFO"
-if grep -Eq '(^|[[:space:]])(wx|rocketmq|rabbitmq|kafka|qianfan|zhipuai|openai|anthropic|stabilityai|dashscope|moonshot|deepseek):' \
+assert_yaml_value "${runtime_config}" "wx.mp.config-storage.type" "RedisTemplate"
+assert_yaml_value "${runtime_config}" "wx.mp.config-storage.http-client-type" "HttpComponents"
+assert_yaml_value "${runtime_config}" "wx.miniapp.config-storage.type" "RedisTemplate"
+assert_yaml_value "${runtime_config}" "wx.miniapp.config-storage.http-client-type" "HttpComponents"
+if grep -Eq '(^|[[:space:]])(rocketmq|rabbitmq|kafka|qianfan|zhipuai|openai|anthropic|stabilityai|dashscope|moonshot|deepseek):' \
     "${runtime_config}"; then
   echo "FAIL: runtime baseline must not import local third-party test integrations" >&2
   exit 1
@@ -130,6 +191,7 @@ assert_yaml_value "${prod_config}" "spring.datasource.druid.stat-view-servlet.en
 assert_yaml_value "${prod_config}" "spring.boot.admin.client.enabled" "false"
 assert_yaml_value "${prod_config}" "management.endpoints.web.exposure.include" "health"
 assert_yaml_value "${prod_config}" "management.endpoint.health.show-details" "never"
+assert_yaml_value "${prod_config}" "management.endpoint.health.probes.enabled" "false"
 assert_yaml_value "${prod_config}" "yudao.sms-code.begin-code" "100000"
 assert_yaml_value "${prod_config}" "yudao.sms-code.end-code" "999999"
 assert_yaml_value "${prod_config}" "yudao.wxa-code.env-version" "release"

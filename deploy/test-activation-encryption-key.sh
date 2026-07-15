@@ -25,9 +25,20 @@ for argument in "$@"; do
     echo "FAIL: backend child argv contains a staged deployment secret" >&2
     exit 98
   fi
+  if [[ -n "${MYSQL_SECRET_ARG_SENTINEL:-}" &&
+        "${argument}" == *"${MYSQL_SECRET_ARG_SENTINEL}"* ]]; then
+    echo "FAIL: backend child argv contains the MySQL root password" >&2
+    exit 99
+  fi
 done
 printf '%q ' "$@" >> "${STUB_LOG}"
 printf '\n' >> "${STUB_LOG}"
+if [[ "$*" == *"information_schema.TABLES"* ]]; then
+  printf '11:79:11\n'
+fi
+if [[ "$*" == *"inspect --format"* ]]; then
+  printf '0 running\n'
+fi
 exit 0
 EOF
 cat > "${stub_bin}/curl" <<'EOF'
@@ -44,7 +55,12 @@ done
 printf '%s' '{"status":"UP"}' > "${output_file}"
 printf '200'
 EOF
-chmod +x "${stub_bin}/docker" "${stub_bin}/curl"
+cat > "${stub_bin}/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${stub_bin}/docker" "${stub_bin}/curl" "${stub_bin}/sleep"
+export MYSQL_SECRET_ARG_SENTINEL="test-root-password"
 
 run_activation() {
   activation_output="${temp_root}/activation-$1.log"
@@ -288,6 +304,7 @@ mkdir -p "${staged_release_path}"
 cp "${compose_file}" "${staged_release_path}/docker-compose.prod.yml"
 : > "${staged_release_path}/ruoyi-vue-pro.sql"
 : > "${staged_release_path}/skit-saas.sql"
+: > "${staged_release_path}/quartz.sql"
 secret_arg_sentinel="backend-secret-argv-sentinel"
 {
   printf 'MYSQL_ROOT_PASSWORD=%q\n' 'test-root-password'

@@ -21,7 +21,7 @@ management:
       show-details: never
       show-components: never
       probes:
-        enabled: true
+        enabled: false
 
 springdoc:
   api-docs:

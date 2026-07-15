@@ -9,6 +9,7 @@ cd "${DEPLOY_PATH}"
 
 docker_config=""
 health_body_file=""
+backend_log_file=""
 portable_lock_dir=""
 server_env_file="${SERVER_ENV_FILE:-}"
 cleanup_server_env=0
@@ -18,6 +19,9 @@ cleanup() {
   trap - EXIT
   if [ -n "${health_body_file}" ]; then
     rm -f "${health_body_file}"
+  fi
+  if [ -n "${backend_log_file}" ]; then
+    rm -f "${backend_log_file}"
   fi
   if [ -n "${docker_config}" ]; then
     rm -rf "${docker_config}"
@@ -73,7 +77,7 @@ if [ -n "${release_bundle_path}" ]; then
     echo "The staged backend release directory is missing or unsafe."
     exit 1
   fi
-  for release_file in docker-compose.prod.yml ruoyi-vue-pro.sql skit-saas.sql; do
+  for release_file in docker-compose.prod.yml ruoyi-vue-pro.sql skit-saas.sql quartz.sql; do
     if [ -L "${release_bundle_path}/${release_file}" ] ||
        [ ! -f "${release_bundle_path}/${release_file}" ]; then
       echo "The staged backend release is missing ${release_file}."
@@ -87,6 +91,7 @@ if [ -n "${release_bundle_path}" ]; then
   mkdir -p mysql/init
   install -m 644 "${release_bundle_path}/ruoyi-vue-pro.sql" mysql/init/ruoyi-vue-pro.sql
   install -m 644 "${release_bundle_path}/skit-saas.sql" mysql/init/skit-saas.sql
+  install -m 644 "${release_bundle_path}/quartz.sql" mysql/init/quartz.sql
 elif [ -z "${server_env_file}" ]; then
   server_env_file="server.env"
 fi
@@ -540,43 +545,116 @@ upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 compose -f docker-compose.prod.yml --env-file .env pull backend
 compose -f docker-compose.prod.yml --env-file .env up -d mysql redis
 
+mysql_ready=0
+for _ in $(seq 1 60); do
+  if compose -f docker-compose.prod.yml --env-file .env exec -T \
+      mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqladmin -uroot --silent ping' \
+      >/dev/null 2>&1; then
+    mysql_ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "${mysql_ready}" != "1" ]; then
+  echo "MySQL did not become ready for backend activation."
+  exit 1
+fi
+
+mysql_in_container() {
+  compose -f docker-compose.prod.yml --env-file .env exec -T mysql sh -c \
+    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot "$MYSQL_DATABASE" "$@"' \
+    mysql-in-container "$@"
+}
+
+quartz_table_names="'QRTZ_BLOB_TRIGGERS','QRTZ_CALENDARS','QRTZ_CRON_TRIGGERS','QRTZ_FIRED_TRIGGERS','QRTZ_JOB_DETAILS','QRTZ_LOCKS','QRTZ_PAUSED_TRIGGER_GRPS','QRTZ_SCHEDULER_STATE','QRTZ_SIMPLE_TRIGGERS','QRTZ_SIMPROP_TRIGGERS','QRTZ_TRIGGERS'"
+quartz_schema_state_sql="SELECT CONCAT((SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND ENGINE = 'InnoDB' AND TABLE_NAME IN (${quartz_table_names})), ':', (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${quartz_table_names})), ':', (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_NAME IN (${quartz_table_names})));"
+quartz_schema_probe_sql="SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,BLOB_DATA FROM QRTZ_BLOB_TRIGGERS LIMIT 0; SELECT SCHED_NAME,CALENDAR_NAME,CALENDAR FROM QRTZ_CALENDARS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,CRON_EXPRESSION,TIME_ZONE_ID FROM QRTZ_CRON_TRIGGERS LIMIT 0; SELECT SCHED_NAME,ENTRY_ID,TRIGGER_NAME,TRIGGER_GROUP,INSTANCE_NAME,FIRED_TIME,SCHED_TIME,PRIORITY,STATE,JOB_NAME,JOB_GROUP,IS_NONCONCURRENT,REQUESTS_RECOVERY FROM QRTZ_FIRED_TRIGGERS LIMIT 0; SELECT SCHED_NAME,JOB_NAME,JOB_GROUP,DESCRIPTION,JOB_CLASS_NAME,IS_DURABLE,IS_NONCONCURRENT,IS_UPDATE_DATA,REQUESTS_RECOVERY,JOB_DATA FROM QRTZ_JOB_DETAILS LIMIT 0; SELECT SCHED_NAME,LOCK_NAME FROM QRTZ_LOCKS LIMIT 0; SELECT SCHED_NAME,TRIGGER_GROUP FROM QRTZ_PAUSED_TRIGGER_GRPS LIMIT 0; SELECT SCHED_NAME,INSTANCE_NAME,LAST_CHECKIN_TIME,CHECKIN_INTERVAL FROM QRTZ_SCHEDULER_STATE LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,REPEAT_COUNT,REPEAT_INTERVAL,TIMES_TRIGGERED FROM QRTZ_SIMPLE_TRIGGERS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,STR_PROP_1,STR_PROP_2,STR_PROP_3,INT_PROP_1,INT_PROP_2,LONG_PROP_1,LONG_PROP_2,DEC_PROP_1,DEC_PROP_2,BOOL_PROP_1,BOOL_PROP_2 FROM QRTZ_SIMPROP_TRIGGERS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,JOB_NAME,JOB_GROUP,DESCRIPTION,NEXT_FIRE_TIME,PREV_FIRE_TIME,PRIORITY,TRIGGER_STATE,TRIGGER_TYPE,START_TIME,END_TIME,CALENDAR_NAME,MISFIRE_INSTR,JOB_DATA FROM QRTZ_TRIGGERS LIMIT 0;"
+read_quartz_schema_state() {
+  mysql_in_container --batch --skip-column-names -e "${quartz_schema_state_sql}" | tr -d '\r\n'
+}
+validate_quartz_schema_columns() {
+  mysql_in_container --batch --skip-column-names -e "${quartz_schema_probe_sql}" >/dev/null
+}
+
+quartz_schema_state="$(read_quartz_schema_state)"
+case "${quartz_schema_state}" in
+  11:79:11)
+    if ! validate_quartz_schema_columns; then
+      echo "Quartz schema has incompatible columns; refusing backend activation."
+      exit 1
+    fi
+    ;;
+  0:0:0)
+    if [ ! -f mysql/init/quartz.sql ]; then
+      echo "Quartz schema is missing and mysql/init/quartz.sql is unavailable."
+      exit 1
+    fi
+    mysql_in_container < mysql/init/quartz.sql
+    quartz_schema_state_after="$(read_quartz_schema_state)"
+    if [ "${quartz_schema_state_after}" != "11:79:11" ] ||
+       ! validate_quartz_schema_columns; then
+      echo "Quartz schema initialization did not produce the required structure."
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Quartz schema is incomplete or incompatible (${quartz_schema_state}); refusing an unsafe automatic rebuild."
+    exit 1
+    ;;
+esac
+
 if [ "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" = "1" ]; then
   # Destructive credential cleanup is intentionally opt-in. A missing local marker is not proof
   # that database ciphertext uses the legacy key (for example after disaster recovery).
   # Public account metadata and all revenue history remain intact.
   compose -f docker-compose.prod.yml --env-file .env stop backend >/dev/null 2>&1 || true
-  mysql_ready=0
-  for _ in $(seq 1 60); do
-    if compose -f docker-compose.prod.yml --env-file .env exec -T \
-        -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql mysqladmin -uroot --silent ping >/dev/null 2>&1; then
-      mysql_ready=1
-      break
-    fi
-    sleep 2
-  done
-  if [ "${mysql_ready}" != "1" ]; then
-    echo "MySQL did not become ready for the requested advertising credential cleanup."
-    exit 1
-  fi
   credential_cleanup_sql="SET @table_exists := (SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skit_ad_account'); SET @cleanup_sql := IF(@table_exists > 0, 'UPDATE skit_ad_account SET app_key = NULL, secret = NULL, status = 1, update_time = NOW(), updater = ''system-encryption-key-bootstrap''', 'SELECT 1'); PREPARE cleanup_statement FROM @cleanup_sql; EXECUTE cleanup_statement; DEALLOCATE PREPARE cleanup_statement;"
-  compose -f docker-compose.prod.yml --env-file .env exec -T \
-    -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql mysql -uroot "${MYSQL_DATABASE:-skit_saas}" \
-    --batch --skip-column-names -e "${credential_cleanup_sql}" >/dev/null
+  mysql_in_container --batch --skip-column-names -e "${credential_cleanup_sql}" >/dev/null
 fi
 
-compose -f docker-compose.prod.yml --env-file .env up -d backend
+compose -f docker-compose.prod.yml --env-file .env \
+  up -d --no-deps --force-recreate backend
 
 health_url="http://127.0.0.1:${BACKEND_PORT:-48080}${BACKEND_HEALTH_PATH:-/actuator/health}"
 health_body_file="$(mktemp)"
+backend_log_file="$(mktemp)"
+required_healthy_samples=5
+healthy_samples=0
 for _ in $(seq 1 90); do
+  backend_state="$(docker_cmd inspect --format '{{.RestartCount}} {{.State.Status}}' \
+    skit-saas-backend 2>/dev/null || true)"
+  restart_count="${backend_state%% *}"
+  container_state="${backend_state#* }"
+  if [[ "${restart_count}" =~ ^[0-9]+$ ]] && ((restart_count > 0)); then
+    echo "Backend restarted ${restart_count} time(s) during activation."
+    break
+  fi
   : > "${health_body_file}"
   status_code="$(curl -sS --max-time 5 -o "${health_body_file}" -w '%{http_code}' "${health_url}" || true)"
   health_body="$(LC_ALL=C tr -d ' \t\r\n' < "${health_body_file}")"
-  if [ "${status_code}" = "200" ] && [ "${health_body}" = '{"status":"UP"}' ]; then
-    rm -f "${health_body_file}"
-    health_body_file=""
-    docker_cmd ps --filter name=skit-saas-backend
-    exit 0
+  if [ "${container_state}" = "running" ] && [ "${restart_count}" = "0" ] &&
+     [ "${status_code}" = "200" ] && [ "${health_body}" = '{"status":"UP"}' ]; then
+    healthy_samples=$((healthy_samples + 1))
+    if [ "${healthy_samples}" -ge "${required_healthy_samples}" ]; then
+      if ! docker_cmd logs skit-saas-backend > "${backend_log_file}" 2>&1; then
+        cat "${backend_log_file}" >&2
+        echo "Backend startup logs could not be read; refusing activation."
+        break
+      fi
+      if grep -Eq 'JobPersistenceException|Table .*QRTZ_.*doesn.t exist' \
+          "${backend_log_file}"; then
+        cat "${backend_log_file}" >&2
+        echo "Backend became HTTP-healthy while Quartz persistence was broken."
+        break
+      fi
+      rm -f "${health_body_file}" "${backend_log_file}"
+      health_body_file=""
+      backend_log_file=""
+      docker_cmd ps --filter name=skit-saas-backend
+      exit 0
+    fi
+  else
+    healthy_samples=0
   fi
   sleep 2
 done

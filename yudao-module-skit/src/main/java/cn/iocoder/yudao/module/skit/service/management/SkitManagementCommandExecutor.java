@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.skit.framework.security.SkitAdminTenantScope;
 import cn.iocoder.yudao.module.skit.framework.security.SkitManagementAccessMode;
 import cn.iocoder.yudao.module.skit.framework.security.SkitManagementCommandType;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +32,7 @@ public class SkitManagementCommandExecutor {
     private final Clock clock;
     private final Supplier<String> commandIdSupplier;
 
+    @Autowired
     public SkitManagementCommandExecutor(SkitManagementCommandAuditMapper auditMapper) {
         this(auditMapper, Clock.systemUTC(), () -> UUID.randomUUID().toString());
     }
