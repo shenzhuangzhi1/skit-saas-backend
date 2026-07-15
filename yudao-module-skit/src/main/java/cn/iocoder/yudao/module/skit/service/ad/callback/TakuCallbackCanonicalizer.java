@@ -212,7 +212,7 @@ public class TakuCallbackCanonicalizer {
             throw failure(ErrorCode.INVALID_VALUE);
         }
         if (!SIGNATURE.matcher(values.get("sign")).matches()) {
-            throw failure(ErrorCode.INVALID_VALUE);
+            throw failure(ErrorCode.INVALID_SIGNATURE);
         }
         parsePositiveInt(values.get("network_firm_id"));
         if (hasValue(values, "platform") && !values.get("platform").matches("[12]")) {
@@ -384,6 +384,7 @@ public class TakuCallbackCanonicalizer {
         INVALID_ENCODING,
         INVALID_VALUE,
         VALUE_TOO_LONG,
+        INVALID_SIGNATURE,
         INVALID_PROBE
     }
 

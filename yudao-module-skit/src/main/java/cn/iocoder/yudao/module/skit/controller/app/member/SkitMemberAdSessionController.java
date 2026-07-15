@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitEntitlementR
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitPlayerGrantCreateReqVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitPlayerGrantRespVO;
 import cn.iocoder.yudao.module.skit.framework.security.SkitMemberRateLimiterKeyResolver;
+import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -45,6 +46,8 @@ public class SkitMemberAdSessionController {
     private SkitAdSessionService adSessionService;
     @Resource
     private SkitContentEntitlementService entitlementService;
+    @Resource
+    private SkitClientRuntimeResolver clientRuntimeResolver;
 
     @PostMapping("/player-grants")
     @RateLimiter(time = 60, count = 30, keyResolver = SkitMemberRateLimiterKeyResolver.class)
@@ -53,7 +56,8 @@ public class SkitMemberAdSessionController {
     public CommonResult<SkitPlayerGrantRespVO> issuePlayerGrant(
             @Valid @RequestBody SkitPlayerGrantCreateReqVO request) {
         return success(SkitPlayerGrantRespVO.from(
-                entitlementService.issuePlayerGrant(getLoginUserId(), request.getDramaId())));
+                entitlementService.issuePlayerGrant(getLoginUserId(), request.getDramaId(),
+                        clientRuntimeResolver.resolve())));
     }
 
     @PostMapping("/ad-sessions")
@@ -63,7 +67,8 @@ public class SkitMemberAdSessionController {
     public CommonResult<SkitAdSessionCreateRespVO> createAdSession(
             @Valid @RequestBody SkitAdSessionCreateReqVO request) {
         return success(SkitAdSessionCreateRespVO.from(
-                adSessionService.createForMember(getLoginUserId(), request.toCommand())));
+                adSessionService.createForMember(getLoginUserId(),
+                        request.toCommand(clientRuntimeResolver.resolve()))));
     }
 
     @PostMapping("/ad-sessions/{sessionId}/client-events")
@@ -74,7 +79,7 @@ public class SkitMemberAdSessionController {
             @Pattern(regexp = "[A-Za-z0-9_-]{22}", message = "广告会话编号格式错误") String sessionId,
             @Valid @RequestBody SkitAdClientEventBatchReqVO request) {
         return success(SkitAdSessionStatusRespVO.from(adSessionService.recordClientEvents(
-                getLoginUserId(), sessionId, request.toCommands())));
+                getLoginUserId(), sessionId, request.toCommands(), clientRuntimeResolver.resolve())));
     }
 
     @GetMapping("/ad-sessions/{sessionId}")
@@ -84,7 +89,8 @@ public class SkitMemberAdSessionController {
             @PathVariable("sessionId")
             @Pattern(regexp = "[A-Za-z0-9_-]{22}", message = "广告会话编号格式错误") String sessionId) {
         return success(SkitAdSessionStatusRespVO.from(
-                adSessionService.getForMember(getLoginUserId(), sessionId)));
+                adSessionService.getForMember(getLoginUserId(), sessionId,
+                        clientRuntimeResolver.resolve())));
     }
 
     @GetMapping("/entitlements")
@@ -92,7 +98,8 @@ public class SkitMemberAdSessionController {
     @Operation(summary = "按短剧查询当前会员的服务端逐集权益")
     public CommonResult<SkitEntitlementRespVO> getEntitlements(
             @RequestParam("dramaId") @Positive(message = "短剧编号必须大于 0") Long dramaId) {
-        List<Integer> episodes = entitlementService.listGrantedEpisodes(getLoginUserId(), dramaId);
+        List<Integer> episodes = entitlementService.listGrantedEpisodes(
+                getLoginUserId(), dramaId, clientRuntimeResolver.resolve());
         return success(SkitEntitlementRespVO.of(dramaId, episodes));
     }
 

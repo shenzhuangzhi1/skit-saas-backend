@@ -52,6 +52,8 @@ public class SkitAdSessionDO extends TenantBaseDO {
     private String revenueStatus;
     private LocalDateTime loadExpiresAt;
     private LocalDateTime rewardAcceptUntil;
+    private Long rewardCallbackInboxId;
+    private LocalDateTime rewardCallbackReceivedAt;
     private LocalDateTime rewardVerifiedAt;
     private LocalDateTime entitledAt;
     private String sdkRequestId;

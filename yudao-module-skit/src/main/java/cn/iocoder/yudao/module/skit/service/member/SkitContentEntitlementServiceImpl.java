@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,41 +48,47 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
 
     private final SkitNativePlayerGrantMapper nativeGrantMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
+    private final SkitContentScopeService contentScopeService;
     private final SkitMemberMapper memberMapper;
     private final SkitAgentMapper agentMapper;
     private final TenantService tenantService;
+    private final SkitTenantAdCapabilityService capabilityService;
     private final Clock clock;
     private final SecureRandom secureRandom;
 
     @Autowired
     public SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
                                              SkitContentEntitlementMapper entitlementMapper,
+                                             SkitContentScopeService contentScopeService,
                                              SkitMemberMapper memberMapper,
                                              SkitAgentMapper agentMapper,
-                                             TenantService tenantService) {
-        this(nativeGrantMapper, entitlementMapper, memberMapper, agentMapper,
-                tenantService, Clock.systemDefaultZone(), new SecureRandom());
+                                             TenantService tenantService,
+                                             SkitTenantAdCapabilityService capabilityService) {
+        this(nativeGrantMapper, entitlementMapper, contentScopeService, memberMapper, agentMapper,
+                tenantService, Clock.systemDefaultZone(), new SecureRandom(), capabilityService);
     }
 
     SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
                                       SkitContentEntitlementMapper entitlementMapper,
+                                      SkitContentScopeService contentScopeService,
                                       SkitMemberMapper memberMapper,
                                       SkitAgentMapper agentMapper,
                                       TenantService tenantService,
                                       Clock clock,
-                                      SecureRandom secureRandom) {
+                                      SecureRandom secureRandom,
+                                      SkitTenantAdCapabilityService capabilityService) {
         this.nativeGrantMapper = Objects.requireNonNull(nativeGrantMapper, "nativeGrantMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
+        this.contentScopeService = Objects.requireNonNull(contentScopeService, "contentScopeService");
         this.memberMapper = Objects.requireNonNull(memberMapper, "memberMapper");
         this.agentMapper = Objects.requireNonNull(agentMapper, "agentMapper");
         this.tenantService = Objects.requireNonNull(tenantService, "tenantService");
+        this.capabilityService = Objects.requireNonNull(capabilityService, "capabilityService");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.secureRandom = Objects.requireNonNull(secureRandom, "secureRandom");
     }
 
-    @Override
-    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
-    public PlayerGrantIssue issuePlayerGrant(Long memberId, Long dramaId) {
+    private PlayerGrantIssue issuePlayerGrantInsideTenant(Long memberId, Long dramaId) {
         requirePositive(memberId, "memberId");
         requirePositive(dramaId, "dramaId");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
@@ -90,6 +97,13 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         requireEnabledAgent(tenantId, agentMapper.selectByTenantId(tenantId));
         requireEnabledMember(tenantId, memberId,
                 memberMapper.selectByTenantAndIdForShare(tenantId, memberId));
+        SkitContentScopeService.AccessibleDrama drama =
+                contentScopeService.requireAccessibleDrama(dramaId);
+        if (drama == null || !tenantId.equals(drama.getTenantId())
+                || !dramaId.equals(drama.getDramaId()) || drama.getCatalogRecordId() == null
+                || drama.getCatalogRecordId() <= 0) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
         LocalDateTime expiresAt = now().plusMinutes(PLAYER_GRANT_MINUTES);
         for (int attempt = 0; attempt < PLAYER_GRANT_RETRIES; attempt++) {
             byte[] random = new byte[PLAYER_GRANT_BYTES];
@@ -112,6 +126,14 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
             }
         }
         throw new IllegalStateException("Could not allocate a native player grant");
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public PlayerGrantIssue issuePlayerGrant(
+            Long memberId, Long dramaId, SkitTenantAdCapabilityService.ClientRuntime runtime) {
+        requireClientAccess(memberId, runtime, SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+        return issuePlayerGrantInsideTenant(memberId, dramaId);
     }
 
     @Override
@@ -157,9 +179,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         return new PlayerGrantScope(tenantId, row.getId(), row.getMemberId(), row.getDramaId());
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public List<Integer> listGrantedEpisodes(Long memberId, Long dramaId) {
+    private List<Integer> listGrantedEpisodesInsideTenant(Long memberId, Long dramaId) {
         requirePositive(memberId, "memberId");
         requirePositive(dramaId, "dramaId");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
@@ -177,13 +197,25 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<Integer> listGrantedEpisodes(
+            Long memberId, Long dramaId, SkitTenantAdCapabilityService.ClientRuntime runtime) {
+        requireClientAccess(memberId, runtime,
+                SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT);
+        return listGrantedEpisodesInsideTenant(memberId, dramaId);
+    }
+
+    @Override
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
-    public List<Integer> listGrantedEpisodesForPlayerGrant(String grantToken) {
+    public List<Integer> listGrantedEpisodesForPlayerGrant(
+            String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         PlayerGrantReference reference = resolvePlayerGrant(grantToken);
         AtomicReference<List<Integer>> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
+            requireClientAccess(reference.getMemberId(), runtime,
+                    SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT);
             PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
-            result.set(listGrantedEpisodes(scope.getMemberId(), scope.getDramaId()));
+            result.set(listGrantedEpisodesInsideTenant(scope.getMemberId(), scope.getDramaId()));
         });
         return result.get();
     }
@@ -282,6 +314,11 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
 
     private LocalDateTime now() {
         return LocalDateTime.now(clock).withNano(0);
+    }
+
+    private void requireClientAccess(Long memberId, SkitTenantAdCapabilityService.ClientRuntime runtime,
+                                     SkitTenantAdCapabilityService.AccessOperation operation) {
+        capabilityService.checkClientAccess(memberId, runtime, operation);
     }
 
     private void requirePositive(Number value, String field) {

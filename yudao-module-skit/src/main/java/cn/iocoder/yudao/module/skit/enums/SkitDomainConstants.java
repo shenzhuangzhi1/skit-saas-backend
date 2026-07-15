@@ -8,6 +8,9 @@ public final class SkitDomainConstants {
     public static final String PROVIDER_PANGLE = "PANGLE";
     public static final String PROVIDER_TAKU = "TAKU";
 
+    public static final String MANAGEMENT_TIMEZONE_DEFAULT = "UTC+8";
+    public static final String MANAGEMENT_TIMEZONE_PATTERN = "UTC-8|UTC\\+8|UTC\\+0";
+
     public static final int COMMISSION_PLAN_ACTIVE = 0;
     public static final int COMMISSION_PLAN_ARCHIVED = 1;
 
@@ -23,6 +26,12 @@ public final class SkitDomainConstants {
 
     public static final int LEDGER_ESTIMATED = 0;
     public static final int LEDGER_AVAILABLE = 1;
+    public static final String LEDGER_ENTRY_ESTIMATE = "ESTIMATE";
+    public static final String LEDGER_ENTRY_ESTIMATE_RELEASE = "ESTIMATE_RELEASE";
+    public static final String LEDGER_ENTRY_SETTLEMENT = "SETTLEMENT";
+    public static final String LEDGER_ENTRY_ADJUSTMENT = "ADJUSTMENT";
+    public static final String LEDGER_BALANCE_FROZEN = "FROZEN";
+    public static final String LEDGER_BALANCE_AVAILABLE = "AVAILABLE";
     public static final String LEDGER_ENTRY_LEGACY_ESTIMATE = "LEGACY_ESTIMATE";
     public static final String LEDGER_BALANCE_NON_SETTLEABLE = "NON_SETTLEABLE";
     public static final String LEGACY_CURRENCY_CNY = "CNY";

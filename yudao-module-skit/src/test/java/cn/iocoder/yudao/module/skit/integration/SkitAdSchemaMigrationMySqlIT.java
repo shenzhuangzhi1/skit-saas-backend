@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
 
+    private long verifiedRevenueSequence;
+
     private static final List<String> TASK_2_TABLES = Arrays.asList(
             "skit_ad_callback_key",
             "skit_ad_reward_secret_version",
@@ -363,12 +365,65 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
 
     private void insertVerifiedRevenue(long adAccountId, String provider,
                                        String sourceType, String externalEventId) {
+        long evidenceBase = 95000L + (++verifiedRevenueSequence * 10L);
+        long snapshotId = evidenceBase;
+        long sessionId = evidenceBase + 1L;
+        long inboxId = evidenceBase + 2L;
+        jdbc().update("INSERT IGNORE INTO skit_ad_callback_key "
+                        + "(tenant_id,ad_account_id,key_version,callback_key_hash,active) "
+                        + "VALUES (101,?,1,UNHEX(SHA2(CONCAT('migration-callback-',?),256)),b'1')",
+                adAccountId, adAccountId);
+        jdbc().update("INSERT IGNORE INTO skit_ad_reward_secret_version "
+                        + "(tenant_id,ad_account_id,secret_version,ciphertext,nonce,encryption_key_id,"
+                        + "envelope_version,active) VALUES (101,?,1,UNHEX(SHA2(CONCAT('migration-reward-',?),256)),"
+                        + "UNHEX(SUBSTRING(SHA2(CONCAT('migration-nonce-',?),256),1,24)),"
+                        + "'mysql-it-reward-key',1,b'1')",
+                adAccountId, adAccountId, adAccountId);
+        jdbc().update("INSERT INTO skit_ad_policy_snapshot "
+                        + "(id,tenant_id,plan_id,source_member_id,rule_version,snapshot_schema_version,"
+                        + "snapshot_json,snapshot_hash,policy_snapshot_at) "
+                        + "VALUES (?,101,401,301,1,1,'{}',UNHEX(SHA2(CONCAT('migration-snapshot-',?),256)),"
+                        + "CURRENT_TIMESTAMP)", snapshotId, snapshotId);
+        jdbc().update("INSERT INTO skit_ad_session "
+                        + "(id,tenant_id,session_id,session_token_hash,session_token_key_version,protocol_version,"
+                        + "member_id,ad_account_id,policy_snapshot_id,callback_key_version,reward_secret_version,"
+                        + "provider,placement_id,scenario_id,business_type,drama_id,episode_from,episode_to,"
+                        + "unlock_scope,active_scope_hash,pseudonymous_user_id,access_mode,client_lifecycle_status,"
+                        + "reward_verification_status,entitlement_status,revenue_status,load_expires_at,"
+                        + "reward_accept_until,provider_transaction_id,last_callback_sequence,version) "
+                        + "VALUES (?,101,CONCAT('migration-session-',?),"
+                        + "UNHEX(SHA2(CONCAT('migration-session-token-',?),256)),1,1,301,?,?,1,1,?,"
+                        + "'verified-placement','drama_unlock','EPISODE_UNLOCK',?,1,1,'1',"
+                        + "UNHEX(SHA2(CONCAT('migration-scope-',?),256)),CONCAT('migration-user-',?),"
+                        + "'MEMBER_OAUTH','CREATED','PENDING','NONE','FROZEN',"
+                        + "DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 1 HOUR),"
+                        + "DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 2 HOUR),"
+                        + "CONCAT('migration-transaction-',?),-1,0)",
+                sessionId, sessionId, sessionId, adAccountId, snapshotId, provider,
+                evidenceBase, evidenceBase, evidenceBase, evidenceBase);
+        jdbc().update("INSERT INTO skit_ad_callback_inbox "
+                        + "(id,tenant_id,ad_account_id,ad_session_id,callback_key_version,reward_secret_version,"
+                        + "provider,callback_type,idempotency_key,canonical_payload_hash,authentication_level,"
+                        + "signature_status,delivery_integrity_status,processing_status,processing_attempt_count,"
+                        + "received_at,ingress_response_code) "
+                        + "VALUES (?,101,?,?,1,1,?,?,CONCAT('migration-callback-',?),"
+                        + "UNHEX(SHA2(CONCAT('migration-payload-',?),256)),'SIGNED_CORE','VERIFIED',"
+                        + "'CANONICAL','PENDING',0,CURRENT_TIMESTAMP,200)",
+                inboxId, adAccountId, sessionId, provider,
+                "IMPRESSION_CALLBACK".equals(sourceType) ? "IMPRESSION" : "REWARD",
+                evidenceBase, evidenceBase);
+        String rewardQualification = "IMPRESSION_CALLBACK".equals(sourceType)
+                ? "NOT_APPLICABLE" : "REWARDED";
         jdbc().update("INSERT INTO skit_ad_revenue_event "
                         + "(tenant_id,ad_account_id,provider,placement_id,external_event_id,source_member_id,"
-                        + "gross_amount,occurred_time,completed,mock,status,source_type,legacy_unverified) "
+                        + "gross_amount,occurred_time,completed,mock,status,source_type,ad_session_id,"
+                        + "callback_inbox_id,policy_snapshot_id,match_status,source_verification_status,"
+                        + "reward_qualification_status,reconciliation_status,payload_hash,legacy_unverified) "
                         + "VALUES (101,?,?,'verified-placement',?,301,1.00000000,CURRENT_TIMESTAMP,"
-                        + "b'1',b'0',0,?,b'0')",
-                adAccountId, provider, externalEventId, sourceType);
+                        + "b'1',b'0',1,?,?,?,?,'MATCHED','VERIFIED',?,'FROZEN',"
+                        + "UNHEX(SHA2(CONCAT('migration-revenue-',?),256)),b'0')",
+                adAccountId, provider, externalEventId, sourceType, sessionId, inboxId, snapshotId,
+                rewardQualification, evidenceBase);
     }
 
     private void installSameTenantMutationTargets() {
@@ -386,7 +441,7 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
                         + "(id,tenant_id,ad_account_id,provider,placement_id,external_event_id,source_member_id,"
                         + "gross_amount,occurred_time,completed,mock,status,source_type,policy_snapshot_id,"
                         + "legacy_unverified) VALUES (94005,101,94002,'PANGLE','mutation-target','mutation-target',"
-                        + "94003,1.00000000,CURRENT_TIMESTAMP,b'1',b'0',0,'SERVER_REWARD',94004,b'0')");
+                        + "94003,1.00000000,CURRENT_TIMESTAMP,b'1',b'0',0,'LEGACY_CLIENT',94004,b'1')");
     }
 
     private void assertLegacyMutationRejected(String table, long id, String triggerMessage, String sql) {

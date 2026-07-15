@@ -101,6 +101,12 @@ class TakuCallbackCanonicalizerTest {
     }
 
     @Test
+    void classifiesMalformedSignatureLexicalAsAuthenticationFailure() {
+        assertRejected(TakuCallbackCanonicalizer.ErrorCode.INVALID_SIGNATURE,
+                validRewardQuery().replace(SIGNATURE, "not-a-valid-md5"));
+    }
+
+    @Test
     void rejectsMalformedPercentEncodingInvalidUtf8AndControlCharacters() {
         assertRejected(TakuCallbackCanonicalizer.ErrorCode.INVALID_ENCODING,
                 validRewardQuery().replace("member-pseudo-42", "%ZZ"));

@@ -18,9 +18,14 @@ public class SkitPlatformAdminGuard {
     private SystemPlatformAdminGuard systemPlatformAdminGuard;
 
     public void check() {
-        if (!systemPlatformAdminGuard.isPlatformAdmin()) {
+        if (!isPlatformAdmin()) {
             throw exception(PLATFORM_ADMIN_REQUIRED);
         }
+    }
+
+    /** Uses the original authenticated tenant/roles held by the system guard. */
+    public boolean isPlatformAdmin() {
+        return systemPlatformAdminGuard.isPlatformAdmin();
     }
 
 }

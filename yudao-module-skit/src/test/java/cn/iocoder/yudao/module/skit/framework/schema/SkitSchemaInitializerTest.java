@@ -99,6 +99,150 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
+    void shouldNormalizeOnlyMySqlParenthesesAroundAtomicNullPredicates() throws Exception {
+        Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
+                "normalizeCheckExpression", String.class);
+        normalizer.setAccessible(true);
+        String declared = "(`report_pull_lease_owner` IS NULL AND "
+                + "`report_pull_lease_until` IS NULL) OR "
+                + "(`report_pull_lease_owner` IS NOT NULL AND "
+                + "`report_pull_lease_until` IS NOT NULL)";
+        String mysql8 = "((`report_pull_lease_owner` IS NULL) AND "
+                + "(`report_pull_lease_until` IS NULL)) OR "
+                + "((`report_pull_lease_owner` IS NOT NULL) AND "
+                + "(`report_pull_lease_until` IS NOT NULL))";
+
+        assertEquals(normalizer.invoke(null, declared), normalizer.invoke(null, mysql8),
+                "MySQL 8 may wrap each IS NULL atom without changing the check semantics");
+
+        String leftGrouped = "((`a` IS NULL) OR (`b` IS NULL)) AND (`c` IS NULL)";
+        String rightGrouped = "(`a` IS NULL) OR ((`b` IS NULL) AND (`c` IS NULL))";
+        assertNotEquals(normalizer.invoke(null, leftGrouped), normalizer.invoke(null, rightGrouped),
+                "normalization must preserve AND/OR grouping");
+    }
+
+    @Test
+    void shouldNormalizeMySqlParenthesesAroundAtomicBetweenPredicate() throws Exception {
+        Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
+                "normalizeCheckExpression", String.class);
+        normalizer.setAccessible(true);
+
+        String declared = "REGEXP_LIKE(`currency`,'^[A-Z]{3}$') AND `amount_scale` BETWEEN 0 AND 18";
+        String mysql8 = "REGEXP_LIKE(`currency`,'^[A-Z]{3}$') AND (`amount_scale` BETWEEN 0 AND 18)";
+
+        assertEquals(normalizer.invoke(null, declared), normalizer.invoke(null, mysql8),
+                "MySQL 8 may wrap a BETWEEN atom without changing the check semantics");
+
+        String declaredArithmetic = "`attributable_actual_units` >= 0 AND `suspense_units` >= 0 "
+                + "AND `attributable_actual_units` + `suspense_units` = `report_actual_units`";
+        String mysql8Arithmetic = "`attributable_actual_units` >= 0 AND `suspense_units` >= 0 "
+                + "AND (`attributable_actual_units` + `suspense_units` = `report_actual_units`)";
+        assertEquals(normalizer.invoke(null, declaredArithmetic), normalizer.invoke(null, mysql8Arithmetic),
+                "identifier text such as report must not be mistaken for a boolean OR token");
+
+        String mysql8GroupedOperand = "`attributable_actual_units` >= 0 AND `suspense_units` >= 0 "
+                + "AND (`attributable_actual_units` + `suspense_units`) = `report_actual_units`";
+        assertEquals(normalizer.invoke(null, declaredArithmetic), normalizer.invoke(null, mysql8GroupedOperand),
+                "MySQL may wrap one arithmetic comparison operand without changing precedence");
+
+        String mysql8FullyWrappedGroupedOperand = "((`attributable_actual_units` >= 0) AND "
+                + "(`suspense_units` >= 0) AND "
+                + "((`attributable_actual_units` + `suspense_units`) = `report_actual_units`))";
+        assertEquals(normalizer.invoke(null, declaredArithmetic),
+                normalizer.invoke(null, mysql8FullyWrappedGroupedOperand),
+                "the same operand wrapper remains redundant after a preceding AND in MySQL metadata");
+    }
+
+    @Test
+    void shouldNormalizeOnlyRedundantAndGrouping() throws Exception {
+        Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
+                "normalizeCheckExpression", String.class);
+        normalizer.setAccessible(true);
+        String declared = "`legacy_unverified`=0 OR (`source_type`='LEGACY_CLIENT' "
+                + "AND `reconciliation_status`='NON_SETTLEABLE')";
+        String mysql8 = "`legacy_unverified`=0 OR `source_type`='LEGACY_CLIENT' "
+                + "AND `reconciliation_status`='NON_SETTLEABLE'";
+
+        assertEquals(normalizer.invoke(null, declared), normalizer.invoke(null, mysql8),
+                "AND precedence makes this pair of expressions equivalent");
+        assertNotEquals(normalizer.invoke(null, "NOT (`a`=1 AND `b`=2)"),
+                normalizer.invoke(null, "NOT `a`=1 AND `b`=2"),
+                "normalization must preserve a negated conjunction");
+
+        String declaredMixed = "`actual_units` >= 0 AND "
+                + "(`association_status`<>'SUSPENSE' OR `actual_units`=0)";
+        String mysql8Escaped = "((`actual_units` >= 0) and "
+                + "((`association_status` <> _utf8mb4\\'SUSPENSE\\') or (`actual_units` = 0)))";
+        assertEquals(normalizer.invoke(null, declaredMixed), normalizer.invoke(null, mysql8Escaped),
+                "escaped MySQL string delimiters must not hide a following boolean operator");
+
+        String declaredIn = "`status`='VERIFIED' AND `entitlement_status` IN ('GRANTED','REVOKED')";
+        String mysql8In = "(`status`='VERIFIED') AND (`entitlement_status` IN ('GRANTED','REVOKED'))";
+        assertEquals(normalizer.invoke(null, declaredIn), normalizer.invoke(null, mysql8In),
+                "a MySQL wrapper around an IN predicate is redundant, not the IN argument list");
+
+        String declaredNestedIn = "(`status`='VERIFIED' AND "
+                + "`entitlement_status` IN ('GRANTED','SECURITY_REVOKED') AND `entitled_at` IS NOT NULL)";
+        String mysql8NestedIn = "(`status`='VERIFIED' AND "
+                + "(`entitlement_status` IN ('GRANTED','SECURITY_REVOKED')) AND "
+                + "`entitled_at` IS NOT NULL)";
+        assertEquals(normalizer.invoke(null, declaredNestedIn), normalizer.invoke(null, mysql8NestedIn),
+                "a wrapped IN atom remains redundant after a preceding AND inside an outer group");
+    }
+
+    @Test
+    void shouldNormalizeMySqlGeneratedExpressionEncoding() throws Exception {
+        Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
+                "normalizeGeneratedExpression", String.class);
+        normalizer.setAccessible(true);
+        String declared = "CASE WHEN `deleted`=b'0' AND `runtime_update_key_fingerprint`<>'' "
+                + "THEN `runtime_update_key_fingerprint` ELSE NULL END";
+        String mysql8 = "case when (`deleted` = 0x00) and "
+                + "(`runtime_update_key_fingerprint` <> \\'\\') then "
+                + "`runtime_update_key_fingerprint` else NULL end";
+
+        assertEquals(normalizer.invoke(null, declared), normalizer.invoke(null, mysql8));
+    }
+
+    @Test
+    void shouldPreserveArithmeticAndLiteralSemanticsInCheckExpressions() throws Exception {
+        Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
+                "normalizeCheckExpression", String.class);
+        normalizer.setAccessible(true);
+
+        assertNotEquals(normalizer.invoke(null, "(`a` + `b`) * `c` = `d`"),
+                normalizer.invoke(null, "`a` + `b` * `c` = `d`"),
+                "arithmetic grouping is part of the constraint semantics");
+        assertNotEquals(normalizer.invoke(null, "`code` = 'A B'"),
+                normalizer.invoke(null, "`code` = 'AB'"),
+                "whitespace inside a SQL literal must not be discarded");
+
+        assertNotEquals(normalizer.invoke(null, "_utf8mb4identifier=1"),
+                normalizer.invoke(null, "identifier=1"),
+                "a charset introducer is removable only when it immediately introduces a quoted literal");
+        assertNotEquals(normalizer.invoke(null, "`code`=0x001"),
+                normalizer.invoke(null, "`code`=01"),
+                "a longer hex literal must not be partially rewritten as a one-byte boolean literal");
+        assertNotEquals(normalizer.invoke(null, "`code0x01suffix`=1"),
+                normalizer.invoke(null, "`code1suffix`=1"),
+                "hex spelling embedded in an identifier is not a literal");
+    }
+
+    @Test
+    void shouldPreserveBooleanPrecedenceInGeneratedExpressions() throws Exception {
+        Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
+                "normalizeGeneratedExpression", String.class);
+        normalizer.setAccessible(true);
+
+        assertNotEquals(normalizer.invoke(null, "`a` OR (`b` AND `c`)"),
+                normalizer.invoke(null, "(`a` OR `b`) AND `c`"),
+                "generated-column boolean grouping is part of the expression semantics");
+        assertNotEquals(normalizer.invoke(null, "(`a` + `b`) * `c`"),
+                normalizer.invoke(null, "`a` + `b` * `c`"),
+                "generated-column arithmetic grouping must be retained");
+    }
+
+    @Test
     void shouldDeclarePolicySnapshotImmutabilityAsSeparateChecksumManifest() throws Exception {
         SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate);
         Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");
@@ -187,6 +331,72 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
+    void shouldDeclareTask7SchemaHardeningAsAdditiveImmutableChecksumManifest() throws Exception {
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate);
+        Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<SkitSchemaInitializer.Migration> migrations =
+                (List<SkitSchemaInitializer.Migration>) field.get(initializer);
+
+        Map<Integer, SkitSchemaInitializer.Migration> byVersion = new HashMap<>();
+        for (SkitSchemaInitializer.Migration migration : migrations) {
+            byVersion.put(migration.getVersion(), migration);
+        }
+
+        assertEquals("64e450e4b8048a00b0ce7fbbe9f4b162ec519b5cd3f2c83d12470d92fe72fdbf",
+                byVersion.get(2026071401).getChecksum(), "released 2026071401 must remain byte-stable");
+        assertEquals("11f815a76c7f15bacfc9d9a29a60121f6736ec18bbd712a02a0190ff69c8c18d",
+                byVersion.get(2026071402).getChecksum(), "released 2026071402 must remain byte-stable");
+        assertEquals("88b57c75266fc10a56dfef4ce17fedfd0683bb63e4e80c1f6cd9353698355892",
+                byVersion.get(2026071403).getChecksum(), "released 2026071403 must remain byte-stable");
+
+        SkitSchemaInitializer.Migration task7 = byVersion.get(2026071404);
+        assertNotNull(task7, "Task 7/8 schema hardening must use a new additive migration");
+        assertEquals("bind callback receipts and verified advertising facts", task7.getDescription());
+        assertEquals("8940c5da3ef12d1ec8bbeefe54ec4e08c87743b97bebc52825c76f2eadf29ea3",
+                task7.getChecksum(), "Task 7/8 additive migration manifest must remain byte-stable");
+        assertNotEquals(byVersion.get(2026071403).getChecksum(), task7.getChecksum());
+
+        for (String entry : task7.getManifest()) {
+            assertTrue(entry.contains(":ensure-task2-column")
+                            || entry.contains(":add-index-if-missing")
+                            || entry.contains(":replace-foreign-key-if-legacy")
+                            || entry.contains(":add-foreign-key-if-missing")
+                            || entry.contains(":add-check-if-missing")
+                            || entry.contains(":ensure-task2-trigger")
+                            || entry.contains(":validate-task7-schema-hardening"),
+                    "Task 7/8 migration may only contain additive DDL, the declared legacy FK replacement, "
+                            + "and final validation: " + entry);
+        }
+
+        String manifest = String.join("\n", task7.getManifest());
+        assertTrue(manifest.contains("reward_callback_inbox_id"));
+        assertTrue(manifest.contains("reward_callback_received_at"));
+        assertTrue(manifest.contains("ingress_response_code"));
+        assertTrue(manifest.contains("ad_session_ref_id"));
+        assertTrue(manifest.contains("uk_skit_ad_session_account_binding"));
+        assertTrue(manifest.contains("uk_skit_ad_session_grant_envelope"));
+        assertTrue(manifest.contains("replace-foreign-key-if-legacy"));
+        assertTrue(manifest.contains("tenant_id,ad_session_id,member_id,drama_id,provider_transaction_id"));
+        assertTrue(manifest.contains("fk_skit_callback_inbox_session_account"));
+        assertTrue(manifest.contains("fk_skit_callback_attempt_inbox_binding"));
+        assertTrue(manifest.contains("fk_skit_revenue_session_binding"));
+        assertTrue(manifest.contains("fk_skit_revenue_inbox_binding"));
+        assertTrue(manifest.contains("fk_skit_ledger_event_snapshot"));
+        assertTrue(manifest.contains("idx_skit_network_cap_readiness"));
+        assertTrue(manifest.contains("ck_skit_network_cap_reward_authority"));
+        assertTrue(manifest.contains("ck_skit_network_cap_signed_readiness"));
+        assertTrue(manifest.contains("ck_skit_callback_inbox_processing_error"));
+        assertTrue(manifest.contains("ck_skit_callback_inbox_dead_letter_alert"));
+        assertTrue(manifest.contains("trg_skit_ledger_immutable"));
+        assertTrue(manifest.contains("trg_skit_entitlement_grant_immutable"));
+        assertTrue(manifest.contains("trg_skit_callback_inbox_monotonic"));
+        assertTrue(manifest.contains("trg_skit_entitlement_grant_session_range"));
+        assertTrue(manifest.contains("task7-callback-finance-signatures-v1"));
+    }
+
+    @Test
     void shouldExecutePendingMigrationsInVersionOrder() {
         List<String> executionOrder = new ArrayList<>();
         SkitSchemaInitializer.Migration third = migration(3, "third", executionOrder);
@@ -263,16 +473,18 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
-    void shouldApplyMissingMigrationBelowAlreadyAppliedVersion() {
+    void shouldRejectInstalledHistoryThatIsNotAContinuousPrefix() {
         List<String> executionOrder = new ArrayList<>();
         SkitSchemaInitializer.Migration compatibility = migration(1250, "compatibility", executionOrder);
         SkitSchemaInitializer.Migration newer = migration(1301, "newer", executionOrder);
         when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.singletonList(
                 appliedMigration(newer.getVersion(), newer.getChecksum())));
 
-        new SkitSchemaInitializer(jdbcTemplate, Arrays.asList(newer, compatibility)).run(null);
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new SkitSchemaInitializer(jdbcTemplate, Arrays.asList(newer, compatibility)).run(null));
 
-        assertEquals(Collections.singletonList("compatibility"), executionOrder);
+        assertTrue(exception.getMessage().contains("continuous prefix"));
+        assertTrue(executionOrder.isEmpty());
     }
 
     @Test

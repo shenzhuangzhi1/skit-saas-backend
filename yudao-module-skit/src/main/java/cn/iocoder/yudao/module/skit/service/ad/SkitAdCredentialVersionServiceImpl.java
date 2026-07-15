@@ -77,9 +77,10 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
         int nextVersion = nextVersion(callbackKeyMapper.selectMaxVersion(tenantId, adAccountId));
         SkitAdCallbackKeyDO prior = callbackKeyMapper.selectActiveForUpdate(tenantId, adAccountId);
         validateCallbackRowScope(prior, tenantId, adAccountId);
+        LocalDateTime rotationTime = now();
         if (prior != null) {
             retireCallbackVersion(prior, tenantId, adAccountId,
-                    now().plus(priorAcceptanceWindow));
+                    rotationTime.plus(priorAcceptanceWindow));
         }
 
         for (int attempt = 0; attempt < CALLBACK_HASH_RETRIES; attempt++) {
@@ -95,7 +96,8 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
                 if (callbackKeyMapper.insert(row) != 1) {
                     throw new IllegalStateException("Callback credential version was not inserted");
                 }
-                return new CallbackKeyIssue(tenantId, adAccountId, nextVersion, callbackKey);
+                return new CallbackKeyIssue(tenantId, adAccountId, nextVersion,
+                        rotationTime, callbackKey);
             } catch (DuplicateKeyException collision) {
                 // Account locking and the monotonic version make the global hash the only retryable unique key.
                 // Generate unrelated material without looking up or exposing the colliding tenant row.
@@ -129,6 +131,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
         int nextVersion = nextVersion(rewardSecretMapper.selectMaxVersion(tenantId, adAccountId));
         SkitAdRewardSecretVersionDO prior = rewardSecretMapper.selectActiveForUpdate(tenantId, adAccountId);
         validateRewardRowScope(prior, tenantId, adAccountId);
+        LocalDateTime rotationTime = now();
 
         byte[] plaintext = rewardSecret.clone();
         SkitAdCredentialCryptoService.EncryptedSecret encrypted;
@@ -142,7 +145,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
 
         if (prior != null) {
             int retired = rewardSecretMapper.retireActiveVersion(tenantId, adAccountId, prior.getId(),
-                    now().plus(priorAcceptanceWindow));
+                    rotationTime.plus(priorAcceptanceWindow));
             if (retired != 1) {
                 throw new IllegalStateException("Active reward credential changed during rotation");
             }
@@ -156,7 +159,8 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
         if (rewardSecretMapper.insert(row) != 1) {
             throw new IllegalStateException("Reward credential version was not inserted");
         }
-        return new CredentialMetadata(tenantId, adAccountId, nextVersion, true, null);
+        return new CredentialMetadata(tenantId, adAccountId, nextVersion, true,
+                rotationTime, null);
     }
 
     @Override
@@ -262,7 +266,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
 
     private static void validateScopeAndWindow(long tenantId, long adAccountId, Duration window) {
         validateScope(tenantId, adAccountId);
-        if (window == null || window.isZero() || window.isNegative()
+        if (window == null || window.isNegative()
                 || window.compareTo(MAX_PRIOR_ACCEPTANCE_WINDOW) > 0) {
             throw new IllegalArgumentException("Prior credential acceptance window must be between 0 and 24 hours");
         }
@@ -310,12 +314,12 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
 
     private static CredentialMetadata callbackMetadata(SkitAdCallbackKeyDO row) {
         return new CredentialMetadata(row.getTenantId(), row.getAdAccountId(), row.getKeyVersion(),
-                Boolean.TRUE.equals(row.getActive()), row.getAcceptUntil());
+                Boolean.TRUE.equals(row.getActive()), row.getCreateTime(), row.getAcceptUntil());
     }
 
     private static CredentialMetadata rewardMetadata(SkitAdRewardSecretVersionDO row) {
         return new CredentialMetadata(row.getTenantId(), row.getAdAccountId(), row.getSecretVersion(),
-                Boolean.TRUE.equals(row.getActive()), row.getAcceptUntil());
+                Boolean.TRUE.equals(row.getActive()), row.getCreateTime(), row.getAcceptUntil());
     }
 
     private LocalDateTime now() {
@@ -330,8 +334,8 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
         }
     }
 
-    private static IllegalStateException unavailableCredential() {
-        return new IllegalStateException("Credential is unavailable or outside its acceptance window");
+    private static CredentialUnavailableException unavailableCredential() {
+        return new CredentialUnavailableException();
     }
 
 }

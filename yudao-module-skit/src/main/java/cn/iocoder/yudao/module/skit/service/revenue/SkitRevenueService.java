@@ -6,35 +6,11 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
 
 public interface SkitRevenueService {
 
-    ReportResult report(Long sourceMemberId, ReportCommand command);
-
     PageResult<LedgerView> getLedgerPage(PageParam pageParam, Long beneficiaryUserId, Integer beneficiaryType,
                                           LocalDateTime[] createTime);
-
-    @Data
-    class ReportCommand {
-        private String provider;
-        private String externalEventId;
-        private String placementId;
-        private BigDecimal grossAmount;
-        private OffsetDateTime occurredTime;
-        private Boolean completed;
-        private Boolean mock;
-        private String rawData;
-    }
-
-    @Data
-    class ReportResult {
-        private Long eventId;
-        private Long adRecordId;
-        private String status;
-        private Boolean idempotent;
-        private BigDecimal estimatedCommissionAmount;
-    }
 
     @Data
     class LedgerView {

@@ -14,9 +14,12 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitEntitlementR
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitPlayerGrantCreateReqVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitPlayerGrantRespVO;
 import cn.iocoder.yudao.module.skit.framework.security.SkitMemberRateLimiterKeyResolver;
+import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -64,6 +67,16 @@ class SkitMemberAdSessionControllerTest {
     private SkitAdSessionService adSessionService;
     @Mock
     private SkitContentEntitlementService entitlementService;
+    @Mock
+    private SkitClientRuntimeResolver clientRuntimeResolver;
+
+    private final SkitTenantAdCapabilityService.ClientRuntime runtime =
+            new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
+
+    @BeforeEach
+    void stubClientRuntime() {
+        org.mockito.Mockito.lenient().when(clientRuntimeResolver.resolve()).thenReturn(runtime);
+    }
 
     @AfterEach
     void clearSecurityContext() {
@@ -124,7 +137,7 @@ class SkitMemberAdSessionControllerTest {
         request.setDramaId(901L);
         SkitContentEntitlementService.PlayerGrantIssue issue = playerGrantIssue(
                 71L, 901L, LocalDateTime.of(2026, 7, 14, 13, 5), grantToken());
-        when(entitlementService.issuePlayerGrant(81L, 901L)).thenReturn(issue);
+        when(entitlementService.issuePlayerGrant(81L, 901L, runtime)).thenReturn(issue);
 
         CommonResult<SkitPlayerGrantRespVO> result = controller.issuePlayerGrant(request);
 
@@ -134,7 +147,7 @@ class SkitMemberAdSessionControllerTest {
         assertEquals(grantToken(), result.getData().getGrantToken());
         assertFalse(result.getData().toString().contains(grantToken()));
         assertTrue(result.getData().toString().contains("<write-only>"));
-        verify(entitlementService).issuePlayerGrant(81L, 901L);
+        verify(entitlementService).issuePlayerGrant(81L, 901L, runtime);
         assertThrows(IllegalStateException.class, issue::consumeGrantToken);
     }
 
@@ -156,6 +169,8 @@ class SkitMemberAdSessionControllerTest {
         verify(adSessionService).createForMember(eq(82L), command.capture());
         assertEquals(902L, command.getValue().getDramaId());
         assertEquals(12, command.getValue().getEpisodeNo());
+        assertEquals("2.4.0", command.getValue().getNativeVersion());
+        assertEquals(1, command.getValue().getProtocolVersion());
         assertEquals("session-secret", result.getData().getCustomData());
         assertEquals("abcdefghijklmnopqrstuv", result.getData().getSessionId());
         assertFalse(result.getData().toString().contains("session-secret"));
@@ -170,7 +185,7 @@ class SkitMemberAdSessionControllerTest {
         request.setEvents(Collections.singletonList(event));
         SkitAdSessionService.SessionView view = sessionView("abcdefghijklmnopqrstuv", "LOADING");
         when(adSessionService.recordClientEvents(eq(83L), eq("abcdefghijklmnopqrstuv"),
-                org.mockito.ArgumentMatchers.anyList())).thenReturn(view);
+                org.mockito.ArgumentMatchers.anyList(), eq(runtime))).thenReturn(view);
 
         CommonResult<SkitAdSessionStatusRespVO> result = controller.recordClientEvents(
                 "abcdefghijklmnopqrstuv", request);
@@ -178,7 +193,8 @@ class SkitMemberAdSessionControllerTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<SkitAdSessionService.ClientEventCommand>> events =
                 ArgumentCaptor.forClass(List.class);
-        verify(adSessionService).recordClientEvents(eq(83L), eq("abcdefghijklmnopqrstuv"), events.capture());
+        verify(adSessionService).recordClientEvents(
+                eq(83L), eq("abcdefghijklmnopqrstuv"), events.capture(), eq(runtime));
         assertEquals(1, events.getValue().size());
         assertEquals("LOAD_STARTED", events.getValue().get(0).getEventType());
         assertEquals("sdk-request-1", events.getValue().get(0).getSdkRequestId());
@@ -188,9 +204,9 @@ class SkitMemberAdSessionControllerTest {
     @Test
     void statusAndEntitlementsDeriveMemberFromLogin() throws Exception {
         authenticate(84L);
-        when(adSessionService.getForMember(84L, "abcdefghijklmnopqrstuv"))
+        when(adSessionService.getForMember(84L, "abcdefghijklmnopqrstuv", runtime))
                 .thenReturn(sessionView("abcdefghijklmnopqrstuv", "SHOWN"));
-        when(entitlementService.listGrantedEpisodes(84L, 903L)).thenReturn(Arrays.asList(1, 2, 5));
+        when(entitlementService.listGrantedEpisodes(84L, 903L, runtime)).thenReturn(Arrays.asList(1, 2, 5));
 
         CommonResult<SkitAdSessionStatusRespVO> status =
                 controller.getAdSession("abcdefghijklmnopqrstuv");
@@ -199,8 +215,8 @@ class SkitMemberAdSessionControllerTest {
         assertEquals("SHOWN", status.getData().getClientLifecycleStatus());
         assertEquals(903L, entitlements.getData().getDramaId());
         assertEquals(Arrays.asList(1, 2, 5), entitlements.getData().getGrantedEpisodeNos());
-        verify(adSessionService).getForMember(84L, "abcdefghijklmnopqrstuv");
-        verify(entitlementService).listGrantedEpisodes(84L, 903L);
+        verify(adSessionService).getForMember(84L, "abcdefghijklmnopqrstuv", runtime);
+        verify(entitlementService).listGrantedEpisodes(84L, 903L, runtime);
     }
 
     @Test

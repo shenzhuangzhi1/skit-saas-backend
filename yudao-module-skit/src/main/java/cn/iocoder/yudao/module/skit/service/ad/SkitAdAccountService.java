@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.service.ad;
 
 import lombok.Data;
+import lombok.ToString;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Collection;
@@ -30,6 +31,7 @@ public interface SkitAdAccountService {
         private String pangleUsername;
         private String pangleAppId;
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String pangleAppSecret;
         private String panglePlacementId;
         private Boolean pangleEnabled;
@@ -38,10 +40,12 @@ public interface SkitAdAccountService {
         private String takuAppId;
         /** Taku 客户端 SDK App Key；会进入白标 APK，因此不能当服务端密钥使用，也永不回显。 */
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String takuAppKey;
         private Boolean takuAppKeyConfigured;
         /** Taku 服务端凭证；不是客户端 SDK App Key，且永不回显。 */
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String takuAppSecret;
         private String takuPlacementId;
         private Boolean takuEnabled;

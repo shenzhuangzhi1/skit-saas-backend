@@ -19,6 +19,16 @@ public interface SkitContentEntitlementMapper {
                                                          @Param("memberId") Long memberId,
                                                          @Param("dramaId") Long dramaId);
 
+    @Select("SELECT COUNT(*) FROM `skit_content_entitlement` WHERE `tenant_id`=#{tenantId} "
+            + "AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
+            + "AND `episode_no` BETWEEN #{episodeFrom} AND #{episodeTo} "
+            + "AND `status`='GRANTED' AND `deleted`=b'0'")
+    Long countGrantedEpisodesInRange(@Param("tenantId") Long tenantId,
+                                     @Param("memberId") Long memberId,
+                                     @Param("dramaId") Long dramaId,
+                                     @Param("episodeFrom") Integer episodeFrom,
+                                     @Param("episodeTo") Integer episodeTo);
+
     @Select({"<script>",
             "SELECT * FROM `skit_content_entitlement` WHERE `tenant_id`=#{tenantId}",
             "AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} AND `deleted`=b'0'",

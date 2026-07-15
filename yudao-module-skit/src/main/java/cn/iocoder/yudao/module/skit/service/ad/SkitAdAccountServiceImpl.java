@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.service.ad;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
@@ -17,6 +18,7 @@ import java.util.*;
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_CONFIG_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_NOT_EXISTS;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_REPORT_SCOPE_PENDING;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PROVIDER_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_PANGLE;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_TAKU;
@@ -138,10 +140,16 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
 
     private void saveProvider(String provider, String username, String appId, String appKey, String appSecret,
                               String placementId, Boolean enabled) {
-        SkitAdAccountDO account = accountMapper.selectByProvider(provider);
+        long tenantId = TenantContextHolder.getRequiredTenantId();
+        SkitAdAccountDO account = accountMapper.selectByProviderForUpdate(tenantId, provider);
+        if (account == null || !Objects.equals(account.getTenantId(), tenantId)
+                || !Objects.equals(account.getProvider(), provider)) {
+            throw exception(AD_ACCOUNT_NOT_EXISTS);
+        }
         String normalizedUsername = trimToEmpty(username);
         String normalizedAppId = trimToEmpty(appId);
         String normalizedPlacementId = trimToEmpty(placementId);
+        guardTakuReportScopeMutation(account, normalizedAppId, normalizedPlacementId);
         account.setAccountName(normalizedUsername);
         account.setAppId(normalizedAppId);
         account.setConfigData(writePlacementId(normalizedPlacementId));
@@ -164,6 +172,33 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         account.setStatus(Boolean.TRUE.equals(enabled)
                 ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus());
         accountMapper.updateById(account);
+    }
+
+    private void guardTakuReportScopeMutation(SkitAdAccountDO account,
+                                              String requestedAppId,
+                                              String requestedPlacementId) {
+        if (!PROVIDER_TAKU.equals(account.getProvider())) {
+            return;
+        }
+        List<Object> current = reportScope(account.getAppId(), readPlacementId(account.getConfigData()),
+                readAdFormat(account.getConfigData()), account.getReportTimezone(),
+                account.getReportCurrency(), account.getReportAmountScale());
+        List<Object> requested = reportScope(requestedAppId, requestedPlacementId,
+                "rewarded_video", account.getReportTimezone(), account.getReportCurrency(),
+                account.getReportAmountScale());
+        if (!current.equals(requested)
+                && accountMapper.hasHistoricalTakuReportFacts(account.getTenantId(), account.getId())) {
+            throw exception(AD_ACCOUNT_REPORT_SCOPE_PENDING);
+        }
+    }
+
+    private List<Object> reportScope(String appId, String placementId, String adFormat,
+                                     String timezone, String currency, Integer amountScale) {
+        return Arrays.asList(trimToEmpty(appId), trimToEmpty(placementId),
+                StrUtil.blankToDefault(StrUtil.trim(adFormat), "rewarded_video"),
+                StrUtil.blankToDefault(StrUtil.trim(timezone), "UTC+8"),
+                StrUtil.blankToDefault(StrUtil.trim(currency), "USD"),
+                amountScale == null ? 8 : amountScale);
     }
 
     private void validateSettings(Settings settings) {
@@ -218,7 +253,10 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
 
     private String writePlacementId(String placementId) {
         try {
-            return objectMapper.writeValueAsString(Collections.singletonMap("placementId", placementId));
+            Map<String, String> config = new LinkedHashMap<>();
+            config.put("placementId", placementId);
+            config.put("adFormat", "rewarded_video");
+            return objectMapper.writeValueAsString(config);
         } catch (Exception ex) {
             throw new IllegalArgumentException("广告位配置序列化失败", ex);
         }
@@ -233,6 +271,19 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             return String.valueOf(config.getOrDefault("placementId", ""));
         } catch (Exception ex) {
             return "";
+        }
+    }
+
+    private String readAdFormat(String json) {
+        if (StrUtil.isBlank(json)) {
+            return "rewarded_video";
+        }
+        try {
+            Map<String, Object> config = objectMapper.readValue(json,
+                    new TypeReference<Map<String, Object>>() { });
+            return String.valueOf(config.getOrDefault("adFormat", "rewarded_video"));
+        } catch (Exception ex) {
+            return "rewarded_video";
         }
     }
 

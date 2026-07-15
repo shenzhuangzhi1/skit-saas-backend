@@ -26,8 +26,13 @@ public class SkitAppReleaseProfileDO extends BaseDO {
     private String hotVersion;
     private String hotBundleUrl;
     private String hotBundleSha256;
+    private Long hotReleaseNo;
+    private String hotManifestSignature;
     private String nativeVersion;
     private String nativePackage;
+    private Integer nativeProtocolVersion;
+    private String runtimeUpdatePublicKey;
+    private String runtimeUpdateKeyFingerprint;
     private Integer status;
 
 }

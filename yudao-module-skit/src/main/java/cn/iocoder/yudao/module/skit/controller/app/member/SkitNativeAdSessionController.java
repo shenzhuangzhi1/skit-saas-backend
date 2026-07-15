@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCre
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionStatusRespVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitGrantedEpisodesRespVO;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientIpRateLimiterKeyResolver;
+import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -42,6 +43,8 @@ public class SkitNativeAdSessionController {
     private SkitAdSessionService adSessionService;
     @Resource
     private SkitContentEntitlementService entitlementService;
+    @Resource
+    private SkitClientRuntimeResolver clientRuntimeResolver;
 
     @PostMapping("/ad-sessions")
     @RateLimiter(time = 60, count = 30, keyResolver = SkitClientIpRateLimiterKeyResolver.class)
@@ -52,7 +55,8 @@ public class SkitNativeAdSessionController {
             @Pattern(regexp = "[A-Za-z0-9_-]{43}", message = "播放器权限令牌格式错误") String grantToken,
             @Valid @RequestBody SkitAdSessionCreateReqVO request) {
         return success(SkitAdSessionCreateRespVO.from(
-                adSessionService.createForNativeGrant(grantToken, request.toCommand())));
+                adSessionService.createForNativeGrant(grantToken,
+                        request.toCommand(clientRuntimeResolver.resolve()))));
     }
 
     @PostMapping("/ad-sessions/{sessionId}/client-events")
@@ -67,7 +71,7 @@ public class SkitNativeAdSessionController {
             @Valid @RequestBody SkitAdClientEventBatchReqVO request) {
         return success(SkitAdSessionStatusRespVO.from(
                 adSessionService.recordClientEventsForNativeGrant(
-                        grantToken, sessionId, request.toCommands())));
+                        grantToken, sessionId, request.toCommands(), clientRuntimeResolver.resolve())));
     }
 
     @GetMapping("/ad-sessions/{sessionId}")
@@ -80,7 +84,8 @@ public class SkitNativeAdSessionController {
             @PathVariable("sessionId")
             @Pattern(regexp = "[A-Za-z0-9_-]{22}", message = "广告会话编号格式错误") String sessionId) {
         return success(SkitAdSessionStatusRespVO.from(
-                adSessionService.getForNativeGrant(grantToken, sessionId)));
+                adSessionService.getForNativeGrant(
+                        grantToken, sessionId, clientRuntimeResolver.resolve())));
     }
 
     @GetMapping("/entitlements")
@@ -91,7 +96,8 @@ public class SkitNativeAdSessionController {
             @RequestHeader("X-Skit-Player-Grant")
             @Pattern(regexp = "[A-Za-z0-9_-]{43}", message = "播放器权限令牌格式错误") String grantToken) {
         return success(SkitGrantedEpisodesRespVO.of(
-                entitlementService.listGrantedEpisodesForPlayerGrant(grantToken)));
+                entitlementService.listGrantedEpisodesForPlayerGrant(
+                        grantToken, clientRuntimeResolver.resolve())));
     }
 
 }

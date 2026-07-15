@@ -53,8 +53,8 @@ class SkitAdSessionSchemaHardeningMySqlIT extends SkitMySqlIntegrationTestBase {
                 "tenant_id,native_player_grant_id,member_id,drama_id", "skit_native_player_grant",
                 "tenant_id,id,member_id,drama_id");
         assertExactForeignKey("skit_entitlement_grant", "fk_skit_grant_session_binding",
-                "tenant_id,ad_session_id,member_id,drama_id,episode_no,provider_transaction_id",
-                "skit_ad_session", "tenant_id,id,member_id,drama_id,episode_from,provider_transaction_id");
+                "tenant_id,ad_session_id,member_id,drama_id,provider_transaction_id",
+                "skit_ad_session", "tenant_id,id,member_id,drama_id,provider_transaction_id");
         assertExactForeignKey("skit_entitlement_grant", "fk_skit_grant_entitlement_binding",
                 "tenant_id,entitlement_id,member_id,drama_id,episode_no", "skit_content_entitlement",
                 "tenant_id,id,member_id,drama_id,episode_no");

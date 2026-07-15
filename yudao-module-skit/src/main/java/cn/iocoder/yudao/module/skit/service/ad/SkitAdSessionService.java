@@ -11,19 +11,25 @@ public interface SkitAdSessionService {
 
     CreateResult createForNativeGrant(String grantToken, CreateCommand command);
 
-    SessionView getForMember(Long memberId, String sessionId);
+    SessionView getForMember(Long memberId, String sessionId,
+                             SkitTenantAdCapabilityService.ClientRuntime runtime);
 
-    SessionView getForNativeGrant(String grantToken, String sessionId);
+    SessionView getForNativeGrant(String grantToken, String sessionId,
+                                  SkitTenantAdCapabilityService.ClientRuntime runtime);
 
-    SessionView recordClientEvents(Long memberId, String sessionId, List<ClientEventCommand> events);
+    SessionView recordClientEvents(Long memberId, String sessionId, List<ClientEventCommand> events,
+                                   SkitTenantAdCapabilityService.ClientRuntime runtime);
 
     SessionView recordClientEventsForNativeGrant(String grantToken, String sessionId,
-                                                 List<ClientEventCommand> events);
+                                                 List<ClientEventCommand> events,
+                                                 SkitTenantAdCapabilityService.ClientRuntime runtime);
 
     @Data
     class CreateCommand {
         private Long dramaId;
         private Integer episodeNo;
+        private String nativeVersion;
+        private Integer protocolVersion;
     }
 
     @Data

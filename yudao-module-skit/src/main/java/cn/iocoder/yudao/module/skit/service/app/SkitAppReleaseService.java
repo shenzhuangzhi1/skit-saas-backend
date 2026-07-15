@@ -18,8 +18,13 @@ public interface SkitAppReleaseService {
     class Manifest {
         private boolean updateAvailable;
         private String hotVersion;
+        private String tenantId;
+        private String applicationId;
         private String bundleUrl;
-        private String sha256;
+        private String bundleSha256;
+        private Integer protocolVersion;
+        private Long releaseNo;
+        private String signature;
         private String minNativeVersion;
     }
 
@@ -32,8 +37,13 @@ public interface SkitAppReleaseService {
         private String hotVersion;
         private String hotBundleUrl;
         private String hotBundleSha256;
+        private Long hotReleaseNo;
+        private String hotManifestSignature;
         private String nativeVersion;
         private String nativePackage;
+        private Integer nativeProtocolVersion;
+        private String runtimeUpdatePublicKey;
+        private String runtimeUpdateKeyFingerprint;
         private Integer status;
     }
 

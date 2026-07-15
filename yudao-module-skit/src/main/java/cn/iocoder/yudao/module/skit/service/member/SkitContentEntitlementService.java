@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.skit.service.member;
 
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.time.LocalDateTime;
@@ -7,15 +8,18 @@ import java.util.List;
 
 public interface SkitContentEntitlementService {
 
-    PlayerGrantIssue issuePlayerGrant(Long memberId, Long dramaId);
+    PlayerGrantIssue issuePlayerGrant(Long memberId, Long dramaId,
+                                      SkitTenantAdCapabilityService.ClientRuntime runtime);
 
     PlayerGrantReference resolvePlayerGrant(String grantToken);
 
     PlayerGrantScope lockAndUsePlayerGrant(PlayerGrantReference reference, Long expectedDramaId);
 
-    List<Integer> listGrantedEpisodes(Long memberId, Long dramaId);
+    List<Integer> listGrantedEpisodes(Long memberId, Long dramaId,
+                                      SkitTenantAdCapabilityService.ClientRuntime runtime);
 
-    List<Integer> listGrantedEpisodesForPlayerGrant(String grantToken);
+    List<Integer> listGrantedEpisodesForPlayerGrant(
+            String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime);
 
     boolean ownsEpisodeForUpdate(Long memberId, Long dramaId, Integer episodeNo);
 

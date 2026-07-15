@@ -70,22 +70,34 @@ public final class SkitAesGcmCredentialCryptoService implements SkitAdCredential
         try {
             Cipher cipher = Cipher.getInstance(CIPHER_ALGORITHM);
             cipher.init(mode, new SecretKeySpec(key, "AES"), new GCMParameterSpec(TAG_BITS, nonce));
-            cipher.updateAAD(aad(context));
+            cipher.updateAAD(aad(context, keyId));
             return cipher.doFinal(input);
         } catch (GeneralSecurityException exception) {
             throw new IllegalStateException("Credential authentication failed", exception);
         }
     }
 
-    private static byte[] aad(Context context) {
+    private static byte[] aad(Context context, String keyId) {
         try {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             DataOutputStream output = new DataOutputStream(buffer);
             output.writeUTF(context.getPurpose());
             output.writeLong(context.getTenantId());
             output.writeLong(context.getAdAccountId());
-            output.writeInt(context.getCredentialVersion());
+            if (context.isCallbackPayload()) {
+                output.writeUTF(context.getCallbackType());
+                output.writeUTF(context.getIdempotencyKey());
+                byte[] canonicalPayloadHash = context.getCanonicalPayloadHash();
+                output.writeInt(canonicalPayloadHash.length);
+                output.write(canonicalPayloadHash);
+            } else {
+                // Keep the original reward-secret AAD byte-for-byte compatible with stored envelopes.
+                output.writeInt(context.getCredentialVersion());
+            }
             output.writeInt(context.getEnvelopeVersion());
+            if (context.isCallbackPayload()) {
+                output.writeUTF(keyId);
+            }
             output.flush();
             return buffer.toByteArray();
         } catch (IOException exception) {

@@ -85,15 +85,20 @@ CREATE TABLE IF NOT EXISTS `skit_app_release_profile` (
   `hot_bundle_sha256` char(64) DEFAULT '' COMMENT '热更新包 SHA-256',
   `native_version` varchar(32) DEFAULT '' COMMENT '当前原生壳版本',
   `native_package` varchar(255) DEFAULT '' COMMENT '原生包名，不包含签名或广告凭证',
+  `runtime_update_public_key` varchar(4096) NOT NULL DEFAULT '' COMMENT '租户 APK 内置 X.509 DER RSA 公钥 Base64',
+  `runtime_update_key_fingerprint` char(64) NOT NULL DEFAULT '' COMMENT '租户热更新公钥 DER SHA-256 指纹',
   `status` tinyint NOT NULL DEFAULT 0,
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted` bit(1) NOT NULL DEFAULT b'0',
   `active_tenant_id` bigint GENERATED ALWAYS AS (CASE WHEN `deleted` = b'0' THEN `tenant_id` ELSE NULL END) STORED,
+  `active_runtime_update_key_fingerprint` char(64) GENERATED ALWAYS AS (CASE WHEN `deleted`=b'0' AND `runtime_update_key_fingerprint`<>'' THEN `runtime_update_key_fingerprint` ELSE NULL END) STORED,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_app_release_profile_code` (`profile_code`),
   UNIQUE KEY `uk_skit_app_release_profile_tenant_channel` (`tenant_id`,`channel`),
-  UNIQUE KEY `uk_skit_app_release_profile_active_tenant` (`active_tenant_id`)
+  UNIQUE KEY `uk_skit_app_release_profile_active_tenant` (`active_tenant_id`),
+  UNIQUE KEY `uk_skit_app_release_runtime_key` (`active_runtime_update_key_fingerprint`),
+  CONSTRAINT `ck_skit_app_release_runtime_key` CHECK ((`runtime_update_public_key`='' AND `runtime_update_key_fingerprint`='') OR (`runtime_update_public_key`<>'' AND REGEXP_LIKE(`runtime_update_key_fingerprint`,'^[0-9a-f]{64}$')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理商白标 App 发布档案';
 
 CREATE TABLE IF NOT EXISTS `skit_ad_account` (
@@ -194,6 +199,9 @@ CREATE TABLE IF NOT EXISTS `skit_ad_revenue_event` (
   `gross_amount` decimal(20,8) NOT NULL, `occurred_time` datetime NOT NULL,
   `completed` bit(1) NOT NULL, `mock` bit(1) NOT NULL, `status` tinyint NOT NULL,
   `rule_version` int DEFAULT NULL, `raw_data` longtext,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
   `ad_session_id` bigint DEFAULT NULL, `callback_inbox_id` bigint DEFAULT NULL,
   `policy_snapshot_id` bigint DEFAULT NULL, `reconciliation_bucket_id` bigint DEFAULT NULL,
   `reconciliation_revision_id` bigint DEFAULT NULL,
@@ -210,9 +218,6 @@ CREATE TABLE IF NOT EXISTS `skit_ad_revenue_event` (
   `reconciled_at` datetime DEFAULT NULL, `verified_at` datetime DEFAULT NULL,
   `payload_hash` binary(32) DEFAULT NULL, `version` int NOT NULL DEFAULT 0,
   `legacy_unverified` bit(1) NOT NULL DEFAULT b'1',
-  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted` bit(1) NOT NULL DEFAULT b'0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_revenue_event_tenant_id` (`tenant_id`,`id`),
   KEY `idx_skit_revenue_event_external` (`tenant_id`,`provider`,`external_event_id`),
@@ -245,10 +250,11 @@ CREATE TABLE IF NOT EXISTS `skit_ad_revenue_event` (
 CREATE TABLE IF NOT EXISTS `skit_commission_ledger` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL, `event_id` bigint NOT NULL,
   `beneficiary_type` tinyint NOT NULL, `beneficiary_member_id` bigint NOT NULL DEFAULT 0,
-  `beneficiary_member_ref_id` bigint GENERATED ALWAYS AS
-    (CASE WHEN `beneficiary_type` = 1 THEN `beneficiary_member_id` ELSE NULL END) STORED,
   `level_no` int NOT NULL, `gross_amount` decimal(20,8) NOT NULL, `rate_bps` int NOT NULL,
   `amount` decimal(20,8) NOT NULL, `rule_version` int NOT NULL, `status` tinyint NOT NULL,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
   `entry_type` varchar(32) NOT NULL DEFAULT 'LEGACY_ESTIMATE',
   `balance_bucket` varchar(32) NOT NULL DEFAULT 'NON_SETTLEABLE',
   `currency` char(3) NOT NULL DEFAULT 'CNY', `gross_amount_units` bigint NOT NULL DEFAULT 0,
@@ -256,9 +262,8 @@ CREATE TABLE IF NOT EXISTS `skit_commission_ledger` (
   `reversal_of_id` bigint DEFAULT NULL, `reconciliation_revision_id` bigint DEFAULT NULL,
   `policy_snapshot_id` bigint DEFAULT NULL, `revision_no` int NOT NULL DEFAULT 0,
   `legacy_unverified` bit(1) NOT NULL DEFAULT b'1',
-  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `deleted` bit(1) NOT NULL DEFAULT b'0',
+  `beneficiary_member_ref_id` bigint GENERATED ALWAYS AS
+    (CASE WHEN `beneficiary_type` = 1 THEN `beneficiary_member_id` ELSE NULL END) STORED,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_skit_ledger_tenant_id` (`tenant_id`,`id`),
   UNIQUE KEY `uk_skit_ledger_entry_revision` (`tenant_id`,`event_id`,`beneficiary_type`,`beneficiary_member_id`,`level_no`,`entry_type`,`revision_no`),
@@ -284,6 +289,508 @@ CREATE TABLE IF NOT EXISTS `skit_commission_ledger` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='广告分成不可变账本';
 
 DELIMITER $$
+DROP PROCEDURE IF EXISTS `skit_apply_ddl_if_missing`$$
+CREATE PROCEDURE `skit_apply_ddl_if_missing`(
+  IN `object_kind` varchar(16), IN `object_table` varchar(64),
+  IN `object_name` varchar(64), IN `ddl_sql` longtext)
+BEGIN
+  DECLARE `existing_count` int DEFAULT 0;
+  IF `object_kind` = 'COLUMN' THEN
+    SELECT COUNT(*) INTO `existing_count` FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = `object_table` AND COLUMN_NAME = `object_name`;
+  ELSEIF `object_kind` = 'INDEX' THEN
+    SELECT COUNT(*) INTO `existing_count` FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = `object_table` AND INDEX_NAME = `object_name`;
+  ELSEIF `object_kind` = 'CONSTRAINT' THEN
+    SELECT COUNT(*) INTO `existing_count` FROM information_schema.TABLE_CONSTRAINTS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = `object_table` AND CONSTRAINT_NAME = `object_name`;
+  ELSE
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'unsupported bootstrap DDL object kind';
+  END IF;
+  IF `existing_count` = 0 THEN
+    SET @skit_bootstrap_ddl = `ddl_sql`;
+    PREPARE skit_bootstrap_statement FROM @skit_bootstrap_ddl;
+    EXECUTE skit_bootstrap_statement;
+    DEALLOCATE PREPARE skit_bootstrap_statement;
+  END IF;
+END$$
+DROP PROCEDURE IF EXISTS `skit_replace_grant_session_binding`$$
+CREATE PROCEDURE `skit_replace_grant_session_binding`()
+BEGIN
+  DECLARE `actual_definition` longtext DEFAULT NULL;
+  DECLARE `supporting_index_definition` longtext DEFAULT NULL;
+  SELECT CONCAT(GROUP_CONCAT(`COLUMN_NAME` ORDER BY `ORDINAL_POSITION` SEPARATOR ','),'->',
+      MIN(`REFERENCED_TABLE_NAME`),'(',GROUP_CONCAT(`REFERENCED_COLUMN_NAME`
+      ORDER BY `ORDINAL_POSITION` SEPARATOR ','),')') INTO `actual_definition`
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skit_entitlement_grant'
+      AND CONSTRAINT_NAME = 'fk_skit_grant_session_binding'
+      AND REFERENCED_TABLE_NAME IS NOT NULL;
+  IF `actual_definition` = 'tenant_id,ad_session_id,member_id,drama_id,episode_no,provider_transaction_id->skit_ad_session(tenant_id,id,member_id,drama_id,episode_from,provider_transaction_id)' THEN
+    ALTER TABLE `skit_entitlement_grant` DROP FOREIGN KEY `fk_skit_grant_session_binding`;
+    SET `actual_definition` = NULL;
+  ELSEIF `actual_definition` IS NOT NULL AND `actual_definition` <> 'tenant_id,ad_session_id,member_id,drama_id,provider_transaction_id->skit_ad_session(tenant_id,id,member_id,drama_id,provider_transaction_id)' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'incompatible entitlement grant session binding';
+  END IF;
+  IF `actual_definition` IS NULL THEN
+    SELECT CONCAT(MIN(`NON_UNIQUE`),':',GROUP_CONCAT(`COLUMN_NAME`
+        ORDER BY `SEQ_IN_INDEX` SEPARATOR ',')) INTO `supporting_index_definition`
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skit_entitlement_grant'
+        AND INDEX_NAME = 'fk_skit_grant_session_binding';
+    IF `supporting_index_definition` = '1:tenant_id,ad_session_id,member_id,drama_id,episode_no,provider_transaction_id' THEN
+      ALTER TABLE `skit_entitlement_grant` DROP INDEX `fk_skit_grant_session_binding`;
+    ELSEIF `supporting_index_definition` IS NOT NULL AND `supporting_index_definition` <> '1:tenant_id,ad_session_id,member_id,drama_id,provider_transaction_id' THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'incompatible entitlement grant supporting index';
+    END IF;
+    ALTER TABLE `skit_entitlement_grant`
+      ADD CONSTRAINT `fk_skit_grant_session_binding`
+      FOREIGN KEY (`tenant_id`,`ad_session_id`,`member_id`,`drama_id`,`provider_transaction_id`)
+      REFERENCES `skit_ad_session` (`tenant_id`,`id`,`member_id`,`drama_id`,`provider_transaction_id`)
+      ON UPDATE RESTRICT ON DELETE RESTRICT;
+  END IF;
+END$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_session','reward_callback_inbox_id',
+  'ALTER TABLE `skit_ad_session` ADD COLUMN `reward_callback_inbox_id` bigint DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_session','reward_callback_received_at',
+  'ALTER TABLE `skit_ad_session` ADD COLUMN `reward_callback_received_at` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_callback_inbox','ingress_response_code',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD COLUMN `ingress_response_code` smallint DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_callback_inbox','ad_session_ref_id',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD COLUMN `ad_session_ref_id` bigint GENERATED ALWAYS AS (IFNULL(`ad_session_id`,0)) STORED')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_callback_attempt','ad_session_ref_id',
+  'ALTER TABLE `skit_ad_callback_attempt` ADD COLUMN `ad_session_ref_id` bigint GENERATED ALWAYS AS (IFNULL(`ad_session_id`,0)) STORED')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_revenue_event','ad_session_ref_id',
+  'ALTER TABLE `skit_ad_revenue_event` ADD COLUMN `ad_session_ref_id` bigint GENERATED ALWAYS AS (IFNULL(`ad_session_id`,0)) STORED')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','uk_skit_ad_session_account_binding',
+  'ALTER TABLE `skit_ad_session` ADD UNIQUE INDEX `uk_skit_ad_session_account_binding` (`tenant_id`,`id`,`ad_account_id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','uk_skit_ad_session_revenue_binding',
+  'ALTER TABLE `skit_ad_session` ADD UNIQUE INDEX `uk_skit_ad_session_revenue_binding` (`tenant_id`,`id`,`ad_account_id`,`member_id`,`policy_snapshot_id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','uk_skit_ad_session_grant_envelope',
+  'ALTER TABLE `skit_ad_session` ADD UNIQUE INDEX `uk_skit_ad_session_grant_envelope` (`tenant_id`,`id`,`member_id`,`drama_id`,`provider_transaction_id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','uk_skit_callback_inbox_attempt_binding',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD UNIQUE INDEX `uk_skit_callback_inbox_attempt_binding` (`tenant_id`,`id`,`ad_account_id`,`ad_session_ref_id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','uk_skit_revenue_event_snapshot_binding',
+  'ALTER TABLE `skit_ad_revenue_event` ADD UNIQUE INDEX `uk_skit_revenue_event_snapshot_binding` (`tenant_id`,`id`,`policy_snapshot_id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_callback_inbox_payload_expiry',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_callback_inbox_payload_expiry` (`payload_expires_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_attempt','idx_skit_callback_attempt_retention',
+  'ALTER TABLE `skit_ad_callback_attempt` ADD INDEX `idx_skit_callback_attempt_retention` (`received_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_edge_attempt','idx_skit_callback_edge_retention',
+  'ALTER TABLE `skit_ad_callback_edge_attempt` ADD INDEX `idx_skit_callback_edge_retention` (`received_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_network_capability','idx_skit_network_cap_readiness',
+  'ALTER TABLE `skit_ad_network_capability` ADD INDEX `idx_skit_network_cap_readiness` (`tenant_id`,`ad_account_id`,`network_firm_id`,`enabled`,`reward_authority`,`verified_at`)')$$
+CALL `skit_replace_grant_session_binding`()$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_callback_inbox','fk_skit_callback_inbox_session_account',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD CONSTRAINT `fk_skit_callback_inbox_session_account` FOREIGN KEY (`tenant_id`,`ad_session_id`,`ad_account_id`) REFERENCES `skit_ad_session` (`tenant_id`,`id`,`ad_account_id`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_callback_attempt','fk_skit_callback_attempt_inbox_binding',
+  'ALTER TABLE `skit_ad_callback_attempt` ADD CONSTRAINT `fk_skit_callback_attempt_inbox_binding` FOREIGN KEY (`tenant_id`,`callback_inbox_id`,`ad_account_id`,`ad_session_ref_id`) REFERENCES `skit_ad_callback_inbox` (`tenant_id`,`id`,`ad_account_id`,`ad_session_ref_id`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_session','fk_skit_ad_session_reward_callback_receipt',
+  'ALTER TABLE `skit_ad_session` ADD CONSTRAINT `fk_skit_ad_session_reward_callback_receipt` FOREIGN KEY (`tenant_id`,`reward_callback_inbox_id`,`ad_account_id`,`id`) REFERENCES `skit_ad_callback_inbox` (`tenant_id`,`id`,`ad_account_id`,`ad_session_ref_id`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_revenue_event','fk_skit_revenue_session_binding',
+  'ALTER TABLE `skit_ad_revenue_event` ADD CONSTRAINT `fk_skit_revenue_session_binding` FOREIGN KEY (`tenant_id`,`ad_session_id`,`ad_account_id`,`source_member_id`,`policy_snapshot_id`) REFERENCES `skit_ad_session` (`tenant_id`,`id`,`ad_account_id`,`member_id`,`policy_snapshot_id`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_revenue_event','fk_skit_revenue_inbox_binding',
+  'ALTER TABLE `skit_ad_revenue_event` ADD CONSTRAINT `fk_skit_revenue_inbox_binding` FOREIGN KEY (`tenant_id`,`callback_inbox_id`,`ad_account_id`,`ad_session_ref_id`) REFERENCES `skit_ad_callback_inbox` (`tenant_id`,`id`,`ad_account_id`,`ad_session_ref_id`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_commission_ledger','fk_skit_ledger_event_snapshot',
+  'ALTER TABLE `skit_commission_ledger` ADD CONSTRAINT `fk_skit_ledger_event_snapshot` FOREIGN KEY (`tenant_id`,`event_id`,`policy_snapshot_id`) REFERENCES `skit_ad_revenue_event` (`tenant_id`,`id`,`policy_snapshot_id`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_session','ck_skit_ad_session_reward_callback_receipt',
+  'ALTER TABLE `skit_ad_session` ADD CONSTRAINT `ck_skit_ad_session_reward_callback_receipt` CHECK ((`reward_callback_inbox_id` IS NULL AND `reward_callback_received_at` IS NULL) OR (`reward_callback_inbox_id` IS NOT NULL AND `reward_callback_received_at` IS NOT NULL AND `reward_callback_received_at` <= `reward_accept_until`))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_callback_inbox','ck_skit_callback_inbox_response_code',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD CONSTRAINT `ck_skit_callback_inbox_response_code` CHECK (`ingress_response_code` IS NULL OR `ingress_response_code` IN (200,601,602))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_revenue_event','ck_skit_revenue_verified_binding',
+  'ALTER TABLE `skit_ad_revenue_event` ADD CONSTRAINT `ck_skit_revenue_verified_binding` CHECK (`legacy_unverified`=b''1'' OR (`ad_session_id` IS NOT NULL AND `callback_inbox_id` IS NOT NULL AND `policy_snapshot_id` IS NOT NULL))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_commission_ledger','ck_skit_ledger_verified_snapshot',
+  'ALTER TABLE `skit_commission_ledger` ADD CONSTRAINT `ck_skit_ledger_verified_snapshot` CHECK (`legacy_unverified`=b''1'' OR `policy_snapshot_id` IS NOT NULL)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_network_capability','ck_skit_network_cap_reward_authority',
+  'ALTER TABLE `skit_ad_network_capability` ADD CONSTRAINT `ck_skit_network_cap_reward_authority` CHECK (`reward_authority` IN (''SIGNED_REWARD'',''UNSIGNED_PROVIDER_OBSERVATION'',''CLIENT_ONLY'',''NONE''))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_network_capability','ck_skit_network_cap_signed_readiness',
+  'ALTER TABLE `skit_ad_network_capability` ADD CONSTRAINT `ck_skit_network_cap_signed_readiness` CHECK ((`reward_authority`<>''SIGNED_REWARD'') OR ((`supports_user_id`=b''1'') AND (`supports_custom_data`=b''1'') AND (`supports_stable_transaction`=b''1'') AND `verified_at` IS NOT NULL))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_callback_inbox','ck_skit_callback_inbox_processing_error',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD CONSTRAINT `ck_skit_callback_inbox_processing_error` CHECK ((`processing_status` IN (''PENDING'',''PROCESSING'',''SUCCEEDED'') AND (`error_code` IS NULL)) OR (`processing_status` IN (''RETRY_WAIT'',''REJECTED'',''DEAD_LETTER'') AND (`error_code` IS NOT NULL)))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_callback_inbox','ck_skit_callback_inbox_dead_letter_alert',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD CONSTRAINT `ck_skit_callback_inbox_dead_letter_alert` CHECK (`dead_letter_alerted_at` IS NULL OR (`processing_status`=''DEAD_LETTER'' AND `processed_at` IS NOT NULL AND `dead_letter_alerted_at`>=`processed_at`))')$$
+CREATE TABLE IF NOT EXISTS `skit_ad_reporting_credential_version` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `ad_account_id` bigint NOT NULL, `credential_version` int NOT NULL,
+  `ciphertext` varbinary(4096) NOT NULL, `nonce` binary(12) NOT NULL,
+  `encryption_key_id` varchar(64) NOT NULL, `envelope_version` smallint NOT NULL,
+  `active` bit(1) NOT NULL DEFAULT b'1', `permission_verified_at` datetime DEFAULT NULL,
+  `revoked_at` datetime DEFAULT NULL,
+  `active_account_id` bigint GENERATED ALWAYS AS
+    (CASE WHEN `active`=b'1' THEN `ad_account_id` ELSE NULL END) STORED,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_reporting_credential_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_reporting_credential_version` (`tenant_id`,`ad_account_id`,`credential_version`),
+  UNIQUE KEY `uk_skit_reporting_credential_active` (`tenant_id`,`active_account_id`),
+  CONSTRAINT `fk_skit_reporting_credential_account` FOREIGN KEY (`tenant_id`,`ad_account_id`)
+    REFERENCES `skit_ad_account` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_reporting_credential_version` CHECK (`credential_version` > 0),
+  CONSTRAINT `ck_skit_reporting_credential_envelope` CHECK (`envelope_version` > 0),
+  CONSTRAINT `ck_skit_reporting_credential_lifecycle` CHECK
+    ((`active`=b'1' AND `revoked_at` IS NULL) OR (`active`=b'0' AND `revoked_at` IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_timezone',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_timezone` varchar(64) NOT NULL DEFAULT ''UTC+8''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_currency',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_currency` char(3) NOT NULL DEFAULT ''USD''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_amount_scale',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_amount_scale` tinyint NOT NULL DEFAULT 8')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_pull_lease_owner',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_pull_lease_owner` varchar(64) DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_pull_lease_until',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_pull_lease_until` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_next_allowed_at',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_next_allowed_at` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_last_success_at',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_last_success_at` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_failure_count',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `report_failure_count` int NOT NULL DEFAULT 0')$$
+UPDATE `skit_ad_account` SET `config_data`=JSON_SET(`config_data`,'$.adFormat','rewarded_video')
+  WHERE `provider`='TAKU' AND JSON_VALID(`config_data`)
+    AND JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.adFormat')) IS NULL$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','report_date',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `report_date` date DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','request_hash',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `request_hash` binary(32) DEFAULT NULL')$$
+UPDATE `skit_ad_report_pull` SET `report_date`=DATE(`range_start`) WHERE `report_date` IS NULL$$
+UPDATE `skit_ad_report_pull` SET `request_hash`=`response_hash` WHERE `request_hash` IS NULL$$
+ALTER TABLE `skit_ad_report_pull` MODIFY COLUMN `report_date` date NOT NULL,
+  MODIFY COLUMN `request_hash` binary(32) NOT NULL$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','report_timezone',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `report_timezone` varchar(64) NOT NULL DEFAULT ''UTC+8''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','currency',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `currency` char(3) NOT NULL DEFAULT ''USD''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','amount_scale',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `amount_scale` tinyint NOT NULL DEFAULT 8')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','credential_version',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `credential_version` int DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_report_pull','final_window',
+  'ALTER TABLE `skit_ad_report_pull` ADD COLUMN `final_window` bit(1) NOT NULL DEFAULT b''0''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_bucket','app_id',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD COLUMN `app_id` varchar(128) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_bucket','ad_format',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD COLUMN `ad_format` varchar(32) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_bucket','network_account_id',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD COLUMN `network_account_id` varchar(128) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_bucket','attributable_actual_units',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD COLUMN `attributable_actual_units` bigint NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_bucket','suspense_units',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD COLUMN `suspense_units` bigint NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_bucket','report_impressions_available',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD COLUMN `report_impressions_available` bit(1) NOT NULL DEFAULT b''1''')$$
+UPDATE `skit_ad_reconciliation_bucket` SET `attributable_actual_units`=0,
+  `suspense_units`=`report_actual_units`
+  WHERE `attributable_actual_units` + `suspense_units` <> `report_actual_units`$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_revision','source_report_impressions',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD COLUMN `source_report_impressions` bigint NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_revision','source_report_impressions_available',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD COLUMN `source_report_impressions_available` bit(1) NOT NULL DEFAULT b''1''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_revision','matched_event_count',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD COLUMN `matched_event_count` bigint NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_reconciliation_revision','status',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD COLUMN `status` varchar(32) NOT NULL DEFAULT ''APPLIED''')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_account','idx_skit_ad_account_report_due',
+  'ALTER TABLE `skit_ad_account` ADD INDEX `idx_skit_ad_account_report_due` (`provider`,`status`,`report_next_allowed_at`,`report_pull_lease_until`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_report_pull','idx_skit_report_pull_request',
+  'ALTER TABLE `skit_ad_report_pull` ADD INDEX `idx_skit_report_pull_request` (`tenant_id`,`ad_account_id`,`report_date`,`request_hash`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_report_pull','idx_skit_report_pull_credential',
+  'ALTER TABLE `skit_ad_report_pull` ADD INDEX `idx_skit_report_pull_credential` (`tenant_id`,`ad_account_id`,`credential_version`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_report_pull','idx_skit_report_pull_final_window',
+  'ALTER TABLE `skit_ad_report_pull` ADD INDEX `idx_skit_report_pull_final_window` (`tenant_id`,`ad_account_id`,`report_date`,`final_window`,`status`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_revenue_report_pending',
+  'ALTER TABLE `skit_ad_revenue_event` ADD INDEX `idx_skit_revenue_report_pending` (`tenant_id`,`ad_account_id`,`reconciliation_revision_id`,`occurred_time`,`id`)')$$
+ALTER TABLE `skit_ad_report_pull`
+  DROP INDEX `uk_skit_report_pull_response`,
+  ADD UNIQUE INDEX `uk_skit_report_pull_response`
+    (`tenant_id`,`ad_account_id`,`range_start`,`range_end`,`request_hash`,`response_hash`,`credential_version`,`final_window`)$$
+ALTER TABLE `skit_ad_reconciliation_bucket`
+  DROP INDEX `uk_skit_recon_bucket_identity`,
+  ADD UNIQUE INDEX `uk_skit_recon_bucket_identity`
+    (`tenant_id`,`ad_account_id`,`bucket_key`,`report_date`,`report_timezone`,`app_id`,`placement_id`,
+     `ad_format`,`network_account_id`,`network_firm_id`,`adsource_id`,`currency`)$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_report_pull','fk_skit_report_pull_credential',
+  'ALTER TABLE `skit_ad_report_pull` ADD CONSTRAINT `fk_skit_report_pull_credential` FOREIGN KEY (`tenant_id`,`ad_account_id`,`credential_version`) REFERENCES `skit_ad_reporting_credential_version` (`tenant_id`,`ad_account_id`,`credential_version`) ON UPDATE RESTRICT ON DELETE RESTRICT')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_account','ck_skit_ad_account_report_currency',
+  'ALTER TABLE `skit_ad_account` ADD CONSTRAINT `ck_skit_ad_account_report_currency` CHECK (REGEXP_LIKE(`report_currency`,''^[A-Z]{3}$''))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_account','ck_skit_ad_account_report_timezone',
+  'ALTER TABLE `skit_ad_account` ADD CONSTRAINT `ck_skit_ad_account_report_timezone` CHECK (`report_timezone` IN (''UTC-8'',''UTC+8'',''UTC+0''))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_account','ck_skit_ad_account_report_scale',
+  'ALTER TABLE `skit_ad_account` ADD CONSTRAINT `ck_skit_ad_account_report_scale` CHECK (`report_amount_scale` BETWEEN 0 AND 18)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_account','ck_skit_ad_account_report_lease',
+  'ALTER TABLE `skit_ad_account` ADD CONSTRAINT `ck_skit_ad_account_report_lease` CHECK ((`report_pull_lease_owner` IS NULL AND `report_pull_lease_until` IS NULL) OR (`report_pull_lease_owner` IS NOT NULL AND `report_pull_lease_until` IS NOT NULL))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_account','ck_skit_ad_account_report_failures',
+  'ALTER TABLE `skit_ad_account` ADD CONSTRAINT `ck_skit_ad_account_report_failures` CHECK (`report_failure_count` BETWEEN 0 AND 5)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_report_pull','ck_skit_report_pull_money',
+  'ALTER TABLE `skit_ad_report_pull` ADD CONSTRAINT `ck_skit_report_pull_money` CHECK (REGEXP_LIKE(`currency`,''^[A-Z]{3}$'') AND `amount_scale` BETWEEN 0 AND 18)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_report_pull','ck_skit_report_pull_timezone',
+  'ALTER TABLE `skit_ad_report_pull` ADD CONSTRAINT `ck_skit_report_pull_timezone` CHECK (`report_timezone` IN (''UTC-8'',''UTC+8'',''UTC+0''))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_report_pull','ck_skit_report_pull_credential_version',
+  'ALTER TABLE `skit_ad_report_pull` ADD CONSTRAINT `ck_skit_report_pull_credential_version` CHECK (`credential_version` IS NULL OR `credential_version` > 0)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_report_pull','ck_skit_report_pull_status',
+  'ALTER TABLE `skit_ad_report_pull` ADD CONSTRAINT `ck_skit_report_pull_status` CHECK ((`status`=''SUCCEEDED'' AND `error_code` IS NULL) OR (`status`=''FAILED'' AND `error_code` IS NOT NULL))')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_reconciliation_bucket','ck_skit_recon_bucket_task10_amounts',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD CONSTRAINT `ck_skit_recon_bucket_task10_amounts` CHECK (`attributable_actual_units` >= 0 AND `suspense_units` >= 0 AND `attributable_actual_units` + `suspense_units` = `report_actual_units`)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_reconciliation_bucket','ck_skit_recon_bucket_task10_impressions',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD CONSTRAINT `ck_skit_recon_bucket_task10_impressions` CHECK (`report_impressions_available`=b''1'' OR `report_impressions`=0)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_reconciliation_revision','ck_skit_recon_revision_task10_counts',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD CONSTRAINT `ck_skit_recon_revision_task10_counts` CHECK (`source_report_impressions` >= 0 AND `matched_event_count` >= 0)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_reconciliation_revision','ck_skit_recon_revision_task10_impressions',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD CONSTRAINT `ck_skit_recon_revision_task10_impressions` CHECK (`source_report_impressions_available`=b''1'' OR `source_report_impressions`=0)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_ad_reconciliation_revision','ck_skit_recon_revision_task10_status',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD CONSTRAINT `ck_skit_recon_revision_task10_status` CHECK (`status` IN (''APPLIED'',''PARTIAL'',''SUSPENSE'',''FAILED''))')$$
+CREATE TABLE IF NOT EXISTS `skit_ad_reconciliation_allocation` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `reconciliation_bucket_id` bigint NOT NULL, `reconciliation_revision_id` bigint NOT NULL,
+  `revision_no` int NOT NULL, `event_id` bigint NOT NULL,
+  `beneficiary_type` tinyint NOT NULL, `beneficiary_member_id` bigint NOT NULL DEFAULT 0,
+  `level_no` int NOT NULL, `policy_snapshot_id` bigint NOT NULL,
+  `currency` char(3) NOT NULL, `amount_scale` tinyint NOT NULL,
+  `cumulative_target_units` bigint NOT NULL,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_recon_allocation_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_recon_allocation_canonical`
+    (`tenant_id`,`event_id`,`reconciliation_revision_id`,`beneficiary_type`,`beneficiary_member_id`,`level_no`,`policy_snapshot_id`),
+  KEY `idx_skit_recon_allocation_prior`
+    (`tenant_id`,`event_id`,`beneficiary_type`,`beneficiary_member_id`,`level_no`,`revision_no`),
+  CONSTRAINT `fk_skit_recon_allocation_bucket` FOREIGN KEY (`tenant_id`,`reconciliation_bucket_id`)
+    REFERENCES `skit_ad_reconciliation_bucket` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `fk_skit_recon_allocation_revision` FOREIGN KEY (`tenant_id`,`reconciliation_revision_id`)
+    REFERENCES `skit_ad_reconciliation_revision` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `fk_skit_recon_allocation_event_snapshot` FOREIGN KEY (`tenant_id`,`event_id`,`policy_snapshot_id`)
+    REFERENCES `skit_ad_revenue_event` (`tenant_id`,`id`,`policy_snapshot_id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_recon_allocation_revision` CHECK (`revision_no` > 0),
+  CONSTRAINT `ck_skit_recon_allocation_beneficiary` CHECK
+    ((`beneficiary_type`=1 AND `beneficiary_member_id`>0) OR (`beneficiary_type`=2 AND `beneficiary_member_id`=0)),
+  CONSTRAINT `ck_skit_recon_allocation_money` CHECK
+    (REGEXP_LIKE(`currency`,'^[A-Z]{3}$') AND `amount_scale` BETWEEN 0 AND 18 AND `cumulative_target_units` >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CREATE TABLE IF NOT EXISTS `skit_ad_reconciliation_event_link` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `reconciliation_bucket_id` bigint NOT NULL, `reconciliation_revision_id` bigint NOT NULL,
+  `revision_no` int NOT NULL, `event_id` bigint NOT NULL, `policy_snapshot_id` bigint NOT NULL,
+  `association_status` varchar(16) NOT NULL, `actual_units` bigint NOT NULL,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_recon_event_link_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_recon_event_link_canonical` (`tenant_id`,`reconciliation_revision_id`,`event_id`),
+  KEY `idx_skit_recon_event_link_history` (`tenant_id`,`event_id`,`revision_no`,`id`),
+  CONSTRAINT `fk_skit_recon_event_link_bucket` FOREIGN KEY (`tenant_id`,`reconciliation_bucket_id`)
+    REFERENCES `skit_ad_reconciliation_bucket` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `fk_skit_recon_event_link_revision` FOREIGN KEY (`tenant_id`,`reconciliation_revision_id`)
+    REFERENCES `skit_ad_reconciliation_revision` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `fk_skit_recon_event_link_event_snapshot` FOREIGN KEY (`tenant_id`,`event_id`,`policy_snapshot_id`)
+    REFERENCES `skit_ad_revenue_event` (`tenant_id`,`id`,`policy_snapshot_id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_recon_event_link_revision` CHECK (`revision_no` > 0),
+  CONSTRAINT `ck_skit_recon_event_link_status` CHECK (`association_status` IN ('ATTRIBUTED','SUSPENSE')),
+  CONSTRAINT `ck_skit_recon_event_link_amount` CHECK
+    (`actual_units` >= 0 AND (`association_status`<>'SUSPENSE' OR `actual_units`=0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','dedicated_unlock_placement_id',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `dedicated_unlock_placement_id` varchar(128) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','dedicated_placement_verified_at',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `dedicated_placement_verified_at` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','reward_callback_template_verified_at',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `reward_callback_template_verified_at` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','impression_callback_template_verified_at',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `impression_callback_template_verified_at` datetime DEFAULT NULL')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','unlock_network_firm_ids_json',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `unlock_network_firm_ids_json` varchar(512) NOT NULL DEFAULT ''[]''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','shadow_test_member_ids_json',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `shadow_test_member_ids_json` varchar(4096) NOT NULL DEFAULT ''[]''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_tenant_ad_capability','min_protocol_version',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD COLUMN `min_protocol_version` int NOT NULL DEFAULT 1')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','native_protocol_version',
+  'ALTER TABLE `skit_app_release_profile` ADD COLUMN `native_protocol_version` int NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_tenant_ad_capability','ck_skit_tenant_capability_network_json',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD CONSTRAINT `ck_skit_tenant_capability_network_json` CHECK (JSON_VALID(`unlock_network_firm_ids_json`) AND JSON_TYPE(JSON_EXTRACT(`unlock_network_firm_ids_json`,''$''))=''ARRAY'')')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_tenant_ad_capability','ck_skit_tenant_capability_shadow_json',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD CONSTRAINT `ck_skit_tenant_capability_shadow_json` CHECK (JSON_VALID(`shadow_test_member_ids_json`) AND JSON_TYPE(JSON_EXTRACT(`shadow_test_member_ids_json`,''$''))=''ARRAY'')')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_tenant_ad_capability','ck_skit_tenant_capability_protocol',
+  'ALTER TABLE `skit_tenant_ad_capability` ADD CONSTRAINT `ck_skit_tenant_capability_protocol` CHECK (`min_protocol_version` > 0)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_app_release_profile','ck_skit_app_release_native_protocol',
+  'ALTER TABLE `skit_app_release_profile` ADD CONSTRAINT `ck_skit_app_release_native_protocol` CHECK (`native_protocol_version` >= 0)')$$
+
+CREATE TABLE IF NOT EXISTS `skit_management_command_audit` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `command_id` varchar(64) NOT NULL, `operator_user_id` bigint NOT NULL,
+  `original_tenant_id` bigint NOT NULL, `target_tenant_id` bigint NOT NULL,
+  `command_type` varchar(64) NOT NULL, `resource_type` varchar(64) NOT NULL,
+  `resource_id` varchar(128) NOT NULL, `reason` varchar(500) NOT NULL,
+  `before_state_hash` binary(32) NOT NULL, `after_state_hash` binary(32) NOT NULL,
+  `request_fingerprint` binary(32) NOT NULL, `trace_id` varchar(128) NOT NULL DEFAULT '',
+  `result_status` varchar(16) NOT NULL, `created_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_management_audit_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_management_audit_command` (`command_id`),
+  KEY `idx_skit_management_audit_time` (`tenant_id`,`created_at`,`id`),
+  KEY `idx_skit_management_audit_type_time` (`tenant_id`,`command_type`,`created_at`,`id`),
+  KEY `idx_skit_management_audit_target_time` (`target_tenant_id`,`created_at`,`id`),
+  CONSTRAINT `ck_skit_management_audit_target` CHECK (`tenant_id`=`target_tenant_id`),
+  CONSTRAINT `ck_skit_management_audit_result` CHECK (`result_status`='SUCCESS'),
+  CONSTRAINT `ck_skit_management_audit_reason` CHECK
+    (CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CREATE TABLE IF NOT EXISTS `skit_ad_callback_replay_command` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `command_id` varchar(64) NOT NULL, `callback_inbox_id` bigint NOT NULL,
+  `operator_user_id` bigint NOT NULL, `original_tenant_id` bigint NOT NULL,
+  `source_status` varchar(32) NOT NULL, `reason` varchar(500) NOT NULL,
+  `request_fingerprint` binary(32) NOT NULL, `requested_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_callback_replay_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_callback_replay_command` (`command_id`),
+  UNIQUE KEY `uk_skit_callback_replay_idempotency` (`tenant_id`,`callback_inbox_id`,`request_fingerprint`),
+  KEY `idx_skit_callback_replay_time` (`tenant_id`,`requested_at`,`id`),
+  CONSTRAINT `fk_skit_callback_replay_inbox` FOREIGN KEY (`tenant_id`,`callback_inbox_id`)
+    REFERENCES `skit_ad_callback_inbox` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_callback_replay_source` CHECK (`source_status` IN ('DEAD_LETTER','REJECTED')),
+  CONSTRAINT `ck_skit_callback_replay_reason` CHECK
+    (CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CREATE TABLE IF NOT EXISTS `skit_entitlement_security_revocation` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `command_id` varchar(64) NOT NULL, `entitlement_id` bigint NOT NULL,
+  `ad_session_id` bigint NOT NULL, `operator_user_id` bigint NOT NULL,
+  `original_tenant_id` bigint NOT NULL, `reason` varchar(500) NOT NULL,
+  `evidence_hash` binary(32) NOT NULL, `revoked_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_security_revocation_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_security_revocation_command` (`command_id`),
+  UNIQUE KEY `uk_skit_security_revocation_entitlement` (`tenant_id`,`entitlement_id`),
+  KEY `idx_skit_security_revocation_time` (`tenant_id`,`revoked_at`,`id`),
+  CONSTRAINT `fk_skit_security_revocation_entitlement` FOREIGN KEY (`tenant_id`,`entitlement_id`)
+    REFERENCES `skit_content_entitlement` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `fk_skit_security_revocation_session` FOREIGN KEY (`tenant_id`,`ad_session_id`)
+    REFERENCES `skit_ad_session` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_security_revocation_reason` CHECK
+    (CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CREATE TABLE IF NOT EXISTS `skit_management_export_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `operator_user_id` bigint NOT NULL, `original_tenant_id` bigint NOT NULL,
+  `target_tenant_id` bigint NOT NULL, `export_type` varchar(64) NOT NULL,
+  `filter_json` longtext NOT NULL, `filter_hash` binary(32) NOT NULL,
+  `field_mask_profile` varchar(32) NOT NULL, `as_of` datetime NOT NULL,
+  `status` varchar(16) NOT NULL DEFAULT 'PENDING',
+  `processed_rows` bigint NOT NULL DEFAULT 0, `total_rows` bigint DEFAULT NULL,
+  `file_object_key` varchar(500) NOT NULL DEFAULT '', `expires_at` datetime NOT NULL,
+  `error_code` varchar(64) NOT NULL DEFAULT '', `lease_owner` varchar(64) DEFAULT NULL,
+  `lease_until` datetime DEFAULT NULL, `version` int NOT NULL DEFAULT 0,
+  `created_at` datetime NOT NULL, `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_management_export_tenant_id` (`tenant_id`,`id`),
+  KEY `idx_skit_management_export_operator` (`tenant_id`,`operator_user_id`,`created_at`,`id`),
+  KEY `idx_skit_management_export_claim` (`status`,`lease_until`,`created_at`,`id`),
+  KEY `idx_skit_management_export_expiry` (`expires_at`,`id`),
+  CONSTRAINT `ck_skit_management_export_target` CHECK (`tenant_id`=`target_tenant_id`),
+  CONSTRAINT `ck_skit_management_export_filter` CHECK (JSON_VALID(`filter_json`)),
+  CONSTRAINT `ck_skit_management_export_mask` CHECK
+    (`field_mask_profile` IN ('TENANT_MASKED','PLATFORM_AUDIT_MASKED')),
+  CONSTRAINT `ck_skit_management_export_status` CHECK
+    (`status` IN ('PENDING','RUNNING','SUCCEEDED','FAILED','EXPIRED')),
+  CONSTRAINT `ck_skit_management_export_progress` CHECK
+    (`processed_rows`>=0 AND (`total_rows` IS NULL OR `total_rows`>=`processed_rows`)),
+  CONSTRAINT `ck_skit_management_export_lease` CHECK
+    ((`lease_owner` IS NULL AND `lease_until` IS NULL) OR
+     (`lease_owner` IS NOT NULL AND `lease_until` IS NOT NULL)),
+  CONSTRAINT `ck_skit_management_export_version` CHECK (`version`>=0),
+  CONSTRAINT `ck_skit_management_export_expiry_window` CHECK (`expires_at`>`as_of`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_management_account',
+  'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_management_account` (`tenant_id`,`ad_account_id`,`create_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_management_reward',
+  'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_management_reward` (`tenant_id`,`reward_verification_status`,`create_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_callback_inbox_management_account',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_callback_inbox_management_account` (`tenant_id`,`ad_account_id`,`received_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_callback_inbox_management_status',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_callback_inbox_management_status` (`tenant_id`,`processing_status`,`received_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_revenue_management_time',
+  'ALTER TABLE `skit_ad_revenue_event` ADD INDEX `idx_skit_revenue_management_time` (`tenant_id`,`occurred_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_revenue_management_member',
+  'ALTER TABLE `skit_ad_revenue_event` ADD INDEX `idx_skit_revenue_management_member` (`tenant_id`,`source_member_id`,`occurred_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_revenue_management_reconciliation',
+  'ALTER TABLE `skit_ad_revenue_event` ADD INDEX `idx_skit_revenue_management_reconciliation` (`tenant_id`,`reconciliation_status`,`source_currency`,`occurred_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_commission_ledger','idx_skit_ledger_management_balance',
+  'ALTER TABLE `skit_commission_ledger` ADD INDEX `idx_skit_ledger_management_balance` (`tenant_id`,`currency`,`balance_bucket`,`create_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_commission_ledger','idx_skit_ledger_management_event',
+  'ALTER TABLE `skit_commission_ledger` ADD INDEX `idx_skit_ledger_management_event` (`tenant_id`,`event_id`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_report_pull','idx_skit_report_pull_management_account',
+  'ALTER TABLE `skit_ad_report_pull` ADD INDEX `idx_skit_report_pull_management_account` (`tenant_id`,`ad_account_id`,`pulled_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_report_pull','idx_skit_report_pull_management_status',
+  'ALTER TABLE `skit_ad_report_pull` ADD INDEX `idx_skit_report_pull_management_status` (`tenant_id`,`status`,`pulled_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_reconciliation_bucket','idx_skit_recon_bucket_management_account',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD INDEX `idx_skit_recon_bucket_management_account` (`tenant_id`,`ad_account_id`,`report_date`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_reconciliation_revision','idx_skit_recon_revision_management_bucket',
+  'ALTER TABLE `skit_ad_reconciliation_revision` ADD INDEX `idx_skit_recon_revision_management_bucket` (`tenant_id`,`reconciliation_bucket_id`,`revision_no`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_member_closure','idx_skit_member_closure_ancestor_distance',
+  'ALTER TABLE `skit_member_closure` ADD INDEX `idx_skit_member_closure_ancestor_distance` (`tenant_id`,`ancestor_id`,`distance`,`descendant_id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_global_created',
+  'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_global_created` (`create_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_ad_revenue_global_occurred',
+  'ALTER TABLE `skit_ad_revenue_event` ADD INDEX `idx_skit_ad_revenue_global_occurred` (`occurred_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_ad_callback_global_received',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_ad_callback_global_received` (`received_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_reconciliation_bucket','idx_skit_ad_recon_bucket_global_date',
+  'ALTER TABLE `skit_ad_reconciliation_bucket` ADD INDEX `idx_skit_ad_recon_bucket_global_date` (`report_date`,`id`)')$$
+
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','hot_release_no',
+  'ALTER TABLE `skit_app_release_profile` ADD COLUMN `hot_release_no` bigint NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','hot_manifest_signature',
+  'ALTER TABLE `skit_app_release_profile` ADD COLUMN `hot_manifest_signature` varchar(1024) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_app_release_profile','ck_skit_app_release_hot_release',
+  'ALTER TABLE `skit_app_release_profile` ADD CONSTRAINT `ck_skit_app_release_hot_release` CHECK (`hot_release_no` >= 0)')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_app_release_profile','ck_skit_app_release_hot_signature',
+  'ALTER TABLE `skit_app_release_profile` ADD CONSTRAINT `ck_skit_app_release_hot_signature` CHECK ((`hot_release_no`=0 AND `hot_manifest_signature`='''') OR (`hot_release_no`>0 AND `hot_manifest_signature`<>''''))')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','runtime_update_public_key',
+  'ALTER TABLE `skit_app_release_profile` ADD COLUMN `runtime_update_public_key` varchar(4096) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','runtime_update_key_fingerprint',
+  'ALTER TABLE `skit_app_release_profile` ADD COLUMN `runtime_update_key_fingerprint` char(64) NOT NULL DEFAULT ''''')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','active_runtime_update_key_fingerprint',
+  'ALTER TABLE `skit_app_release_profile` ADD COLUMN `active_runtime_update_key_fingerprint` char(64) GENERATED ALWAYS AS (CASE WHEN `deleted`=b''0'' AND `runtime_update_key_fingerprint`<>'''' THEN `runtime_update_key_fingerprint` ELSE NULL END) STORED')$$
+CALL `skit_apply_ddl_if_missing`('CONSTRAINT','skit_app_release_profile','ck_skit_app_release_runtime_key',
+  'ALTER TABLE `skit_app_release_profile` ADD CONSTRAINT `ck_skit_app_release_runtime_key` CHECK ((`runtime_update_public_key`='''' AND `runtime_update_key_fingerprint`='''') OR (`runtime_update_public_key`<>'''' AND REGEXP_LIKE(`runtime_update_key_fingerprint`,''^[0-9a-f]{64}$'')))')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_app_release_profile','uk_skit_app_release_runtime_key',
+  'ALTER TABLE `skit_app_release_profile` ADD UNIQUE INDEX `uk_skit_app_release_runtime_key` (`active_runtime_update_key_fingerprint`)')$$
+DROP PROCEDURE `skit_replace_grant_session_binding`$$
+DROP PROCEDURE `skit_apply_ddl_if_missing`$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_management_audit_immutable`
+BEFORE UPDATE ON `skit_management_command_audit` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'management command audit rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_management_audit_no_delete`
+BEFORE DELETE ON `skit_management_command_audit` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'management command audit rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_replay_immutable`
+BEFORE UPDATE ON `skit_ad_callback_replay_command` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback replay command rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_replay_no_delete`
+BEFORE DELETE ON `skit_ad_callback_replay_command` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback replay command rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_security_revocation_immutable`
+BEFORE UPDATE ON `skit_entitlement_security_revocation` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'security revocation rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_security_revocation_no_delete`
+BEFORE DELETE ON `skit_entitlement_security_revocation` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'security revocation rows are immutable';
+END$$
 CREATE TRIGGER IF NOT EXISTS `trg_skit_revenue_legacy_immutable`
 BEFORE UPDATE ON `skit_ad_revenue_event` FOR EACH ROW
 BEGIN
@@ -462,6 +969,231 @@ CREATE TRIGGER IF NOT EXISTS `trg_skit_policy_snapshot_no_delete`
 BEFORE DELETE ON `skit_ad_policy_snapshot` FOR EACH ROW
 BEGIN
   SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'policy snapshot rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_ledger_immutable`
+BEFORE UPDATE ON `skit_commission_ledger` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'commission ledger rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_ledger_no_delete`
+BEFORE DELETE ON `skit_commission_ledger` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'commission ledger rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_entitlement_grant_session_range`$$
+CREATE TRIGGER `trg_skit_entitlement_grant_session_range`
+BEFORE INSERT ON `skit_entitlement_grant` FOR EACH ROW
+BEGIN
+  DECLARE `session_episode_from` int DEFAULT NULL;
+  DECLARE `session_episode_to` int DEFAULT NULL;
+  SELECT `episode_from`,`episode_to` INTO `session_episode_from`,`session_episode_to`
+    FROM `skit_ad_session`
+    WHERE `tenant_id` = NEW.`tenant_id` AND `id` = NEW.`ad_session_id`
+      AND `member_id` = NEW.`member_id` AND `drama_id` = NEW.`drama_id`
+      AND `provider_transaction_id` = NEW.`provider_transaction_id`
+    FOR SHARE;
+  IF `session_episode_from` IS NULL OR NEW.`episode_no` < `session_episode_from`
+      OR NEW.`episode_no` > `session_episode_to` THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'entitlement grant episode is outside the session scope';
+  END IF;
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_entitlement_grant_immutable`
+BEFORE UPDATE ON `skit_entitlement_grant` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'entitlement grant rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_entitlement_grant_no_delete`
+BEFORE DELETE ON `skit_entitlement_grant` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'entitlement grant rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_callback_inbox_monotonic`$$
+CREATE TRIGGER `trg_skit_callback_inbox_monotonic`
+BEFORE UPDATE ON `skit_ad_callback_inbox` FOR EACH ROW
+BEGIN
+  IF NOT (
+    NEW.`id` <=> OLD.`id` AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`ad_account_id` <=> OLD.`ad_account_id` AND NEW.`ad_session_id` <=> OLD.`ad_session_id`
+    AND NEW.`callback_key_version` <=> OLD.`callback_key_version`
+    AND NEW.`reward_secret_version` <=> OLD.`reward_secret_version`
+    AND NEW.`provider` <=> OLD.`provider` AND NEW.`callback_type` <=> OLD.`callback_type`
+    AND NEW.`idempotency_key` <=> OLD.`idempotency_key`
+    AND NEW.`provider_user_id` <=> OLD.`provider_user_id`
+    AND NEW.`extra_data_hash` <=> OLD.`extra_data_hash`
+    AND NEW.`provider_transaction_id` <=> OLD.`provider_transaction_id`
+    AND NEW.`provider_show_id` <=> OLD.`provider_show_id`
+    AND NEW.`provider_request_id` <=> OLD.`provider_request_id`
+    AND NEW.`placement_id` <=> OLD.`placement_id` AND NEW.`adsource_id` <=> OLD.`adsource_id`
+    AND NEW.`network_firm_id` <=> OLD.`network_firm_id`
+    AND NEW.`source_currency` <=> OLD.`source_currency`
+    AND NEW.`source_amount_units` <=> OLD.`source_amount_units`
+    AND NEW.`amount_scale` <=> OLD.`amount_scale`
+    AND NEW.`signed_field_mask` <=> OLD.`signed_field_mask`
+    AND NEW.`evidence_provenance` <=> OLD.`evidence_provenance`
+    AND NEW.`canonical_payload_hash` <=> OLD.`canonical_payload_hash`
+    AND NEW.`authentication_level` <=> OLD.`authentication_level`
+    AND NEW.`signature_status` <=> OLD.`signature_status`
+    AND NEW.`ingress_response_code` <=> OLD.`ingress_response_code`
+    AND NEW.`received_at` <=> OLD.`received_at` AND NEW.`creator` <=> OLD.`creator`
+    AND NEW.`create_time` <=> OLD.`create_time` AND NEW.`deleted` <=> OLD.`deleted`
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback inbox provenance is immutable';
+  ELSEIF NOT (
+    ((NEW.`delivery_integrity_status` <=> OLD.`delivery_integrity_status`)
+      AND (NEW.`integrity_conflict_at` <=> OLD.`integrity_conflict_at`))
+    OR (OLD.`delivery_integrity_status` = 'CANONICAL'
+      AND NEW.`delivery_integrity_status` = 'PAYLOAD_CONFLICT'
+      AND OLD.`integrity_conflict_at` IS NULL AND NEW.`integrity_conflict_at` IS NOT NULL)
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback inbox integrity is monotonic';
+  ELSEIF NOT (
+    (NEW.`processing_status` <=> OLD.`processing_status`
+      AND NEW.`error_code` <=> OLD.`error_code`
+      AND NEW.`lease_owner` <=> OLD.`lease_owner`
+      AND NEW.`lease_until` <=> OLD.`lease_until`
+      AND NEW.`processing_attempt_count` <=> OLD.`processing_attempt_count`
+      AND NEW.`next_attempt_at` <=> OLD.`next_attempt_at`
+      AND NEW.`processed_at` <=> OLD.`processed_at`)
+    OR ((OLD.`processing_status` = 'PENDING' AND NEW.`processing_status` = 'PROCESSING'
+      AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count` + 1
+      AND NEW.`error_code` IS NULL)
+    OR (OLD.`processing_status` = 'RETRY_WAIT' AND NEW.`processing_status` = 'PROCESSING'
+      AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count` + 1
+      AND NEW.`error_code` IS NULL)
+    OR (OLD.`processing_status` = 'PROCESSING' AND NEW.`processing_status` = 'PROCESSING'
+      AND OLD.`lease_until` <= CURRENT_TIMESTAMP
+      AND (NOT (NEW.`lease_owner` <=> OLD.`lease_owner`)
+        OR NOT (NEW.`lease_until` <=> OLD.`lease_until`))
+      AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count` + 1
+      AND NEW.`error_code` IS NULL)
+    OR (OLD.`processing_status` = 'PROCESSING' AND NEW.`processing_status` = 'RETRY_WAIT'
+      AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count`
+      AND NEW.`error_code` IS NOT NULL)
+    OR (OLD.`processing_status` = 'PROCESSING'
+      AND NEW.`processing_status` IN ('SUCCEEDED','REJECTED','DEAD_LETTER')
+      AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count`))
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback processing transition is not allowed';
+  ELSEIF NOT (
+    (NEW.`dead_letter_alerted_at` <=> OLD.`dead_letter_alerted_at`)
+    OR (OLD.`dead_letter_alerted_at` IS NULL AND NEW.`dead_letter_alerted_at` IS NOT NULL
+      AND NEW.`processing_status` = 'DEAD_LETTER')
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback dead-letter alert is monotonic';
+  ELSEIF NOT (
+    (NEW.`payload_ciphertext` <=> OLD.`payload_ciphertext`
+      AND NEW.`payload_nonce` <=> OLD.`payload_nonce`
+      AND NEW.`payload_key_id` <=> OLD.`payload_key_id`
+      AND NEW.`payload_envelope_version` <=> OLD.`payload_envelope_version`
+      AND NEW.`payload_expires_at` <=> OLD.`payload_expires_at`)
+    OR (OLD.`processing_status` IN ('SUCCEEDED','REJECTED','DEAD_LETTER')
+      AND NEW.`processing_status` = OLD.`processing_status`
+      AND OLD.`payload_ciphertext` IS NOT NULL AND OLD.`payload_nonce` IS NOT NULL
+      AND OLD.`payload_key_id` IS NOT NULL AND OLD.`payload_envelope_version` IS NOT NULL
+      AND OLD.`payload_expires_at` IS NOT NULL AND OLD.`payload_expires_at` <= CURRENT_TIMESTAMP
+      AND NEW.`payload_ciphertext` IS NULL AND NEW.`payload_nonce` IS NULL
+      AND NEW.`payload_key_id` IS NULL AND NEW.`payload_envelope_version` IS NULL
+      AND NEW.`payload_expires_at` IS NULL)
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback payload can only be erased after expiry';
+  END IF;
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_inbox_no_delete`
+BEFORE DELETE ON `skit_ad_callback_inbox` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback inbox rows cannot be deleted';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_attempt_immutable`
+BEFORE UPDATE ON `skit_ad_callback_attempt` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback attempt rows are immutable';
+END$$
+CREATE TRIGGER IF NOT EXISTS `trg_skit_callback_edge_attempt_immutable`
+BEFORE UPDATE ON `skit_ad_callback_edge_attempt` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'callback edge attempt rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_reporting_credential_monotonic`$$
+CREATE TRIGGER `trg_skit_reporting_credential_monotonic`
+BEFORE UPDATE ON `skit_ad_reporting_credential_version` FOR EACH ROW
+BEGIN
+  IF NOT (
+    NEW.`id` <=> OLD.`id` AND NEW.`tenant_id` <=> OLD.`tenant_id`
+    AND NEW.`ad_account_id` <=> OLD.`ad_account_id`
+    AND NEW.`credential_version` <=> OLD.`credential_version`
+    AND NEW.`ciphertext` <=> OLD.`ciphertext` AND NEW.`nonce` <=> OLD.`nonce`
+    AND NEW.`encryption_key_id` <=> OLD.`encryption_key_id`
+    AND NEW.`envelope_version` <=> OLD.`envelope_version`
+    AND NEW.`creator` <=> OLD.`creator` AND NEW.`create_time` <=> OLD.`create_time`
+    AND NEW.`deleted` <=> OLD.`deleted`
+  ) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'reporting credential identity and material are immutable';
+  ELSEIF NOT (
+      (NEW.`permission_verified_at` <=> OLD.`permission_verified_at`)
+      OR (OLD.`permission_verified_at` IS NULL AND NEW.`permission_verified_at` IS NOT NULL)
+    ) OR NOT (
+      ((NEW.`active` <=> OLD.`active`) AND (NEW.`revoked_at` <=> OLD.`revoked_at`))
+      OR (OLD.`active`=b'1' AND NEW.`active`=b'0' AND OLD.`revoked_at` IS NULL
+        AND NEW.`revoked_at` IS NOT NULL)
+    ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reporting credential lifecycle is monotonic';
+  END IF;
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_reporting_credential_no_delete`$$
+CREATE TRIGGER `trg_skit_reporting_credential_no_delete`
+BEFORE DELETE ON `skit_ad_reporting_credential_version` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reporting credential versions cannot be deleted';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_report_pull_immutable`$$
+CREATE TRIGGER `trg_skit_report_pull_immutable`
+BEFORE UPDATE ON `skit_ad_report_pull` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'report pull rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_report_pull_no_delete`$$
+CREATE TRIGGER `trg_skit_report_pull_no_delete`
+BEFORE DELETE ON `skit_ad_report_pull` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'report pull rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_recon_revision_immutable`$$
+CREATE TRIGGER `trg_skit_recon_revision_immutable`
+BEFORE UPDATE ON `skit_ad_reconciliation_revision` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reconciliation revision rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_recon_revision_no_delete`$$
+CREATE TRIGGER `trg_skit_recon_revision_no_delete`
+BEFORE DELETE ON `skit_ad_reconciliation_revision` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reconciliation revision rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_recon_allocation_immutable`$$
+CREATE TRIGGER `trg_skit_recon_allocation_immutable`
+BEFORE UPDATE ON `skit_ad_reconciliation_allocation` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reconciliation allocation rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_recon_allocation_no_delete`$$
+CREATE TRIGGER `trg_skit_recon_allocation_no_delete`
+BEFORE DELETE ON `skit_ad_reconciliation_allocation` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reconciliation allocation rows are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_recon_event_link_immutable`$$
+CREATE TRIGGER `trg_skit_recon_event_link_immutable`
+BEFORE UPDATE ON `skit_ad_reconciliation_event_link` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reconciliation event links are immutable';
+END$$
+DROP TRIGGER IF EXISTS `trg_skit_recon_event_link_no_delete`$$
+CREATE TRIGGER `trg_skit_recon_event_link_no_delete`
+BEFORE DELETE ON `skit_ad_reconciliation_event_link` FOR EACH ROW
+BEGIN
+  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reconciliation event links are immutable';
 END$$
 DELIMITER ;
 

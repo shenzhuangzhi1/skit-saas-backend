@@ -67,11 +67,23 @@ public final class SkitHmacAdSessionTokenService implements SkitAdSessionTokenSe
     }
 
     @Override
+    public byte[] hashCustomData(String customData) {
+        if (customData == null || !customData.matches("[A-Za-z0-9_-]{43}")) {
+            throw new IllegalArgumentException("customData must be a 43-character base64url token");
+        }
+        return sha256(customData.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    @Override
     public boolean matches(String customData, byte[] expectedHash) {
-        if (customData == null || customData.isEmpty() || expectedHash == null) {
+        if (expectedHash == null) {
             return false;
         }
-        return MessageDigest.isEqual(sha256(customData.getBytes(StandardCharsets.US_ASCII)), expectedHash);
+        try {
+            return MessageDigest.isEqual(hashCustomData(customData), expectedHash);
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
     }
 
     private static byte[] requireAscii(String value, String field) {

@@ -35,6 +35,8 @@ class SkitAdSessionTokenServiceTest {
         assertEquals(raw, restored.consumeCustomData());
         assertArrayEquals(MessageDigest.getInstance("SHA-256")
                 .digest(raw.getBytes(StandardCharsets.US_ASCII)), issued.getTokenHash());
+        assertArrayEquals(issued.getTokenHash(), service.hashCustomData(raw),
+                "callback ingress must derive one indexed lookup hash without scanning sessions");
         assertTrue(service.matches(raw, issued.getTokenHash()));
         assertFalse(issued.toString().contains(raw));
         assertFalse(new ObjectMapper().writeValueAsString(issued).contains(raw));
@@ -84,6 +86,23 @@ class SkitAdSessionTokenServiceTest {
                         Collections.singletonMap(1, "too-short".getBytes(StandardCharsets.US_ASCII))));
         assertThrows(IllegalArgumentException.class,
                 () -> new SkitHmacAdSessionTokenService(0, Collections.singletonMap(0, KEY)));
+    }
+
+    @Test
+    void customDataHashRejectsMalformedOrOversizedProviderInput() {
+        SkitAdSessionTokenService service = new SkitHmacAdSessionTokenService(1,
+                Collections.singletonMap(1, KEY));
+
+        assertThrows(IllegalArgumentException.class, () -> service.hashCustomData(null));
+        assertThrows(IllegalArgumentException.class, () -> service.hashCustomData(""));
+        assertThrows(IllegalArgumentException.class, () -> service.hashCustomData("contains space"));
+        assertThrows(IllegalArgumentException.class, () -> service.hashCustomData(repeat('a', 129)));
+    }
+
+    private static String repeat(char value, int count) {
+        char[] result = new char[count];
+        java.util.Arrays.fill(result, value);
+        return new String(result);
     }
 
 }

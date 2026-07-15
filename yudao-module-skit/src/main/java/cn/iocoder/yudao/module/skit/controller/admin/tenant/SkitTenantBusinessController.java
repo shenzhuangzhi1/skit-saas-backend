@@ -6,41 +6,38 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.validation.InEnum;
-import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
-import cn.iocoder.yudao.framework.security.core.LoginUser;
-import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
-import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
+import cn.iocoder.yudao.module.skit.framework.security.SkitAdminTenantScopeGuard;
+import cn.iocoder.yudao.module.skit.framework.security.SkitManagementCommandType;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
-import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
-import cn.iocoder.yudao.module.skit.service.revenue.SkitRevenueService;
+import cn.iocoder.yudao.module.skit.service.management.SkitManagementCommandExecutor;
+import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportingConfigurationService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.format.annotation.DateTimeFormat;
 
 import javax.annotation.Resource;
 import javax.validation.Valid;
-import javax.validation.constraints.NotEmpty;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Pattern;
+import javax.validation.constraints.Positive;
+import javax.validation.constraints.PositiveOrZero;
+import javax.validation.constraints.Min;
+import javax.validation.constraints.Max;
 import javax.validation.constraints.Size;
 import org.hibernate.validator.constraints.Length;
-import java.util.List;
-import java.util.Objects;
-import java.time.LocalDateTime;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -56,13 +53,13 @@ public class SkitTenantBusinessController {
     @Resource
     private SkitAppReleaseService appReleaseService;
     @Resource
-    private SkitCommissionService commissionService;
-    @Resource
     private SkitMemberService memberService;
     @Resource
-    private SkitRevenueService revenueService;
+    private SkitReportingConfigurationService reportingConfigurationService;
     @Resource
-    private SkitPlatformAdminGuard platformAdminGuard;
+    private SkitAdminTenantScopeGuard adminTenantScopeGuard;
+    @Resource
+    private SkitManagementCommandExecutor managementCommandExecutor;
     @Resource
     private SkitAgentMapper agentMapper;
     @Resource
@@ -72,54 +69,107 @@ public class SkitTenantBusinessController {
     @Operation(summary = "获得代理商根邀请码")
     public CommonResult<AgentInvitationRespVO> getAgentInvitation(
             @RequestParam(value = "tenantId", required = false) Long requestedTenantId) {
-        Long tenantId = resolveTargetTenant(requestedTenantId);
-        SkitAgentDO agent = agentMapper.selectByTenantId(tenantId);
-        TenantDO tenant = tenantService.getTenant(tenantId);
-        if (agent == null || tenant == null) {
-            throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
-                    cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS);
-        }
-        AgentInvitationRespVO result = new AgentInvitationRespVO();
-        result.setTenantId(tenantId);
-        result.setTenantCode(agent.getTenantCode());
-        result.setRootInviteCode(agent.getRootInviteCode());
-        result.setTenantName(tenant.getName());
-        return success(result);
+        return success(adminTenantScopeGuard.readTenant(requestedTenantId, false, scope -> {
+            Long tenantId = scope.getTargetTenantId();
+            SkitAgentDO agent = agentMapper.selectByTenantId(tenantId);
+            TenantDO tenant = tenantService.getTenant(tenantId);
+            if (agent == null || tenant == null) {
+                throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS);
+            }
+            AgentInvitationRespVO result = new AgentInvitationRespVO();
+            result.setTenantId(tenantId);
+            result.setTenantCode(agent.getTenantCode());
+            result.setRootInviteCode(agent.getRootInviteCode());
+            result.setTenantName(tenant.getName());
+            return result;
+        }));
     }
 
     @GetMapping("/ad-account")
     @Operation(summary = "获得穿山甲与 Taku 广告账号配置")
     public CommonResult<SkitAdAccountService.Settings> getAdAccount(
             @RequestParam(value = "tenantId", required = false) Long tenantId) {
-        return success(inTargetTenant(tenantId, adAccountService::getSettings));
+        return success(adminTenantScopeGuard.readTenant(tenantId, false,
+                scope -> adAccountService.getSettings()));
     }
 
     @PutMapping("/ad-account")
     @ApiAccessLog(sanitizeKeys = {"pangleAppSecret", "takuAppKey", "takuAppSecret"})
     @Operation(summary = "保存穿山甲与 Taku 广告账号配置")
     public CommonResult<SkitAdAccountService.Settings> saveAdAccount(@Valid @RequestBody AdAccountSaveReqVO reqVO) {
-        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
-        settings.setPangleUsername(reqVO.getPangleUsername());
-        settings.setPangleAppId(reqVO.getPangleAppId());
-        settings.setPangleAppSecret(reqVO.getPangleAppSecret());
-        settings.setPanglePlacementId(reqVO.getPanglePlacementId());
-        settings.setPangleEnabled(reqVO.getPangleEnabled());
-        settings.setTakuUsername(reqVO.getTakuUsername());
-        settings.setTakuAppId(reqVO.getTakuAppId());
-        settings.setTakuAppKey(reqVO.getTakuAppKey());
-        settings.setTakuAppSecret(reqVO.getTakuAppSecret());
-        settings.setTakuPlacementId(reqVO.getTakuPlacementId());
-        settings.setTakuEnabled(reqVO.getTakuEnabled());
-        return success(inTargetTenant(reqVO.getTenantId(), () -> adAccountService.saveSettings(settings)));
+        return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
+                SkitManagementCommandType.AD_ACCOUNT_UPDATE, reqVO.getReason(), scope -> {
+                    SkitAdAccountService.Settings before = adAccountService.getSettings();
+                    SkitAdAccountService.Settings settings = toSettings(reqVO);
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.AD_ACCOUNT_UPDATE, "AD_ACCOUNT_SETTINGS",
+                            scope.getTargetTenantId().toString(), reqVO.getReason(),
+                            canonical(before), canonical(reqVO), () -> {
+                                SkitAdAccountService.Settings after =
+                                        adAccountService.saveSettings(settings);
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        after, canonical(after));
+                            });
+                }));
     }
 
     @PutMapping("/ad-account/clear-credentials")
     @Operation(summary = "显式清除广告平台凭证并停用平台")
     public CommonResult<Boolean> clearAdAccountCredentials(@Valid @RequestBody AdCredentialClearReqVO reqVO) {
-        return success(inTargetTenant(reqVO.getTenantId(), () -> {
-            adAccountService.clearCredentials(reqVO.getProvider());
-            return true;
-        }));
+        return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
+                SkitManagementCommandType.AD_CREDENTIAL_CLEAR, reqVO.getReason(), scope -> {
+                    SkitAdAccountService.Settings before = adAccountService.getSettings();
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.AD_CREDENTIAL_CLEAR, "AD_ACCOUNT_CREDENTIAL",
+                            reqVO.getProvider().toUpperCase(), reqVO.getReason(), canonical(before),
+                            "provider=" + reqVO.getProvider().toUpperCase(), () -> {
+                                adAccountService.clearCredentials(reqVO.getProvider());
+                                SkitAdAccountService.Settings after = adAccountService.getSettings();
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        true, canonical(after));
+                            });
+                }));
+    }
+
+    @GetMapping("/ad-account/reporting-configuration")
+    @Operation(summary = "获得 Taku 报表配置与凭证版本元数据")
+    public CommonResult<SkitReportingConfigurationService.View> getReportingConfiguration(
+            @RequestParam(value = "tenantId", required = false) Long tenantId) {
+        return success(adminTenantScopeGuard.readTenant(tenantId, true,
+                scope -> reportingConfigurationService.getConfiguration()));
+    }
+
+    @PutMapping("/ad-account/reporting-configuration")
+    @ApiAccessLog(sanitizeKeys = {"publisherKey"})
+    @Operation(summary = "保存 Taku 报表配置并可选轮换 Publisher Key")
+    public CommonResult<SkitReportingConfigurationService.View> saveReportingConfiguration(
+            @Valid @RequestBody ReportingConfigurationSaveReqVO reqVO) {
+        SkitReportingConfigurationService.View result = adminTenantScopeGuard.writeTenant(
+                reqVO.getTenantId(), SkitManagementCommandType.REPORTING_CONFIGURATION,
+                reqVO.getReason(), scope -> {
+                    SkitReportingConfigurationService.View before =
+                            reportingConfigurationService.getConfiguration();
+                    SkitReportingConfigurationService.Command command =
+                            new SkitReportingConfigurationService.Command()
+                                    .setCredentialVersion(reqVO.getCredentialVersion())
+                                    .setPublisherKey(reqVO.getPublisherKey())
+                                    .setReportTimezone(reqVO.getReportTimezone())
+                                    .setCurrency(reqVO.getCurrency())
+                                    .setAmountScale(reqVO.getAmountScale())
+                                    .setAdFormat(reqVO.getAdFormat());
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.REPORTING_CONFIGURATION,
+                            "TAKU_REPORTING_CONFIGURATION",
+                            String.valueOf(before.getAdAccountId()), reqVO.getReason(),
+                            before.auditCanonical(), command.auditCanonical(), () -> {
+                                SkitReportingConfigurationService.View after =
+                                        reportingConfigurationService.configure(command);
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        after, after.auditCanonical());
+                            });
+                });
+        return success(result);
     }
 
     @GetMapping("/app-release")
@@ -127,16 +177,16 @@ public class SkitTenantBusinessController {
     @Operation(summary = "获得代理商 App 发布档案")
     public CommonResult<SkitAppReleaseService.ProfileView> getAppRelease(
             @RequestParam("tenantId") Long tenantId) {
-        platformAdminGuard.check();
-        return success(inAuditTenant(tenantId, () -> appReleaseService.getProfile(tenantId)));
+        return success(adminTenantScopeGuard.readTenant(tenantId, true,
+                scope -> appReleaseService.getProfile(scope.getTargetTenantId())));
     }
 
     @PutMapping("/app-release")
     @PreAuthorize("@ss.hasRole('super_admin')")
+    @ApiAccessLog(sanitizeKeys = {"hotManifestSignature"})
     @Operation(summary = "保存代理商 App 发布档案")
     public CommonResult<SkitAppReleaseService.ProfileView> saveAppRelease(
             @Valid @RequestBody AppReleaseSaveReqVO reqVO) {
-        platformAdminGuard.check();
         SkitAppReleaseService.ProfileView profile = new SkitAppReleaseService.ProfileView();
         profile.setTenantId(reqVO.getTenantId());
         profile.setChannel(reqVO.getChannel());
@@ -144,31 +194,34 @@ public class SkitTenantBusinessController {
         profile.setHotVersion(reqVO.getHotVersion());
         profile.setHotBundleUrl(reqVO.getHotBundleUrl());
         profile.setHotBundleSha256(reqVO.getHotBundleSha256());
+        profile.setHotReleaseNo(reqVO.getHotReleaseNo());
+        profile.setHotManifestSignature(reqVO.getHotManifestSignature());
         profile.setNativeVersion(reqVO.getNativeVersion());
         profile.setNativePackage(reqVO.getNativePackage());
+        profile.setNativeProtocolVersion(reqVO.getNativeProtocolVersion());
+        profile.setRuntimeUpdatePublicKey(reqVO.getRuntimeUpdatePublicKey());
         profile.setStatus(reqVO.getStatus());
-        return success(inTargetTenant(reqVO.getTenantId(), () -> appReleaseService.saveProfile(profile)));
-    }
-
-    @GetMapping("/commission-rules")
-    @Operation(summary = "获得当前生效分成规则")
-    public CommonResult<List<SkitCommissionService.RuleView>> getCommissionRules(
-            @RequestParam(value = "tenantId", required = false) Long tenantId) {
-        return success(inTargetTenant(tenantId, () -> commissionService.getActivePlan().getRules()));
-    }
-
-    @PutMapping("/commission-rules")
-    @Operation(summary = "发布新的分成规则版本")
-    public CommonResult<SkitCommissionService.PlanView> saveCommissionRules(
-            @Valid @RequestBody CommissionRulesSaveReqVO reqVO) {
-        return success(inTargetTenant(reqVO.getTenantId(), () -> commissionService.replaceRules(reqVO.getRules())));
+        return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
+                SkitManagementCommandType.APP_RELEASE_UPDATE, reqVO.getReason(), scope -> {
+                    SkitAppReleaseService.ProfileView before =
+                            appReleaseService.getProfile(scope.getTargetTenantId());
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.APP_RELEASE_UPDATE, "APP_RELEASE_PROFILE",
+                            scope.getTargetTenantId().toString(), reqVO.getReason(),
+                            canonical(before), canonical(reqVO), () -> {
+                                SkitAppReleaseService.ProfileView after =
+                                        appReleaseService.saveProfile(profile);
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        after, canonical(after));
+                            });
+                }));
     }
 
     @GetMapping("/member/page")
     @Operation(summary = "分页查询当前代理商会员")
     public CommonResult<PageResult<SkitMemberService.MemberView>> getMemberPage(@Valid MemberPageReqVO reqVO) {
-        return success(inAuditTenant(reqVO.getTenantId(),
-                () -> memberService.getMemberPage(reqVO, reqVO.getKeyword(), reqVO.getStatus())));
+        return success(adminTenantScopeGuard.readTenant(reqVO.getTenantId(), true,
+                scope -> memberService.getMemberPage(reqVO, reqVO.getKeyword(), reqVO.getStatus())));
     }
 
     @GetMapping("/member/get")
@@ -176,86 +229,115 @@ public class SkitTenantBusinessController {
     public CommonResult<SkitMemberService.MemberView> getMember(
             @RequestParam("id") @NotNull Long id,
             @RequestParam(value = "tenantId", required = false) Long tenantId) {
-        return success(inAuditTenant(tenantId, () -> memberService.getMember(id)));
+        return success(adminTenantScopeGuard.readTenant(tenantId, true,
+                scope -> memberService.getMember(id)));
     }
 
     @PutMapping("/member/update-status")
     @Operation(summary = "启用或停用会员")
     public CommonResult<Boolean> updateMemberStatus(@Valid @RequestBody MemberStatusUpdateReqVO reqVO) {
-        return success(inTargetTenant(reqVO.getTenantId(), () -> {
-            memberService.updateMemberStatus(reqVO.getId(), reqVO.getStatus());
-            return true;
-        }));
+        return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
+                SkitManagementCommandType.MEMBER_STATUS_CHANGE, reqVO.getReason(), scope -> {
+                    SkitMemberService.MemberView before = memberService.getMember(reqVO.getId());
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.MEMBER_STATUS_CHANGE, "MEMBER",
+                            reqVO.getId().toString(), reqVO.getReason(), canonical(before),
+                            "memberId=" + reqVO.getId() + ";status=" + reqVO.getStatus(), () -> {
+                                memberService.updateMemberStatus(reqVO.getId(), reqVO.getStatus());
+                                SkitMemberService.MemberView after = memberService.getMember(reqVO.getId());
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        true, canonical(after));
+                            });
+                }));
     }
 
     @PutMapping("/member/reset-password")
     @ApiAccessLog(sanitizeKeys = {"password"})
     @Operation(summary = "重置会员密码")
     public CommonResult<Boolean> resetMemberPassword(@Valid @RequestBody MemberPasswordResetReqVO reqVO) {
-        return success(inTargetTenant(reqVO.getTenantId(), () -> {
-            memberService.resetMemberPassword(reqVO.getId(), reqVO.getPassword());
-            return true;
-        }));
+        return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
+                SkitManagementCommandType.MEMBER_PASSWORD_RESET, reqVO.getReason(), scope -> {
+                    SkitMemberService.MemberView before = memberService.getMember(reqVO.getId());
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.MEMBER_PASSWORD_RESET, "MEMBER_CREDENTIAL",
+                            reqVO.getId().toString(), reqVO.getReason(), canonical(before),
+                            "memberId=" + reqVO.getId() + ";passwordProvided=true", () -> {
+                                memberService.resetMemberPassword(reqVO.getId(), reqVO.getPassword());
+                                SkitMemberService.MemberView after = memberService.getMember(reqVO.getId());
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        true, canonical(after));
+                            });
+                }));
     }
 
-    @GetMapping("/ledger/page")
-    @Operation(summary = "分页查询广告预估分成账本")
-    public CommonResult<PageResult<SkitRevenueService.LedgerView>> getLedgerPage(@Valid LedgerPageReqVO reqVO) {
-        Long beneficiaryUserId = reqVO.getBeneficiaryUserId() != null
-                ? reqVO.getBeneficiaryUserId() : reqVO.getMemberId();
-        return success(inAuditTenant(reqVO.getTenantId(), () -> revenueService.getLedgerPage(
-                reqVO, beneficiaryUserId, reqVO.getBeneficiaryType(), reqVO.getCreateTime())));
+    private SkitAdAccountService.Settings toSettings(AdAccountSaveReqVO request) {
+        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
+        settings.setPangleUsername(request.getPangleUsername());
+        settings.setPangleAppId(request.getPangleAppId());
+        settings.setPangleAppSecret(request.getPangleAppSecret());
+        settings.setPanglePlacementId(request.getPanglePlacementId());
+        settings.setPangleEnabled(request.getPangleEnabled());
+        settings.setTakuUsername(request.getTakuUsername());
+        settings.setTakuAppId(request.getTakuAppId());
+        settings.setTakuAppKey(request.getTakuAppKey());
+        settings.setTakuAppSecret(request.getTakuAppSecret());
+        settings.setTakuPlacementId(request.getTakuPlacementId());
+        settings.setTakuEnabled(request.getTakuEnabled());
+        return settings;
     }
 
-    private Long resolveTargetTenant(Long requestedTenantId) {
-        LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
-        Long originalTenantId = loginUser == null ? null : loginUser.getTenantId();
-        if (originalTenantId == null) {
-            platformAdminGuard.check();
-        }
-        // Never derive an agent request from TenantContextHolder: visit-tenant headers can change it.
-        Long effectiveTenantId = requestedTenantId == null ? originalTenantId : requestedTenantId;
-        if (!Objects.equals(effectiveTenantId, originalTenantId)) {
-            platformAdminGuard.check();
-        }
-        tenantService.validTenant(effectiveTenantId);
-        if (agentMapper.selectByTenantId(effectiveTenantId) == null) {
-            throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
-                    cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS);
-        }
-        return effectiveTenantId;
+    private static String canonical(SkitAdAccountService.Settings value) {
+        if (value == null) return "<none>";
+        return "pangleUsername=" + value.getPangleUsername() + ";pangleAppId=" + value.getPangleAppId()
+                + ";panglePlacement=" + value.getPanglePlacementId()
+                + ";pangleEnabled=" + value.getPangleEnabled()
+                + ";pangleSecretConfigured=" + value.getPangleSecretConfigured()
+                + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
+                + ";takuPlacement=" + value.getTakuPlacementId()
+                + ";takuEnabled=" + value.getTakuEnabled()
+                + ";takuAppKeyConfigured=" + value.getTakuAppKeyConfigured()
+                + ";takuSecretConfigured=" + value.getTakuSecretConfigured();
     }
 
-    private <T> T inTargetTenant(Long requestedTenantId, Supplier<T> supplier) {
-        Long targetTenantId = resolveTargetTenant(requestedTenantId);
-        return executeInTenant(targetTenantId, supplier);
+    private static String canonical(AdAccountSaveReqVO value) {
+        return "pangleUsername=" + value.getPangleUsername() + ";pangleAppId=" + value.getPangleAppId()
+                + ";panglePlacement=" + value.getPanglePlacementId()
+                + ";pangleEnabled=" + value.getPangleEnabled()
+                + ";pangleSecretProvided=" + (value.getPangleAppSecret() != null)
+                + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
+                + ";takuPlacement=" + value.getTakuPlacementId()
+                + ";takuEnabled=" + value.getTakuEnabled()
+                + ";takuAppKeyProvided=" + (value.getTakuAppKey() != null)
+                + ";takuSecretProvided=" + (value.getTakuAppSecret() != null);
     }
 
-    private Long resolveAuditTenant(Long requestedTenantId) {
-        LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
-        Long originalTenantId = loginUser == null ? null : loginUser.getTenantId();
-        Long effectiveTenantId = requestedTenantId == null ? originalTenantId : requestedTenantId;
-        if (Objects.equals(effectiveTenantId, originalTenantId)) {
-            return resolveTargetTenant(requestedTenantId);
-        }
-        // Only an original platform administrator can cross tenants for immutable/read-only audit views.
-        platformAdminGuard.check();
-        if (tenantService.getTenant(effectiveTenantId) == null
-                || agentMapper.selectByTenantId(effectiveTenantId) == null) {
-            throw cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
-                    cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS);
-        }
-        return effectiveTenantId;
+    private static String canonical(SkitAppReleaseService.ProfileView value) {
+        if (value == null) return "<none>";
+        return "tenant=" + value.getTenantId() + ";profile=" + value.getProfileCode()
+                + ";channel=" + value.getChannel() + ";minNative=" + value.getMinNativeVersion()
+                + ";hotVersion=" + value.getHotVersion() + ";bundleUrl=" + value.getHotBundleUrl()
+                + ";bundleSha256=" + value.getHotBundleSha256()
+                + ";releaseNo=" + value.getHotReleaseNo() + ";nativeVersion=" + value.getNativeVersion()
+                + ";nativePackage=" + value.getNativePackage()
+                + ";protocol=" + value.getNativeProtocolVersion()
+                + ";keyFingerprint=" + value.getRuntimeUpdateKeyFingerprint()
+                + ";status=" + value.getStatus();
     }
 
-    private <T> T inAuditTenant(Long requestedTenantId, Supplier<T> supplier) {
-        return executeInTenant(resolveAuditTenant(requestedTenantId), supplier);
+    private static String canonical(AppReleaseSaveReqVO value) {
+        return "tenant=" + value.getTenantId() + ";channel=" + value.getChannel()
+                + ";minNative=" + value.getMinNativeVersion() + ";hotVersion=" + value.getHotVersion()
+                + ";bundleUrl=" + value.getHotBundleUrl() + ";bundleSha256=" + value.getHotBundleSha256()
+                + ";releaseNo=" + value.getHotReleaseNo() + ";manifestSignatureProvided="
+                + (value.getHotManifestSignature() != null) + ";nativeVersion=" + value.getNativeVersion()
+                + ";nativePackage=" + value.getNativePackage()
+                + ";protocol=" + value.getNativeProtocolVersion()
+                + ";runtimeUpdatePublicKeyProvided=" + (value.getRuntimeUpdatePublicKey() != null)
+                + ";status=" + value.getStatus();
     }
 
-    private <T> T executeInTenant(Long targetTenantId, Supplier<T> supplier) {
-        AtomicReference<T> result = new AtomicReference<>();
-        TenantUtils.execute(targetTenantId, () -> result.set(supplier.get()));
-        return result.get();
+    private static String canonical(SkitMemberService.MemberView value) {
+        return value == null ? "<none>" : "memberId=" + value.getId() + ";status=" + value.getStatus();
     }
 
     @Data
@@ -266,6 +348,8 @@ public class SkitTenantBusinessController {
         @Size(max = 128, message = "穿山甲 App ID 长度不能超过 128 个字符")
         private String pangleAppId;
         @Size(max = 2048, message = "穿山甲密钥长度不能超过 2048 个字符")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String pangleAppSecret;
         @Size(max = 128, message = "穿山甲广告位长度不能超过 128 个字符")
         private String panglePlacementId;
@@ -276,13 +360,20 @@ public class SkitTenantBusinessController {
         @Size(max = 128, message = "Taku App ID 长度不能超过 128 个字符")
         private String takuAppId;
         @Size(max = 255, message = "Taku App Key 长度不能超过 255 个字符")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String takuAppKey;
         @Size(max = 2048, message = "Taku 服务端密钥长度不能超过 2048 个字符")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String takuAppSecret;
         @Size(max = 128, message = "Taku 广告位长度不能超过 128 个字符")
         private String takuPlacementId;
         @NotNull(message = "Taku 启用状态不能为空")
         private Boolean takuEnabled;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
     }
 
     @Data
@@ -291,14 +382,38 @@ public class SkitTenantBusinessController {
         @NotBlank(message = "广告平台不能为空")
         @Pattern(regexp = "(?i)PANGLE|TAKU", message = "广告平台仅支持 PANGLE 或 TAKU")
         private String provider;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
     }
 
     @Data
-    public static class CommissionRulesSaveReqVO {
+    public static class ReportingConfigurationSaveReqVO {
         private Long tenantId;
-        @NotEmpty(message = "分成规则不能为空")
-        @Valid
-        private List<SkitCommissionService.RuleView> rules;
+        @NotNull(message = "当前报表凭证版本不能为空")
+        @Min(value = 0, message = "当前报表凭证版本不能小于 0")
+        private Integer credentialVersion;
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        @Size(min = 1, max = 4096, message = "Publisher Key 长度必须为 1 到 4096 个字符")
+        private String publisherKey;
+        @NotBlank(message = "报表时区不能为空")
+        @Pattern(regexp = "UTC-8|UTC\\+8|UTC\\+0",
+                message = "报表时区仅支持 UTC-8、UTC+8 或 UTC+0")
+        private String reportTimezone;
+        @NotBlank(message = "报表币种不能为空")
+        @Pattern(regexp = "[A-Z]{3}", message = "报表币种必须为三位大写 ISO 代码")
+        private String currency;
+        @NotNull(message = "报表金额精度不能为空")
+        @Min(value = 0, message = "报表金额精度不能小于 0")
+        @Max(value = 18, message = "报表金额精度不能大于 18")
+        private Integer amountScale;
+        @NotBlank(message = "广告格式不能为空")
+        @Pattern(regexp = "rewarded_video", message = "分成广告仅支持 rewarded_video")
+        private String adFormat;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
     }
 
     @Data
@@ -310,10 +425,21 @@ public class SkitTenantBusinessController {
         private String hotVersion;
         private String hotBundleUrl;
         private String hotBundleSha256;
+        @PositiveOrZero(message = "热更新发布序号不能为负数")
+        private Long hotReleaseNo;
+        @Length(max = 1024, message = "热更新清单签名不能超过 1024 个字符")
+        private String hotManifestSignature;
         private String nativeVersion;
         private String nativePackage;
+        @Positive(message = "原生广告协议版本必须大于 0")
+        private Integer nativeProtocolVersion;
+        @Length(max = 4096, message = "租户热更新公钥不能超过 4096 个字符")
+        private String runtimeUpdatePublicKey;
         @NotNull
         private Integer status;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
     }
 
     @Data
@@ -334,6 +460,9 @@ public class SkitTenantBusinessController {
         @NotNull(message = "会员状态不能为空")
         @InEnum(value = CommonStatusEnum.class, message = "会员状态必须是 {value}")
         private Integer status;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
     }
 
     @Data
@@ -343,18 +472,12 @@ public class SkitTenantBusinessController {
         private Long id;
         @NotBlank(message = "新密码不能为空")
         @Length(min = 6, max = 32, message = "会员密码长度为 6 到 32 位")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
         private String password;
-    }
-
-    @Data
-    @EqualsAndHashCode(callSuper = true)
-    public static class LedgerPageReqVO extends PageParam {
-        private Long tenantId;
-        private Long beneficiaryUserId;
-        private Long memberId;
-        private Integer beneficiaryType;
-        @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-        private LocalDateTime[] createTime;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
     }
 
     @Data

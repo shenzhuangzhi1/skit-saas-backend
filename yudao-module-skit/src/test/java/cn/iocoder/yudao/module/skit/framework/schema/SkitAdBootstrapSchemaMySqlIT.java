@@ -45,8 +45,8 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         Map<String, String> standaloneFingerprints = installAndVerify(standalone);
-        assertEquals(SkitAdSchemaSignature.expectedTask5HardenedFingerprints(), standaloneFingerprints,
-                "released Task 5 tables must retain their complete final fingerprints");
+        assertEquals(SkitAdSchemaSignature.expectedTask7HardenedFingerprints(), standaloneFingerprints,
+                "Task 7 callback and finance tables must retain their complete final fingerprints");
         dropSkitTables();
         Map<String, String> mainFingerprints = installAndVerify(main);
         assertEquals(standaloneFingerprints, mainFingerprints,
@@ -55,7 +55,7 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
 
         // Runtime-first installation must expose the same singleton keys before either bootstrap is applied.
         initializeSkitSchema();
-        assertEquals(standaloneFingerprints, task5HardenedFingerprints(),
+        assertEquals(standaloneFingerprints, task7HardenedFingerprints(),
                 "the runtime migration and direct bootstrap must converge byte-for-byte in information_schema");
         assertLegacySingletonIndexes();
         assertPolicySnapshotImmutabilityTriggers();
@@ -74,6 +74,7 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         executeBootstrap(canonicalBlock(repository.resolve("sql/mysql/skit-saas.sql")));
         SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbc());
         initializer.validateTask5SchemaHardening(true);
+        initializer.validateTask7SchemaHardening(true);
         String baseline = SkitAdSchemaSignature.fingerprint(jdbc(), "skit_ad_session");
 
         try {
@@ -101,7 +102,7 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         executeBootstrap(script);
         executeBootstrap(script);
         validateCanonicalSchema();
-        Map<String, String> directFingerprints = task5HardenedFingerprints();
+        Map<String, String> directFingerprints = task7HardenedFingerprints();
         assertLegacySingletonIndexes();
 
         // A direct bootstrap and a runtime-managed install must converge. Running the initializer
@@ -109,7 +110,7 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         initializeSkitSchema();
         initializeSkitSchema();
         validateCanonicalSchema();
-        assertEquals(directFingerprints, task5HardenedFingerprints(),
+        assertEquals(directFingerprints, task7HardenedFingerprints(),
                 "initializer must accept the final bootstrap without reshaping hardened tables");
         assertLegacySingletonIndexes();
         assertPolicySnapshotImmutabilityTriggers();
@@ -120,12 +121,14 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbc());
         initializer.validateTask2TableSignatures(true);
         initializer.validateTask5SchemaHardening(true);
+        initializer.validateTask7SchemaHardening(true);
     }
 
-    private Map<String, String> task5HardenedFingerprints() {
+    private Map<String, String> task7HardenedFingerprints() {
         Map<String, String> fingerprints = new LinkedHashMap<>();
-        for (String table : Arrays.asList("skit_ad_session", "skit_content_entitlement",
-                "skit_entitlement_grant", "skit_native_player_grant")) {
+        for (String table : Arrays.asList("skit_ad_session", "skit_ad_callback_edge_attempt",
+                "skit_ad_callback_inbox", "skit_ad_callback_attempt", "skit_ad_revenue_event",
+                "skit_commission_ledger", "skit_ad_network_capability", "skit_entitlement_grant")) {
             fingerprints.put(table, SkitAdSchemaSignature.fingerprint(jdbc(), table));
         }
         return fingerprints;

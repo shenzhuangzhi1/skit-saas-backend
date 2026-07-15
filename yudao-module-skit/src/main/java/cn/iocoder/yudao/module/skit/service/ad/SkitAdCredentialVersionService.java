@@ -25,20 +25,36 @@ public interface SkitAdCredentialVersionService {
                                              LocalDateTime sessionRewardAcceptUntil,
                                              LocalDateTime authoritativeReceivedAt);
 
+    /** Deterministic credential rejection. Infrastructure failures use their original exception. */
+    final class CredentialUnavailableException extends IllegalStateException {
+
+        public CredentialUnavailableException() {
+            super("Credential is unavailable or outside its acceptance window");
+        }
+    }
+
     class CredentialMetadata {
 
         private final long tenantId;
         private final long adAccountId;
         private final int version;
         private final boolean active;
+        private final LocalDateTime activatedAt;
         private final LocalDateTime acceptUntil;
 
         public CredentialMetadata(long tenantId, long adAccountId, int version,
                                   boolean active, LocalDateTime acceptUntil) {
+            this(tenantId, adAccountId, version, active, null, acceptUntil);
+        }
+
+        public CredentialMetadata(long tenantId, long adAccountId, int version,
+                                  boolean active, LocalDateTime activatedAt,
+                                  LocalDateTime acceptUntil) {
             this.tenantId = tenantId;
             this.adAccountId = adAccountId;
             this.version = version;
             this.active = active;
+            this.activatedAt = activatedAt;
             this.acceptUntil = acceptUntil;
         }
 
@@ -62,10 +78,16 @@ public interface SkitAdCredentialVersionService {
             return acceptUntil;
         }
 
+        @JsonIgnore
+        public LocalDateTime getActivatedAt() {
+            return activatedAt;
+        }
+
         @Override
         public String toString() {
             return "CredentialMetadata{tenantId=" + tenantId + ", adAccountId=" + adAccountId
-                    + ", version=" + version + ", active=" + active + ", acceptUntil=" + acceptUntil + '}';
+                    + ", version=" + version + ", active=" + active + ", activatedAt=" + activatedAt
+                    + ", acceptUntil=" + acceptUntil + '}';
         }
     }
 
@@ -75,7 +97,12 @@ public interface SkitAdCredentialVersionService {
         private String callbackKey;
 
         public CallbackKeyIssue(long tenantId, long adAccountId, int version, String callbackKey) {
-            super(tenantId, adAccountId, version, true, null);
+            this(tenantId, adAccountId, version, null, callbackKey);
+        }
+
+        public CallbackKeyIssue(long tenantId, long adAccountId, int version,
+                                LocalDateTime activatedAt, String callbackKey) {
+            super(tenantId, adAccountId, version, true, activatedAt, null);
             this.callbackKey = callbackKey;
         }
 

@@ -15,6 +15,12 @@ public interface SkitAdSessionTokenService {
 
     String pseudonymousUserId(long tenantId, long memberId);
 
+    /**
+     * Derives the indexed session lookup hash from provider-returned custom data.
+     * The raw bearer value must never be persisted or used in a full-table scan.
+     */
+    byte[] hashCustomData(String customData);
+
     boolean matches(String customData, byte[] expectedHash);
 
     final class IssuedToken {

@@ -15,6 +15,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
+import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -69,8 +70,10 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     private final SkitAdCredentialVersionService credentialService;
     private final SkitPolicySnapshotService snapshotService;
     private final SkitContentEntitlementService entitlementService;
+    private final SkitContentScopeService contentScopeService;
     private final TenantService tenantService;
     private final SkitAdSessionTokenService tokenService;
+    private final SkitTenantAdCapabilityService capabilityService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final SecureRandom secureRandom;
@@ -86,13 +89,16 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                                     SkitAdCredentialVersionService credentialService,
                                     SkitPolicySnapshotService snapshotService,
                                     SkitContentEntitlementService entitlementService,
+                                    SkitContentScopeService contentScopeService,
                                     TenantService tenantService,
                                     SkitAdSessionTokenService tokenService,
                                     ObjectMapper objectMapper,
-                                    SkitAdSessionCreateTransactionExecutor createTransactionExecutor) {
+                                    SkitAdSessionCreateTransactionExecutor createTransactionExecutor,
+                                    SkitTenantAdCapabilityService capabilityService) {
         this(sessionMapper, clientEventMapper, accountMapper, agentMapper, memberMapper, credentialService,
-                snapshotService, entitlementService, tenantService, tokenService, objectMapper,
-                Clock.systemDefaultZone(), new SecureRandom(), createTransactionExecutor::execute);
+                snapshotService, entitlementService, contentScopeService, tenantService, tokenService, objectMapper,
+                Clock.systemDefaultZone(), new SecureRandom(), createTransactionExecutor::execute,
+                capabilityService);
     }
 
     SkitAdSessionServiceImpl(SkitAdSessionMapper sessionMapper,
@@ -103,14 +109,16 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                              SkitAdCredentialVersionService credentialService,
                              SkitPolicySnapshotService snapshotService,
                              SkitContentEntitlementService entitlementService,
+                             SkitContentScopeService contentScopeService,
                              TenantService tenantService,
                              SkitAdSessionTokenService tokenService,
                              ObjectMapper objectMapper,
                              Clock clock,
-                             SecureRandom secureRandom) {
+                             SecureRandom secureRandom,
+                             SkitTenantAdCapabilityService capabilityService) {
         this(sessionMapper, clientEventMapper, accountMapper, agentMapper, memberMapper, credentialService,
-                snapshotService, entitlementService, tenantService, tokenService, objectMapper,
-                clock, secureRandom, Supplier::get);
+                snapshotService, entitlementService, contentScopeService, tenantService, tokenService, objectMapper,
+                clock, secureRandom, Supplier::get, capabilityService);
     }
 
     private SkitAdSessionServiceImpl(SkitAdSessionMapper sessionMapper,
@@ -121,12 +129,14 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                                      SkitAdCredentialVersionService credentialService,
                                      SkitPolicySnapshotService snapshotService,
                                      SkitContentEntitlementService entitlementService,
+                                     SkitContentScopeService contentScopeService,
                                      TenantService tenantService,
                                      SkitAdSessionTokenService tokenService,
                                      ObjectMapper objectMapper,
                                      Clock clock,
                                      SecureRandom secureRandom,
-                                     Function<Supplier<CreateResult>, CreateResult> createTransaction) {
+                                     Function<Supplier<CreateResult>, CreateResult> createTransaction,
+                                     SkitTenantAdCapabilityService capabilityService) {
         this.sessionMapper = Objects.requireNonNull(sessionMapper, "sessionMapper");
         this.clientEventMapper = Objects.requireNonNull(clientEventMapper, "clientEventMapper");
         this.accountMapper = Objects.requireNonNull(accountMapper, "accountMapper");
@@ -135,8 +145,10 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         this.credentialService = Objects.requireNonNull(credentialService, "credentialService");
         this.snapshotService = Objects.requireNonNull(snapshotService, "snapshotService");
         this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
+        this.contentScopeService = Objects.requireNonNull(contentScopeService, "contentScopeService");
         this.tenantService = Objects.requireNonNull(tenantService, "tenantService");
         this.tokenService = Objects.requireNonNull(tokenService, "tokenService");
+        this.capabilityService = Objects.requireNonNull(capabilityService, "capabilityService");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.secureRandom = Objects.requireNonNull(secureRandom, "secureRandom");
@@ -177,6 +189,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                                             SkitContentEntitlementService.PlayerGrantReference grantReference) {
         validateCreateCommand(command);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
+        requireClientAccess(memberId, runtime(command),
+                SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
         requireEnabledTenant(tenantId, tenantService.getTenantForShare(tenantId));
         tenantService.validTenant(tenantId);
         requireEnabledAgent(tenantId, agentMapper.selectByTenantId(tenantId));
@@ -196,19 +210,35 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             nativeGrantId = scope.getGrantId();
         }
 
-        String unlockScope = unlockScope(command.getDramaId(), command.getEpisodeNo());
+        SkitContentScopeService.UnlockScope contentScope =
+                contentScopeService.resolveUnlockScopeForUpdate(
+                        memberId, command.getDramaId(), command.getEpisodeNo());
+        validateContentScope(contentScope, tenantId, command);
+        if (contentScope.isAlreadyEntitled()) {
+            return alreadyEntitled();
+        }
+        CreateResult overlappingResult = resolveOverlappingActiveScope(
+                sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
+                        tenantId, memberId, contentScope.getDramaId(),
+                        contentScope.getEpisodeFrom(), contentScope.getEpisodeTo()),
+                tenantId, memberId, account, contentScope);
+        if (overlappingResult != null) {
+            return overlappingResult;
+        }
+        contentScope = revalidateContentScopeAfterSessionLock(
+                memberId, command, tenantId, contentScope);
+        if (contentScope.isAlreadyEntitled()) {
+            return alreadyEntitled();
+        }
+        String unlockScope = contentScope.getCanonicalScope();
         byte[] activeScopeHash = activeScopeHash(tenantId, memberId, unlockScope);
         SkitAdSessionDO existing = sessionMapper.selectActiveScopeForUpdate(
                 tenantId, memberId, activeScopeHash);
         CreateResult existingResult = resolveExisting(existing, tenantId, memberId, account,
-                command, unlockScope);
+                contentScope);
         if (existingResult != null) {
             return existingResult;
         }
-        if (entitlementService.ownsEpisodeForUpdate(memberId, command.getDramaId(), command.getEpisodeNo())) {
-            return alreadyEntitled();
-        }
-
         SkitAdCredentialVersionService.CredentialMetadata callbackKey =
                 credentialService.getActiveCallbackKeyVersion(tenantId, account.getId());
         SkitAdCredentialVersionService.CredentialMetadata rewardSecret =
@@ -230,8 +260,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 .setMemberId(memberId).setAdAccountId(account.getId()).setPolicySnapshotId(snapshot.getId())
                 .setCallbackKeyVersion(callbackKey.getVersion()).setRewardSecretVersion(rewardSecret.getVersion())
                 .setProvider(PROVIDER).setPlacementId(placementId).setScenarioId(SCENE)
-                .setBusinessType(BUSINESS_TYPE).setDramaId(command.getDramaId())
-                .setEpisodeFrom(command.getEpisodeNo()).setEpisodeTo(command.getEpisodeNo())
+                .setBusinessType(BUSINESS_TYPE).setDramaId(contentScope.getDramaId())
+                .setEpisodeFrom(contentScope.getEpisodeFrom()).setEpisodeTo(contentScope.getEpisodeTo())
                 .setUnlockScope(unlockScope).setActiveScopeHash(activeScopeHash)
                 .setPseudonymousUserId(tokenService.pseudonymousUserId(tenantId, memberId))
                 .setAccessMode(accessMode).setNativePlayerGrantId(nativeGrantId)
@@ -249,20 +279,64 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     }
 
     private CreateResult resolveExisting(SkitAdSessionDO row, Long tenantId, Long memberId,
-                                         SkitAdAccountDO account, CreateCommand command,
-                                         String unlockScope) {
+                                         SkitAdAccountDO account,
+                                         SkitContentScopeService.UnlockScope contentScope) {
         if (row == null) {
             return null;
         }
+        validateExistingEnvelope(row, tenantId, memberId, account, contentScope);
+        return resolveExistingLifecycle(row, tenantId, memberId);
+    }
+
+    private CreateResult resolveOverlappingActiveScope(
+            List<SkitAdSessionDO> rows, Long tenantId, Long memberId, SkitAdAccountDO account,
+            SkitContentScopeService.UnlockScope requestedScope) {
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        if (rows.size() != 1) {
+            throw new IllegalStateException("Multiple active ad sessions overlap one content scope");
+        }
+        SkitAdSessionDO row = rows.get(0);
+        validateExistingEnvelope(row, tenantId, memberId, account, null);
+        LocalDateTime authoritativeNow = now();
+        if ("PENDING".equals(row.getRewardVerificationStatus())
+                && authoritativeNow.isAfter(row.getRewardAcceptUntil())) {
+            if (sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(tenantId, row.getId(), memberId,
+                    row.getVersion(), authoritativeNow) != 1) {
+                throw exception(AD_SESSION_STATE_CONFLICT);
+            }
+            return null;
+        }
+        Integer requestedEpisode = requestedScope.getEpisodeFrom();
+        if (requestedEpisode < row.getEpisodeFrom() || requestedEpisode > row.getEpisodeTo()) {
+            throw exception(AD_SESSION_STATE_CONFLICT);
+        }
+        return resolveExistingLifecycle(row, tenantId, memberId);
+    }
+
+    private void validateExistingEnvelope(SkitAdSessionDO row, Long tenantId, Long memberId,
+                                          SkitAdAccountDO account,
+                                          SkitContentScopeService.UnlockScope expectedScope) {
         if (!tenantId.equals(row.getTenantId()) || !memberId.equals(row.getMemberId())
                 || !account.getId().equals(row.getAdAccountId()) || !PROVIDER.equals(row.getProvider())
-                || !command.getDramaId().equals(row.getDramaId())
-                || !command.getEpisodeNo().equals(row.getEpisodeFrom())
-                || !command.getEpisodeNo().equals(row.getEpisodeTo()) || !unlockScope.equals(row.getUnlockScope())
+                || row.getDramaId() == null || row.getDramaId() <= 0
+                || row.getEpisodeFrom() == null || row.getEpisodeFrom() <= 0
+                || row.getEpisodeTo() == null || row.getEpisodeTo() < row.getEpisodeFrom()
+                || row.getEpisodeTo() - row.getEpisodeFrom() >= 100
+                || !canonicalUnlockScope(row.getDramaId(), row.getEpisodeFrom(), row.getEpisodeTo())
+                .equals(row.getUnlockScope())
+                || (expectedScope != null && (!expectedScope.getDramaId().equals(row.getDramaId())
+                || !expectedScope.getEpisodeFrom().equals(row.getEpisodeFrom())
+                || !expectedScope.getEpisodeTo().equals(row.getEpisodeTo())
+                || !expectedScope.getCanonicalScope().equals(row.getUnlockScope())))
                 || row.getSessionId() == null || row.getSessionTokenKeyVersion() == null
                 || row.getRewardAcceptUntil() == null || row.getVersion() == null) {
             throw new IllegalStateException("Active ad scope escaped its immutable session envelope");
         }
+    }
+
+    private CreateResult resolveExistingLifecycle(SkitAdSessionDO row, Long tenantId, Long memberId) {
         LocalDateTime now = now();
         if ("PENDING".equals(row.getRewardVerificationStatus()) && now.isAfter(row.getRewardAcceptUntil())) {
             if (sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(tenantId, row.getId(), memberId,
@@ -290,18 +364,23 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
-    public SessionView getForMember(Long memberId, String sessionId) {
+    public SessionView getForMember(Long memberId, String sessionId,
+                                    SkitTenantAdCapabilityService.ClientRuntime runtime) {
         requirePositive(memberId, "memberId");
+        requireClientAccess(memberId, runtime, SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
         return getInsideTenant(memberId, sessionId, null);
     }
 
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
-    public SessionView getForNativeGrant(String grantToken, String sessionId) {
+    public SessionView getForNativeGrant(
+            String grantToken, String sessionId, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         SkitContentEntitlementService.PlayerGrantReference reference =
                 entitlementService.resolvePlayerGrant(grantToken);
         AtomicReference<SessionView> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
+            requireClientAccess(reference.getMemberId(), runtime,
+                    SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
             SkitContentEntitlementService.PlayerGrantScope scope =
                     entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
             result.set(getInsideTenant(scope.getMemberId(), sessionId, scope));
@@ -331,19 +410,25 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
-    public SessionView recordClientEvents(Long memberId, String sessionId, List<ClientEventCommand> events) {
+    public SessionView recordClientEvents(
+            Long memberId, String sessionId, List<ClientEventCommand> events,
+            SkitTenantAdCapabilityService.ClientRuntime runtime) {
         requirePositive(memberId, "memberId");
+        requireClientAccess(memberId, runtime, SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
         return recordClientEventsInsideTenant(memberId, sessionId, events, null);
     }
 
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
-    public SessionView recordClientEventsForNativeGrant(String grantToken, String sessionId,
-                                                         List<ClientEventCommand> events) {
+    public SessionView recordClientEventsForNativeGrant(
+            String grantToken, String sessionId, List<ClientEventCommand> events,
+            SkitTenantAdCapabilityService.ClientRuntime runtime) {
         SkitContentEntitlementService.PlayerGrantReference reference =
                 entitlementService.resolvePlayerGrant(grantToken);
         AtomicReference<SessionView> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
+            requireClientAccess(reference.getMemberId(), runtime,
+                    SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
             SkitContentEntitlementService.PlayerGrantScope scope =
                     entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
             result.set(recordClientEventsInsideTenant(scope.getMemberId(), sessionId, events, scope));
@@ -643,8 +728,55 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         requirePositive(command.getEpisodeNo(), "episodeNo");
     }
 
-    private String unlockScope(Long dramaId, Integer episodeNo) {
-        return "drama:" + dramaId + ":episode:" + episodeNo;
+    private SkitTenantAdCapabilityService.ClientRuntime runtime(CreateCommand command) {
+        return new SkitTenantAdCapabilityService.ClientRuntime(
+                command.getNativeVersion(), command.getProtocolVersion());
+    }
+
+    private void requireClientAccess(Long memberId, SkitTenantAdCapabilityService.ClientRuntime runtime,
+                                     SkitTenantAdCapabilityService.AccessOperation operation) {
+        capabilityService.checkClientAccess(memberId, runtime, operation);
+    }
+
+    private void validateContentScope(SkitContentScopeService.UnlockScope scope, Long tenantId,
+                                      CreateCommand command) {
+        if (scope == null || !tenantId.equals(scope.getTenantId())
+                || scope.getCatalogRecordId() == null || scope.getCatalogRecordId() <= 0
+                || !command.getDramaId().equals(scope.getDramaId())
+                || scope.getEpisodeFrom() == null || scope.getEpisodeTo() == null
+                || scope.getEpisodeFrom() <= 0 || scope.getEpisodeTo() < scope.getEpisodeFrom()
+                || scope.getEpisodeTo() - scope.getEpisodeFrom() >= 100
+                || command.getEpisodeNo() < scope.getEpisodeFrom()
+                || command.getEpisodeNo() > scope.getEpisodeTo()
+                || !validText(scope.getCanonicalScope(), 512)
+                || !canonicalUnlockScope(scope.getDramaId(), scope.getEpisodeFrom(),
+                scope.getEpisodeTo()).equals(scope.getCanonicalScope())) {
+            throw exception(AD_SESSION_INVALID);
+        }
+    }
+
+    private SkitContentScopeService.UnlockScope revalidateContentScopeAfterSessionLock(
+            Long memberId, CreateCommand command, Long tenantId,
+            SkitContentScopeService.UnlockScope original) {
+        SkitContentScopeService.UnlockScope refreshed =
+                contentScopeService.resolveUnlockScopeForUpdate(
+                        memberId, command.getDramaId(), command.getEpisodeNo());
+        validateContentScope(refreshed, tenantId, command);
+        if (refreshed.isAlreadyEntitled()) {
+            return refreshed;
+        }
+        if (!original.getDramaId().equals(refreshed.getDramaId())
+                || !original.getEpisodeFrom().equals(refreshed.getEpisodeFrom())
+                || refreshed.getEpisodeTo() > original.getEpisodeTo()) {
+            throw exception(AD_SESSION_STATE_CONFLICT);
+        }
+        return refreshed;
+    }
+
+    private String canonicalUnlockScope(Long dramaId, Integer episodeFrom, Integer episodeTo) {
+        return episodeFrom.equals(episodeTo)
+                ? "drama:" + dramaId + ":episode:" + episodeFrom
+                : "drama:" + dramaId + ":episodes:" + episodeFrom + '-' + episodeTo;
     }
 
     private byte[] activeScopeHash(Long tenantId, Long memberId, String unlockScope) {

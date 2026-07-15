@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.controller.app.member.vo.ad;
 
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -25,6 +26,14 @@ public class SkitAdSessionCreateReqVO {
         SkitAdSessionService.CreateCommand command = new SkitAdSessionService.CreateCommand();
         command.setDramaId(dramaId);
         command.setEpisodeNo(episodeNo);
+        return command;
+    }
+
+    public SkitAdSessionService.CreateCommand toCommand(
+            SkitTenantAdCapabilityService.ClientRuntime runtime) {
+        SkitAdSessionService.CreateCommand command = toCommand();
+        command.setNativeVersion(runtime == null ? null : runtime.getNativeVersion());
+        command.setProtocolVersion(runtime == null ? null : runtime.getProtocolVersion());
         return command;
     }
 

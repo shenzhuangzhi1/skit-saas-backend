@@ -76,4 +76,11 @@ public interface SkitNativePlayerGrantMapper {
                         @Param("expectedVersion") Integer expectedVersion,
                         @Param("expiredAt") LocalDateTime expiredAt);
 
+    @Update("UPDATE `skit_native_player_grant` SET `status`='REVOKED',"
+            + "`revoked_at`=CURRENT_TIMESTAMP,`version`=`version`+1,"
+            + "`updater`='ad-rollout',`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `status`='ACTIVE' "
+            + "AND `revoked_at` IS NULL AND `expires_at`>CURRENT_TIMESTAMP AND `deleted`=b'0'")
+    int revokeActiveForTenantRollout(@Param("tenantId") Long tenantId);
+
 }

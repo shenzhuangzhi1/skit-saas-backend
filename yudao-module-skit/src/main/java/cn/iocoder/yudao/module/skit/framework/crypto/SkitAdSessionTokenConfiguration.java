@@ -67,6 +67,11 @@ public class SkitAdSessionTokenConfiguration {
         }
 
         @Override
+        public byte[] hashCustomData(String customData) {
+            throw unavailable();
+        }
+
+        @Override
         public boolean matches(String customData, byte[] expectedHash) {
             throw unavailable();
         }

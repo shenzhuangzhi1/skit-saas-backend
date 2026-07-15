@@ -5,6 +5,8 @@ import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
+
 @TableName(value = "skit_ad_account", autoResultMap = true)
 @KeySequence("skit_ad_account_seq")
 @Data
@@ -26,5 +28,13 @@ public class SkitAdAccountDO extends TenantBaseDO {
     private String secret;
     private String configData;
     private Integer status;
+    private String reportTimezone;
+    private String reportCurrency;
+    private Integer reportAmountScale;
+    private String reportPullLeaseOwner;
+    private LocalDateTime reportPullLeaseUntil;
+    private LocalDateTime reportNextAllowedAt;
+    private LocalDateTime reportLastSuccessAt;
+    private Integer reportFailureCount;
 
 }

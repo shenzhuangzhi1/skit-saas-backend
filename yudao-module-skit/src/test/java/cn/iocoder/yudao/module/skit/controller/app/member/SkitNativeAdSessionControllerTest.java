@@ -11,9 +11,12 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCre
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionStatusRespVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitGrantedEpisodesRespVO;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientIpRateLimiterKeyResolver;
+import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
@@ -54,6 +57,16 @@ class SkitNativeAdSessionControllerTest {
     private SkitAdSessionService adSessionService;
     @Mock
     private SkitContentEntitlementService entitlementService;
+    @Mock
+    private SkitClientRuntimeResolver clientRuntimeResolver;
+
+    private final SkitTenantAdCapabilityService.ClientRuntime runtime =
+            new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
+
+    @BeforeEach
+    void stubClientRuntime() {
+        org.mockito.Mockito.lenient().when(clientRuntimeResolver.resolve()).thenReturn(runtime);
+    }
 
     @Test
     void nativeControllerIsPublicTenantIgnoredAndUsesOnlyGrantScopedRoutes() throws Exception {
@@ -122,6 +135,8 @@ class SkitNativeAdSessionControllerTest {
         verify(adSessionService).createForNativeGrant(eq(grant), command.capture());
         assertEquals(904L, command.getValue().getDramaId());
         assertEquals(7, command.getValue().getEpisodeNo());
+        assertEquals("2.4.0", command.getValue().getNativeVersion());
+        assertEquals(1, command.getValue().getProtocolVersion());
         assertEquals("native-secret", result.getData().getCustomData());
         assertFalse(result.getData().toString().contains("native-secret"));
     }
@@ -131,10 +146,11 @@ class SkitNativeAdSessionControllerTest {
         String grant = grantToken();
         String sessionId = "abcdefghijklmnopqrstuv";
         SkitAdSessionService.SessionView view = sessionView(sessionId, "SHOWN");
-        when(adSessionService.getForNativeGrant(grant, sessionId)).thenReturn(view);
-        when(adSessionService.recordClientEventsForNativeGrant(eq(grant), eq(sessionId), anyList()))
+        when(adSessionService.getForNativeGrant(grant, sessionId, runtime)).thenReturn(view);
+        when(adSessionService.recordClientEventsForNativeGrant(
+                eq(grant), eq(sessionId), anyList(), eq(runtime)))
                 .thenReturn(view);
-        when(entitlementService.listGrantedEpisodesForPlayerGrant(grant))
+        when(entitlementService.listGrantedEpisodesForPlayerGrant(grant, runtime))
                 .thenReturn(Arrays.asList(1, 3, 7));
 
         SkitAdClientEventBatchReqVO batch = new SkitAdClientEventBatchReqVO();
@@ -147,9 +163,10 @@ class SkitNativeAdSessionControllerTest {
         assertEquals("SHOWN", status.getData().getClientLifecycleStatus());
         assertEquals("SHOWN", afterEvents.getData().getClientLifecycleStatus());
         assertEquals(Arrays.asList(1, 3, 7), entitlements.getData().getGrantedEpisodeNos());
-        verify(adSessionService).getForNativeGrant(grant, sessionId);
-        verify(adSessionService).recordClientEventsForNativeGrant(eq(grant), eq(sessionId), anyList());
-        verify(entitlementService).listGrantedEpisodesForPlayerGrant(grant);
+        verify(adSessionService).getForNativeGrant(grant, sessionId, runtime);
+        verify(adSessionService).recordClientEventsForNativeGrant(
+                eq(grant), eq(sessionId), anyList(), eq(runtime));
+        verify(entitlementService).listGrantedEpisodesForPlayerGrant(grant, runtime);
     }
 
     private static SkitAdClientEventReqVO validEvent(String sessionId) {

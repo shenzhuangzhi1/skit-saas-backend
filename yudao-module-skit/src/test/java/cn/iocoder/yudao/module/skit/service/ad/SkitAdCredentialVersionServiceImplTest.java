@@ -160,6 +160,25 @@ class SkitAdCredentialVersionServiceImplTest {
     }
 
     @Test
+    void zeroGraceImmediatelyRetiresThePriorCredentialAtTheRotationInstant() {
+        SkitAdCredentialVersionServiceImpl service = service(new SequenceSecureRandom(sequence(0)));
+        SkitAdCallbackKeyDO prior = callbackRow(1, true);
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(callbackKeyMapper.selectMaxVersion(TENANT_ID, ACCOUNT_ID)).thenReturn(1);
+        when(callbackKeyMapper.selectActiveForUpdate(TENANT_ID, ACCOUNT_ID)).thenReturn(prior);
+        when(callbackKeyMapper.retireActiveVersion(anyLong(), anyLong(), anyLong(),
+                any(LocalDateTime.class))).thenReturn(1);
+        when(callbackKeyMapper.insert(any(SkitAdCallbackKeyDO.class))).thenReturn(1);
+
+        SkitAdCredentialVersionService.CallbackKeyIssue issued =
+                service.rotateCallbackKey(TENANT_ID, ACCOUNT_ID, Duration.ZERO);
+
+        assertEquals(2, issued.getVersion());
+        verify(callbackKeyMapper).retireActiveVersion(TENANT_ID, ACCOUNT_ID, prior.getId(),
+                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
     void callbackHashCollisionRetriesWithoutReturningOrExposingAnotherTenantKey() {
         byte[] collision = sequence(0);
         byte[] replacement = sequence(32);
@@ -563,17 +582,14 @@ class SkitAdCredentialVersionServiceImplTest {
             Map<String, Object> environmentValues) throws IOException {
         Path applicationYaml = locateApplicationYaml();
         String yaml = new String(Files.readAllBytes(applicationYaml), StandardCharsets.UTF_8);
-        int blockStart = yaml.indexOf("skit:\n  ad:\n    credential-encryption:");
-        int blockEnd = yaml.indexOf("\nmybatis-plus-join:", blockStart);
-        if (blockStart < 0 || blockEnd < 0) {
+        if (!yaml.contains("\n    credential-encryption:\n")) {
             throw new IllegalStateException("Could not locate the Skit credential-encryption YAML block");
         }
-        String credentialYaml = yaml.substring(blockStart, blockEnd);
         MockEnvironment environment = new MockEnvironment();
         environment.getPropertySources().addFirst(new MapPropertySource("task2-test-environment", environmentValues));
         for (PropertySource<?> propertySource : new YamlPropertySourceLoader().load(
                 "skit-ad-credential-test", new ByteArrayResource(
-                        credentialYaml.getBytes(StandardCharsets.UTF_8)))) {
+                        yaml.getBytes(StandardCharsets.UTF_8)))) {
             environment.getPropertySources().addLast(propertySource);
         }
         return Binder.get(environment).bind("skit.ad.credential-encryption",

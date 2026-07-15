@@ -345,11 +345,519 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     new Task2CheckSpec("skit_native_player_grant", "ck_skit_player_grant_lifecycle",
                             "(`status` IN ('ACTIVE','EXPIRED') AND `revoked_at` IS NULL) OR "
                                     + "(`status` = 'REVOKED' AND `revoked_at` IS NOT NULL)")));
+    private static final int TASK_7_SCHEMA_HARDENING_MIGRATION_VERSION = 2026071404;
+    private static final List<Task2ColumnSpec> TASK_7_SCHEMA_COLUMN_SPECS = Collections.unmodifiableList(
+            Arrays.asList(
+                    new Task2ColumnSpec("skit_ad_session", "reward_callback_inbox_id",
+                            "bigint DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_session", "reward_callback_received_at",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_callback_inbox", "ingress_response_code",
+                            "smallint DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_callback_inbox", "ad_session_ref_id",
+                            "bigint GENERATED ALWAYS AS (IFNULL(`ad_session_id`,0)) STORED"),
+                    new Task2ColumnSpec("skit_ad_callback_attempt", "ad_session_ref_id",
+                            "bigint GENERATED ALWAYS AS (IFNULL(`ad_session_id`,0)) STORED"),
+                    new Task2ColumnSpec("skit_ad_revenue_event", "ad_session_ref_id",
+                            "bigint GENERATED ALWAYS AS (IFNULL(`ad_session_id`,0)) STORED")));
+    private static final List<Task2ForeignKeySpec> TASK_7_SCHEMA_FOREIGN_KEY_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ForeignKeySpec("skit_ad_callback_inbox",
+                            "fk_skit_callback_inbox_session_account",
+                            "tenant_id,ad_session_id,ad_account_id", "skit_ad_session",
+                            "tenant_id,id,ad_account_id"),
+                    new Task2ForeignKeySpec("skit_ad_callback_attempt",
+                            "fk_skit_callback_attempt_inbox_binding",
+                            "tenant_id,callback_inbox_id,ad_account_id,ad_session_ref_id",
+                            "skit_ad_callback_inbox", "tenant_id,id,ad_account_id,ad_session_ref_id"),
+                    new Task2ForeignKeySpec("skit_ad_session",
+                            "fk_skit_ad_session_reward_callback_receipt",
+                            "tenant_id,reward_callback_inbox_id,ad_account_id,id",
+                            "skit_ad_callback_inbox", "tenant_id,id,ad_account_id,ad_session_ref_id"),
+                    new Task2ForeignKeySpec("skit_ad_revenue_event", "fk_skit_revenue_session_binding",
+                            "tenant_id,ad_session_id,ad_account_id,source_member_id,policy_snapshot_id",
+                            "skit_ad_session", "tenant_id,id,ad_account_id,member_id,policy_snapshot_id"),
+                    new Task2ForeignKeySpec("skit_ad_revenue_event", "fk_skit_revenue_inbox_binding",
+                            "tenant_id,callback_inbox_id,ad_account_id,ad_session_ref_id",
+                            "skit_ad_callback_inbox", "tenant_id,id,ad_account_id,ad_session_ref_id"),
+                    new Task2ForeignKeySpec("skit_commission_ledger", "fk_skit_ledger_event_snapshot",
+                            "tenant_id,event_id,policy_snapshot_id", "skit_ad_revenue_event",
+                            "tenant_id,id,policy_snapshot_id")));
+    private static final Task2ForeignKeySpec TASK_7_LEGACY_GRANT_SESSION_BINDING =
+            new Task2ForeignKeySpec("skit_entitlement_grant", "fk_skit_grant_session_binding",
+                    "tenant_id,ad_session_id,member_id,drama_id,episode_no,provider_transaction_id",
+                    "skit_ad_session", "tenant_id,id,member_id,drama_id,episode_from,provider_transaction_id");
+    private static final Task2ForeignKeySpec TASK_7_GRANT_SESSION_BINDING =
+            new Task2ForeignKeySpec("skit_entitlement_grant", "fk_skit_grant_session_binding",
+                    "tenant_id,ad_session_id,member_id,drama_id,provider_transaction_id",
+                    "skit_ad_session", "tenant_id,id,member_id,drama_id,provider_transaction_id");
+    private static final List<Task2CheckSpec> TASK_7_SCHEMA_CHECK_SPECS = Collections.unmodifiableList(
+            Arrays.asList(
+                    new Task2CheckSpec("skit_ad_session", "ck_skit_ad_session_reward_callback_receipt",
+                            "(`reward_callback_inbox_id` IS NULL AND `reward_callback_received_at` IS NULL) OR "
+                                    + "(`reward_callback_inbox_id` IS NOT NULL "
+                                    + "AND `reward_callback_received_at` IS NOT NULL "
+                                    + "AND `reward_callback_received_at` <= `reward_accept_until`)"),
+                    new Task2CheckSpec("skit_ad_callback_inbox", "ck_skit_callback_inbox_response_code",
+                            "`ingress_response_code` IS NULL OR `ingress_response_code` IN (200,601,602)"),
+                    new Task2CheckSpec("skit_ad_revenue_event", "ck_skit_revenue_verified_binding",
+                            "`legacy_unverified`=b'1' OR (`ad_session_id` IS NOT NULL "
+                                    + "AND `callback_inbox_id` IS NOT NULL "
+                                    + "AND `policy_snapshot_id` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_commission_ledger", "ck_skit_ledger_verified_snapshot",
+                            "`legacy_unverified`=b'1' OR `policy_snapshot_id` IS NOT NULL"),
+                    new Task2CheckSpec("skit_ad_network_capability",
+                            "ck_skit_network_cap_reward_authority",
+                            "`reward_authority` IN ('SIGNED_REWARD','UNSIGNED_PROVIDER_OBSERVATION',"
+                                    + "'CLIENT_ONLY','NONE')"),
+                    new Task2CheckSpec("skit_ad_network_capability",
+                            "ck_skit_network_cap_signed_readiness",
+                            "(`reward_authority`<>'SIGNED_REWARD') OR ((`supports_user_id`=b'1') "
+                                    + "AND (`supports_custom_data`=b'1') "
+                                    + "AND (`supports_stable_transaction`=b'1') "
+                                    + "AND `verified_at` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_ad_callback_inbox",
+                            "ck_skit_callback_inbox_processing_error",
+                            "(`processing_status` IN ('PENDING','PROCESSING','SUCCEEDED') "
+                                    + "AND (`error_code` IS NULL)) OR (`processing_status` IN "
+                                    + "('RETRY_WAIT','REJECTED','DEAD_LETTER') AND (`error_code` IS NOT NULL))"),
+                    new Task2CheckSpec("skit_ad_callback_inbox",
+                            "ck_skit_callback_inbox_dead_letter_alert",
+                            "`dead_letter_alerted_at` IS NULL OR (`processing_status`='DEAD_LETTER' "
+                                    + "AND `processed_at` IS NOT NULL "
+                                    + "AND `dead_letter_alerted_at`>=`processed_at`)")));
+    private static final List<Task2TriggerSpec> TASK_7_SCHEMA_TRIGGER_SPECS = Collections.unmodifiableList(
+            Arrays.asList(
+                    new Task2TriggerSpec("skit_commission_ledger", "trg_skit_ledger_immutable",
+                            rejectDeleteAction("commission ledger rows are immutable")),
+                    new Task2TriggerSpec("skit_commission_ledger", "trg_skit_ledger_no_delete", "DELETE",
+                            rejectDeleteAction("commission ledger rows are immutable")),
+                    new Task2TriggerSpec("skit_entitlement_grant", "trg_skit_entitlement_grant_immutable",
+                            rejectDeleteAction("entitlement grant rows are immutable")),
+                    new Task2TriggerSpec("skit_entitlement_grant", "trg_skit_entitlement_grant_no_delete",
+                            "DELETE", rejectDeleteAction("entitlement grant rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_callback_inbox", "trg_skit_callback_inbox_monotonic",
+                            callbackInboxMonotonicAction()),
+                    new Task2TriggerSpec("skit_ad_callback_inbox", "trg_skit_callback_inbox_no_delete", "DELETE",
+                            rejectDeleteAction("callback inbox rows cannot be deleted")),
+                    new Task2TriggerSpec("skit_ad_callback_attempt", "trg_skit_callback_attempt_immutable",
+                            rejectDeleteAction("callback attempt rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_callback_edge_attempt",
+                            "trg_skit_callback_edge_attempt_immutable",
+                            rejectDeleteAction("callback edge attempt rows are immutable")),
+                    new Task2TriggerSpec("skit_entitlement_grant",
+                            "trg_skit_entitlement_grant_session_range", "INSERT",
+                            entitlementGrantSessionRangeAction())));
+    private static final int TASK_10_RECONCILIATION_MIGRATION_VERSION = 2026071405;
+    private static final List<Task2ColumnSpec> TASK_10_RECONCILIATION_COLUMN_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ColumnSpec("skit_ad_account", "report_timezone",
+                            "varchar(64) NOT NULL DEFAULT 'UTC+8'"),
+                    new Task2ColumnSpec("skit_ad_account", "report_currency",
+                            "char(3) NOT NULL DEFAULT 'USD'"),
+                    new Task2ColumnSpec("skit_ad_account", "report_amount_scale",
+                            "tinyint NOT NULL DEFAULT 8"),
+                    new Task2ColumnSpec("skit_ad_account", "report_pull_lease_owner",
+                            "varchar(64) DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_account", "report_pull_lease_until",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_account", "report_next_allowed_at",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_account", "report_last_success_at",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_account", "report_failure_count",
+                            "int NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "report_date", "date NOT NULL",
+                            "date DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "report_timezone",
+                            "varchar(64) NOT NULL DEFAULT 'UTC+8'"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "currency",
+                            "char(3) NOT NULL DEFAULT 'USD'"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "amount_scale",
+                            "tinyint NOT NULL DEFAULT 8"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "request_hash", "binary(32) NOT NULL",
+                            "binary(32) DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "credential_version", "int DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_report_pull", "final_window",
+                            "bit(1) NOT NULL DEFAULT b'0'"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_bucket", "app_id",
+                            "varchar(128) NOT NULL DEFAULT ''"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_bucket", "ad_format",
+                            "varchar(32) NOT NULL DEFAULT ''"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_bucket", "network_account_id",
+                            "varchar(128) NOT NULL DEFAULT ''"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_bucket", "attributable_actual_units",
+                            "bigint NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_bucket", "suspense_units",
+                            "bigint NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_bucket", "report_impressions_available",
+                            "bit(1) NOT NULL DEFAULT b'1'"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_revision", "source_report_impressions",
+                            "bigint NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_revision",
+                            "source_report_impressions_available",
+                            "bit(1) NOT NULL DEFAULT b'1'"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_revision", "matched_event_count",
+                            "bigint NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_ad_reconciliation_revision", "status",
+                            "varchar(32) NOT NULL DEFAULT 'APPLIED'")));
+    private static final List<Task2CheckSpec> TASK_10_RECONCILIATION_CHECK_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2CheckSpec("skit_ad_account", "ck_skit_ad_account_report_currency",
+                            "REGEXP_LIKE(`report_currency`,'^[A-Z]{3}$')"),
+                    new Task2CheckSpec("skit_ad_account", "ck_skit_ad_account_report_timezone",
+                            "`report_timezone` IN ('UTC-8','UTC+8','UTC+0')"),
+                    new Task2CheckSpec("skit_ad_account", "ck_skit_ad_account_report_scale",
+                            "`report_amount_scale` BETWEEN 0 AND 18"),
+                    new Task2CheckSpec("skit_ad_account", "ck_skit_ad_account_report_lease",
+                            "(`report_pull_lease_owner` IS NULL AND `report_pull_lease_until` IS NULL) OR "
+                                    + "(`report_pull_lease_owner` IS NOT NULL "
+                                    + "AND `report_pull_lease_until` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_ad_account", "ck_skit_ad_account_report_failures",
+                            "`report_failure_count` BETWEEN 0 AND 5"),
+                    new Task2CheckSpec("skit_ad_report_pull", "ck_skit_report_pull_money",
+                            "REGEXP_LIKE(`currency`,'^[A-Z]{3}$') AND `amount_scale` BETWEEN 0 AND 18"),
+                    new Task2CheckSpec("skit_ad_report_pull", "ck_skit_report_pull_timezone",
+                            "`report_timezone` IN ('UTC-8','UTC+8','UTC+0')"),
+                    new Task2CheckSpec("skit_ad_report_pull", "ck_skit_report_pull_credential_version",
+                            "`credential_version` IS NULL OR `credential_version` > 0"),
+                    new Task2CheckSpec("skit_ad_report_pull", "ck_skit_report_pull_status",
+                            "(`status`='SUCCEEDED' AND `error_code` IS NULL) OR "
+                                    + "(`status`='FAILED' AND `error_code` IS NOT NULL)"),
+                    new Task2CheckSpec("skit_ad_reconciliation_bucket", "ck_skit_recon_bucket_task10_amounts",
+                            "`attributable_actual_units` >= 0 AND `suspense_units` >= 0 "
+                                    + "AND `attributable_actual_units` + `suspense_units` "
+                                    + "= `report_actual_units`"),
+                    new Task2CheckSpec("skit_ad_reconciliation_bucket",
+                            "ck_skit_recon_bucket_task10_impressions",
+                            "`report_impressions_available`=b'1' OR `report_impressions`=0"),
+                    new Task2CheckSpec("skit_ad_reconciliation_revision", "ck_skit_recon_revision_task10_counts",
+                            "`source_report_impressions` >= 0 AND `matched_event_count` >= 0"),
+                    new Task2CheckSpec("skit_ad_reconciliation_revision",
+                            "ck_skit_recon_revision_task10_impressions",
+                            "`source_report_impressions_available`=b'1' "
+                                    + "OR `source_report_impressions`=0"),
+                    new Task2CheckSpec("skit_ad_reconciliation_revision", "ck_skit_recon_revision_task10_status",
+                            "`status` IN ('APPLIED','PARTIAL','SUSPENSE','FAILED')"),
+                    new Task2CheckSpec("skit_ad_reconciliation_event_link",
+                            "ck_skit_recon_event_link_revision", "`revision_no` > 0"),
+                    new Task2CheckSpec("skit_ad_reconciliation_event_link",
+                            "ck_skit_recon_event_link_status",
+                            "`association_status` IN ('ATTRIBUTED','SUSPENSE')"),
+                    new Task2CheckSpec("skit_ad_reconciliation_event_link",
+                            "ck_skit_recon_event_link_amount",
+                            "`actual_units` >= 0 AND (`association_status`<>'SUSPENSE' "
+                                    + "OR `actual_units`=0)")));
+    private static final List<Task2TriggerSpec> TASK_10_RECONCILIATION_TRIGGER_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2TriggerSpec("skit_ad_reporting_credential_version",
+                            "trg_skit_reporting_credential_monotonic", reportingCredentialUpdateAction()),
+                    new Task2TriggerSpec("skit_ad_reporting_credential_version",
+                            "trg_skit_reporting_credential_no_delete", "DELETE",
+                            rejectDeleteAction("reporting credential versions cannot be deleted")),
+                    new Task2TriggerSpec("skit_ad_report_pull", "trg_skit_report_pull_immutable",
+                            rejectDeleteAction("report pull rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_report_pull", "trg_skit_report_pull_no_delete", "DELETE",
+                            rejectDeleteAction("report pull rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_reconciliation_revision",
+                            "trg_skit_recon_revision_immutable",
+                            rejectDeleteAction("reconciliation revision rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_reconciliation_revision",
+                            "trg_skit_recon_revision_no_delete", "DELETE",
+                            rejectDeleteAction("reconciliation revision rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_reconciliation_allocation",
+                            "trg_skit_recon_allocation_immutable",
+                            rejectDeleteAction("reconciliation allocation rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_reconciliation_allocation",
+                            "trg_skit_recon_allocation_no_delete", "DELETE",
+                            rejectDeleteAction("reconciliation allocation rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_reconciliation_event_link",
+                            "trg_skit_recon_event_link_immutable",
+                            rejectDeleteAction("reconciliation event links are immutable")),
+                    new Task2TriggerSpec("skit_ad_reconciliation_event_link",
+                            "trg_skit_recon_event_link_no_delete", "DELETE",
+                            rejectDeleteAction("reconciliation event links are immutable"))));
+    private static final String CREATE_TASK_10_REPORTING_CREDENTIAL_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_ad_reporting_credential_version` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`ad_account_id` bigint NOT NULL,`credential_version` int NOT NULL,"
+                    + "`ciphertext` varbinary(4096) NOT NULL,`nonce` binary(12) NOT NULL,"
+                    + "`encryption_key_id` varchar(64) NOT NULL,`envelope_version` smallint NOT NULL,"
+                    + "`active` bit(1) NOT NULL DEFAULT b'1',`permission_verified_at` datetime DEFAULT NULL,"
+                    + "`revoked_at` datetime DEFAULT NULL,`active_account_id` bigint GENERATED ALWAYS AS "
+                    + "(CASE WHEN `active`=b'1' THEN `ad_account_id` ELSE NULL END) STORED,"
+                    + "`creator` varchar(64) DEFAULT '',`create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                    + "`updater` varchar(64) DEFAULT '',`update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                    + "ON UPDATE CURRENT_TIMESTAMP,`deleted` bit(1) NOT NULL DEFAULT b'0',"
+                    + "PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_reporting_credential_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_reporting_credential_version` "
+                    + "(`tenant_id`,`ad_account_id`,`credential_version`),"
+                    + "UNIQUE KEY `uk_skit_reporting_credential_active` (`tenant_id`,`active_account_id`),"
+                    + "CONSTRAINT `fk_skit_reporting_credential_account` FOREIGN KEY (`tenant_id`,`ad_account_id`) "
+                    + "REFERENCES `skit_ad_account` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `ck_skit_reporting_credential_version` CHECK (`credential_version` > 0),"
+                    + "CONSTRAINT `ck_skit_reporting_credential_envelope` CHECK (`envelope_version` > 0),"
+                    + "CONSTRAINT `ck_skit_reporting_credential_lifecycle` CHECK "
+                    + "((`active`=b'1' AND `revoked_at` IS NULL) OR "
+                    + "(`active`=b'0' AND `revoked_at` IS NOT NULL)))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String CREATE_TASK_10_RECONCILIATION_ALLOCATION_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_ad_reconciliation_allocation` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`reconciliation_bucket_id` bigint NOT NULL,`reconciliation_revision_id` bigint NOT NULL,"
+                    + "`revision_no` int NOT NULL,`event_id` bigint NOT NULL,`beneficiary_type` tinyint NOT NULL,"
+                    + "`beneficiary_member_id` bigint NOT NULL DEFAULT 0,`level_no` int NOT NULL,"
+                    + "`policy_snapshot_id` bigint NOT NULL,`currency` char(3) NOT NULL,"
+                    + "`amount_scale` tinyint NOT NULL,`cumulative_target_units` bigint NOT NULL,"
+                    + "`creator` varchar(64) DEFAULT '',`create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                    + "`updater` varchar(64) DEFAULT '',`update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                    + "ON UPDATE CURRENT_TIMESTAMP,`deleted` bit(1) NOT NULL DEFAULT b'0',"
+                    + "PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_recon_allocation_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_recon_allocation_canonical` "
+                    + "(`tenant_id`,`event_id`,`reconciliation_revision_id`,`beneficiary_type`,"
+                    + "`beneficiary_member_id`,`level_no`,`policy_snapshot_id`),"
+                    + "KEY `idx_skit_recon_allocation_prior` "
+                    + "(`tenant_id`,`event_id`,`beneficiary_type`,`beneficiary_member_id`,`level_no`,`revision_no`),"
+                    + "CONSTRAINT `fk_skit_recon_allocation_bucket` FOREIGN KEY "
+                    + "(`tenant_id`,`reconciliation_bucket_id`) REFERENCES `skit_ad_reconciliation_bucket` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_recon_allocation_revision` FOREIGN KEY "
+                    + "(`tenant_id`,`reconciliation_revision_id`) REFERENCES `skit_ad_reconciliation_revision` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_recon_allocation_event_snapshot` FOREIGN KEY "
+                    + "(`tenant_id`,`event_id`,`policy_snapshot_id`) REFERENCES `skit_ad_revenue_event` "
+                    + "(`tenant_id`,`id`,`policy_snapshot_id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `ck_skit_recon_allocation_revision` CHECK (`revision_no` > 0),"
+                    + "CONSTRAINT `ck_skit_recon_allocation_beneficiary` CHECK "
+                    + "((`beneficiary_type`=1 AND `beneficiary_member_id`>0) OR "
+                    + "(`beneficiary_type`=2 AND `beneficiary_member_id`=0)),"
+                    + "CONSTRAINT `ck_skit_recon_allocation_money` CHECK "
+                    + "(REGEXP_LIKE(`currency`,'^[A-Z]{3}$') AND `amount_scale` BETWEEN 0 AND 18 "
+                    + "AND `cumulative_target_units` >= 0))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String CREATE_TASK_10_RECONCILIATION_EVENT_LINK_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_ad_reconciliation_event_link` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`reconciliation_bucket_id` bigint NOT NULL,"
+                    + "`reconciliation_revision_id` bigint NOT NULL,`revision_no` int NOT NULL,"
+                    + "`event_id` bigint NOT NULL,`policy_snapshot_id` bigint NOT NULL,"
+                    + "`association_status` varchar(16) NOT NULL,`actual_units` bigint NOT NULL,"
+                    + "`creator` varchar(64) DEFAULT '',`create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                    + "`updater` varchar(64) DEFAULT '',`update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                    + "ON UPDATE CURRENT_TIMESTAMP,`deleted` bit(1) NOT NULL DEFAULT b'0',"
+                    + "PRIMARY KEY (`id`),UNIQUE KEY `uk_skit_recon_event_link_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_recon_event_link_canonical` "
+                    + "(`tenant_id`,`reconciliation_revision_id`,`event_id`),"
+                    + "KEY `idx_skit_recon_event_link_history` "
+                    + "(`tenant_id`,`event_id`,`revision_no`,`id`),"
+                    + "CONSTRAINT `fk_skit_recon_event_link_bucket` FOREIGN KEY "
+                    + "(`tenant_id`,`reconciliation_bucket_id`) REFERENCES `skit_ad_reconciliation_bucket` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_recon_event_link_revision` FOREIGN KEY "
+                    + "(`tenant_id`,`reconciliation_revision_id`) REFERENCES `skit_ad_reconciliation_revision` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_recon_event_link_event_snapshot` FOREIGN KEY "
+                    + "(`tenant_id`,`event_id`,`policy_snapshot_id`) REFERENCES `skit_ad_revenue_event` "
+                    + "(`tenant_id`,`id`,`policy_snapshot_id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `ck_skit_recon_event_link_revision` CHECK (`revision_no` > 0),"
+                    + "CONSTRAINT `ck_skit_recon_event_link_status` CHECK "
+                    + "(`association_status` IN ('ATTRIBUTED','SUSPENSE')),"
+                    + "CONSTRAINT `ck_skit_recon_event_link_amount` CHECK "
+                    + "(`actual_units` >= 0 AND (`association_status`<>'SUSPENSE' OR `actual_units`=0))"
+                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final int TASK_12_READINESS_MIGRATION_VERSION = 2026071406;
+    private static final List<Task2ColumnSpec> TASK_12_READINESS_COLUMN_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "dedicated_unlock_placement_id",
+                            "varchar(128) NOT NULL DEFAULT ''"),
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "dedicated_placement_verified_at",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "reward_callback_template_verified_at",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "impression_callback_template_verified_at",
+                            "datetime DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "unlock_network_firm_ids_json",
+                            "varchar(512) NOT NULL DEFAULT '[]'"),
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "shadow_test_member_ids_json",
+                            "varchar(4096) NOT NULL DEFAULT '[]'"),
+                    new Task2ColumnSpec("skit_tenant_ad_capability", "min_protocol_version",
+                            "int NOT NULL DEFAULT 1"),
+                    new Task2ColumnSpec("skit_app_release_profile", "native_protocol_version",
+                            "int NOT NULL DEFAULT 0")));
+    private static final List<Task2CheckSpec> TASK_12_READINESS_CHECK_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2CheckSpec("skit_tenant_ad_capability",
+                            "ck_skit_tenant_capability_network_json",
+                            "JSON_VALID(`unlock_network_firm_ids_json`) AND "
+                                    + "JSON_TYPE(JSON_EXTRACT(`unlock_network_firm_ids_json`,'$'))='ARRAY'"),
+                    new Task2CheckSpec("skit_tenant_ad_capability",
+                            "ck_skit_tenant_capability_shadow_json",
+                            "JSON_VALID(`shadow_test_member_ids_json`) AND "
+                                    + "JSON_TYPE(JSON_EXTRACT(`shadow_test_member_ids_json`,'$'))='ARRAY'"),
+                    new Task2CheckSpec("skit_tenant_ad_capability",
+                            "ck_skit_tenant_capability_protocol", "`min_protocol_version` > 0"),
+                    new Task2CheckSpec("skit_app_release_profile",
+                            "ck_skit_app_release_native_protocol", "`native_protocol_version` >= 0")));
+
+    private static final int TASK_11_MANAGEMENT_MIGRATION_VERSION = 2026071407;
+    private static final String CREATE_TASK_11_MANAGEMENT_AUDIT_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_management_command_audit` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`command_id` varchar(64) NOT NULL,`operator_user_id` bigint NOT NULL,"
+                    + "`original_tenant_id` bigint NOT NULL,`target_tenant_id` bigint NOT NULL,"
+                    + "`command_type` varchar(64) NOT NULL,`resource_type` varchar(64) NOT NULL,"
+                    + "`resource_id` varchar(128) NOT NULL,`reason` varchar(500) NOT NULL,"
+                    + "`before_state_hash` binary(32) NOT NULL,`after_state_hash` binary(32) NOT NULL,"
+                    + "`request_fingerprint` binary(32) NOT NULL,`trace_id` varchar(128) NOT NULL DEFAULT '',"
+                    + "`result_status` varchar(16) NOT NULL,`created_at` datetime NOT NULL,"
+                    + "PRIMARY KEY (`id`),"
+                    + "UNIQUE KEY `uk_skit_management_audit_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_management_audit_command` (`command_id`),"
+                    + "KEY `idx_skit_management_audit_time` (`tenant_id`,`created_at`,`id`),"
+                    + "KEY `idx_skit_management_audit_type_time` "
+                    + "(`tenant_id`,`command_type`,`created_at`,`id`),"
+                    + "KEY `idx_skit_management_audit_target_time` "
+                    + "(`target_tenant_id`,`created_at`,`id`),"
+                    + "CONSTRAINT `ck_skit_management_audit_target` CHECK (`tenant_id`=`target_tenant_id`),"
+                    + "CONSTRAINT `ck_skit_management_audit_result` CHECK (`result_status`='SUCCESS'),"
+                    + "CONSTRAINT `ck_skit_management_audit_reason` CHECK "
+                    + "(CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String CREATE_TASK_11_CALLBACK_REPLAY_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_ad_callback_replay_command` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`command_id` varchar(64) NOT NULL,`callback_inbox_id` bigint NOT NULL,"
+                    + "`operator_user_id` bigint NOT NULL,`original_tenant_id` bigint NOT NULL,"
+                    + "`source_status` varchar(32) NOT NULL,`reason` varchar(500) NOT NULL,"
+                    + "`request_fingerprint` binary(32) NOT NULL,`requested_at` datetime NOT NULL,"
+                    + "PRIMARY KEY (`id`),"
+                    + "UNIQUE KEY `uk_skit_callback_replay_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_callback_replay_command` (`command_id`),"
+                    + "UNIQUE KEY `uk_skit_callback_replay_idempotency` "
+                    + "(`tenant_id`,`callback_inbox_id`,`request_fingerprint`),"
+                    + "KEY `idx_skit_callback_replay_time` (`tenant_id`,`requested_at`,`id`),"
+                    + "CONSTRAINT `fk_skit_callback_replay_inbox` FOREIGN KEY "
+                    + "(`tenant_id`,`callback_inbox_id`) REFERENCES `skit_ad_callback_inbox` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `ck_skit_callback_replay_source` CHECK "
+                    + "(`source_status` IN ('DEAD_LETTER','REJECTED')),"
+                    + "CONSTRAINT `ck_skit_callback_replay_reason` CHECK "
+                    + "(CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String CREATE_TASK_11_SECURITY_REVOCATION_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_entitlement_security_revocation` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`command_id` varchar(64) NOT NULL,`entitlement_id` bigint NOT NULL,"
+                    + "`ad_session_id` bigint NOT NULL,`operator_user_id` bigint NOT NULL,"
+                    + "`original_tenant_id` bigint NOT NULL,`reason` varchar(500) NOT NULL,"
+                    + "`evidence_hash` binary(32) NOT NULL,`revoked_at` datetime NOT NULL,"
+                    + "PRIMARY KEY (`id`),"
+                    + "UNIQUE KEY `uk_skit_security_revocation_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_security_revocation_command` (`command_id`),"
+                    + "UNIQUE KEY `uk_skit_security_revocation_entitlement` (`tenant_id`,`entitlement_id`),"
+                    + "KEY `idx_skit_security_revocation_time` (`tenant_id`,`revoked_at`,`id`),"
+                    + "CONSTRAINT `fk_skit_security_revocation_entitlement` FOREIGN KEY "
+                    + "(`tenant_id`,`entitlement_id`) REFERENCES `skit_content_entitlement` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_security_revocation_session` FOREIGN KEY "
+                    + "(`tenant_id`,`ad_session_id`) REFERENCES `skit_ad_session` "
+                    + "(`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `ck_skit_security_revocation_reason` CHECK "
+                    + "(CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final String CREATE_TASK_11_EXPORT_TASK_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_management_export_task` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`operator_user_id` bigint NOT NULL,`original_tenant_id` bigint NOT NULL,"
+                    + "`target_tenant_id` bigint NOT NULL,`export_type` varchar(64) NOT NULL,"
+                    + "`filter_json` longtext NOT NULL,`filter_hash` binary(32) NOT NULL,"
+                    + "`field_mask_profile` varchar(32) NOT NULL,`as_of` datetime NOT NULL,"
+                    + "`status` varchar(16) NOT NULL DEFAULT 'PENDING',"
+                    + "`processed_rows` bigint NOT NULL DEFAULT 0,`total_rows` bigint DEFAULT NULL,"
+                    + "`file_object_key` varchar(500) NOT NULL DEFAULT '',"
+                    + "`expires_at` datetime NOT NULL,`error_code` varchar(64) NOT NULL DEFAULT '',"
+                    + "`lease_owner` varchar(64) DEFAULT NULL,`lease_until` datetime DEFAULT NULL,"
+                    + "`version` int NOT NULL DEFAULT 0,`created_at` datetime NOT NULL,"
+                    + "`updated_at` datetime NOT NULL,PRIMARY KEY (`id`),"
+                    + "UNIQUE KEY `uk_skit_management_export_tenant_id` (`tenant_id`,`id`),"
+                    + "KEY `idx_skit_management_export_operator` "
+                    + "(`tenant_id`,`operator_user_id`,`created_at`,`id`),"
+                    + "KEY `idx_skit_management_export_claim` "
+                    + "(`status`,`lease_until`,`created_at`,`id`),"
+                    + "KEY `idx_skit_management_export_expiry` (`expires_at`,`id`),"
+                    + "CONSTRAINT `ck_skit_management_export_target` CHECK (`tenant_id`=`target_tenant_id`),"
+                    + "CONSTRAINT `ck_skit_management_export_filter` CHECK (JSON_VALID(`filter_json`)),"
+                    + "CONSTRAINT `ck_skit_management_export_mask` CHECK "
+                    + "(`field_mask_profile` IN ('TENANT_MASKED','PLATFORM_AUDIT_MASKED')),"
+                    + "CONSTRAINT `ck_skit_management_export_status` CHECK "
+                    + "(`status` IN ('PENDING','RUNNING','SUCCEEDED','FAILED','EXPIRED')),"
+                    + "CONSTRAINT `ck_skit_management_export_progress` CHECK "
+                    + "(`processed_rows`>=0 AND (`total_rows` IS NULL OR `total_rows`>=`processed_rows`)),"
+                    + "CONSTRAINT `ck_skit_management_export_lease` CHECK "
+                    + "((`lease_owner` IS NULL AND `lease_until` IS NULL) OR "
+                    + "(`lease_owner` IS NOT NULL AND `lease_until` IS NOT NULL)),"
+                    + "CONSTRAINT `ck_skit_management_export_version` CHECK (`version`>=0),"
+                    + "CONSTRAINT `ck_skit_management_export_expiry_window` CHECK (`expires_at`>`as_of`))"
+                    + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    private static final List<Task2TriggerSpec> TASK_11_MANAGEMENT_TRIGGER_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2TriggerSpec("skit_management_command_audit",
+                            "trg_skit_management_audit_immutable",
+                            rejectDeleteAction("management command audit rows are immutable")),
+                    new Task2TriggerSpec("skit_management_command_audit",
+                            "trg_skit_management_audit_no_delete", "DELETE",
+                            rejectDeleteAction("management command audit rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_callback_replay_command",
+                            "trg_skit_callback_replay_immutable",
+                            rejectDeleteAction("callback replay command rows are immutable")),
+                    new Task2TriggerSpec("skit_ad_callback_replay_command",
+                            "trg_skit_callback_replay_no_delete", "DELETE",
+                            rejectDeleteAction("callback replay command rows are immutable")),
+                    new Task2TriggerSpec("skit_entitlement_security_revocation",
+                            "trg_skit_security_revocation_immutable",
+                            rejectDeleteAction("security revocation rows are immutable")),
+                    new Task2TriggerSpec("skit_entitlement_security_revocation",
+                            "trg_skit_security_revocation_no_delete", "DELETE",
+                            rejectDeleteAction("security revocation rows are immutable"))));
+
+    private static final int TASK_17_RUNTIME_UPDATE_MIGRATION_VERSION = 2026071408;
+    private static final List<Task2ColumnSpec> TASK_17_RUNTIME_UPDATE_COLUMN_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ColumnSpec("skit_app_release_profile", "hot_release_no",
+                            "bigint NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_app_release_profile", "hot_manifest_signature",
+                            "varchar(1024) NOT NULL DEFAULT ''")));
+    private static final List<Task2CheckSpec> TASK_17_RUNTIME_UPDATE_CHECK_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2CheckSpec("skit_app_release_profile",
+                            "ck_skit_app_release_hot_release", "`hot_release_no` >= 0"),
+                    new Task2CheckSpec("skit_app_release_profile",
+                            "ck_skit_app_release_hot_signature",
+                            "(`hot_release_no`=0 AND `hot_manifest_signature`='') OR "
+                                    + "(`hot_release_no`>0 AND `hot_manifest_signature`<>'')")));
+    private static final int TENANT_RUNTIME_UPDATE_TRUST_ROOT_MIGRATION_VERSION = 2026071501;
+    private static final List<Task2ColumnSpec> TENANT_RUNTIME_UPDATE_TRUST_ROOT_COLUMN_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ColumnSpec("skit_app_release_profile", "runtime_update_public_key",
+                            "varchar(4096) NOT NULL DEFAULT ''"),
+                    new Task2ColumnSpec("skit_app_release_profile", "runtime_update_key_fingerprint",
+                            "char(64) NOT NULL DEFAULT ''"),
+                    new Task2ColumnSpec("skit_app_release_profile",
+                            "active_runtime_update_key_fingerprint",
+                            "char(64) GENERATED ALWAYS AS (CASE WHEN `deleted`=b'0' "
+                                    + "AND `runtime_update_key_fingerprint`<>'' THEN "
+                                    + "`runtime_update_key_fingerprint` ELSE NULL END) STORED")));
+    private static final Task2CheckSpec TENANT_RUNTIME_UPDATE_TRUST_ROOT_CHECK_SPEC =
+            new Task2CheckSpec("skit_app_release_profile", "ck_skit_app_release_runtime_key",
+                    "(`runtime_update_public_key`='' AND `runtime_update_key_fingerprint`='') OR "
+                            + "(`runtime_update_public_key`<>'' AND "
+                            + "REGEXP_LIKE(`runtime_update_key_fingerprint`,'^[0-9a-f]{64}$'))");
     private static final Pattern DEFAULT_DEFINITION_PATTERN = Pattern.compile(
             "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern GENERATED_DEFINITION_PATTERN = Pattern.compile(
             "(?is)\\bGENERATED\\s+ALWAYS\\s+AS\\s*\\((.*)\\)\\s+STORED");
-    private static final Pattern INNER_PARENTHESES_PATTERN = Pattern.compile("\\(([^()]*)\\)");
+    private static final String BOOLEAN_AND_MARKER = "{#and#}";
+    private static final String BOOLEAN_OR_MARKER = "{#or#}";
     private static final String DUPLICATE_ACTIVE_USERNAMES_QUERY =
             "SELECT `username` AS `duplicate_value`, GROUP_CONCAT(`id` ORDER BY `id` SEPARATOR ',') "
                     + "AS `duplicate_ids` FROM `system_users` WHERE `deleted` = b'0' GROUP BY `username` "
@@ -495,23 +1003,285 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         jdbcTemplate.execute(CREATE_MIGRATION_TABLE_SQL);
         Map<Integer, String> appliedMigrations = loadAppliedMigrations();
         validateInstalledMigrations(appliedMigrations);
+        validateKnownForwardSchemaState(appliedMigrations);
         if (hasPendingTask2Migration(appliedMigrations)) {
             validateTask2Preflight();
-        }
-        if (!appliedMigrations.containsKey(TASK_5_SCHEMA_HARDENING_MIGRATION_VERSION)) {
-            validateTask5SchemaHardeningPreflight();
         }
         for (Migration migration : migrations) {
             if (appliedMigrations.containsKey(migration.getVersion())) {
                 continue;
             }
+            validateMigrationPreflight(migration.getVersion());
             migration.execute();
             jdbcTemplate.update(INSERT_APPLIED_MIGRATION_SQL, migration.getVersion(), migration.getDescription(),
                     migration.getChecksum());
+            appliedMigrations.put(migration.getVersion(), migration.getChecksum());
             log.info("[run][applied skit schema migration {} ({})]", migration.getVersion(),
                     migration.getDescription());
         }
         log.info("[run][skit SaaS schema ready]");
+    }
+
+    /**
+     * Runs each hardening preflight only after its prerequisite migrations have completed, but
+     * before the hardening migration itself executes any DDL. Running every preflight up front
+     * makes a legacy schema query columns which an earlier pending migration has not added yet.
+     */
+    private void validateMigrationPreflight(int migrationVersion) {
+        if (migrationVersion == TASK_5_SCHEMA_HARDENING_MIGRATION_VERSION) {
+            validateTask5SchemaHardeningPreflight();
+        } else if (migrationVersion == TASK_7_SCHEMA_HARDENING_MIGRATION_VERSION) {
+            validateTask7SchemaHardeningPreflight();
+        } else if (migrationVersion == TASK_10_RECONCILIATION_MIGRATION_VERSION) {
+            validateTask10MigrationPrefix();
+        } else if (migrationVersion == TASK_12_READINESS_MIGRATION_VERSION) {
+            validateTask12MigrationPrefix();
+        }
+    }
+
+    private void validateKnownForwardSchemaState(Map<Integer, String> appliedMigrations) {
+        boolean task10Installed = appliedMigrations.containsKey(TASK_10_RECONCILIATION_MIGRATION_VERSION);
+        boolean task12Installed = appliedMigrations.containsKey(TASK_12_READINESS_MIGRATION_VERSION);
+        if (task10Installed) {
+            validateTask10ReconciliationSchema(true);
+        } else {
+            validateTask10MigrationPrefix();
+        }
+        if (!task10Installed && task12PhysicalStateStarted()) {
+            // A canonical bootstrap installs the complete physical schema before the immutable
+            // migration ledger is backfilled. Accept that state only when Task 10 is already
+            // complete and exact; a partial or drifted Task 10 still fails this full validator.
+            validateTask10ReconciliationSchema(true);
+        }
+        if (task12Installed) {
+            validateTask12ReadinessSchema(true);
+        } else {
+            validateTask12MigrationPrefix();
+        }
+    }
+
+    /**
+     * Accepts only a strict physical prefix of Task 10. MySQL DDL auto-commits, so a process may
+     * stop between any two schema steps; accepting an arbitrary subset would let a later
+     * same-named object hide drift and make the retry mutate an unverified schema.
+     */
+    private void validateTask10MigrationPrefix() {
+        try {
+            boolean gap = false;
+            for (String table : Arrays.asList("skit_ad_reporting_credential_version",
+                    "skit_ad_reconciliation_allocation", "skit_ad_reconciliation_event_link")) {
+                boolean present = tableExists(table);
+                gap = advancePhysicalPrefix("Task 10 table " + table, present, gap);
+                if (present) {
+                    validateTask10NewTablePrefixShape(table);
+                }
+            }
+
+            gap = advancePhysicalPrefix("Task 10 transitional column skit_ad_report_pull.report_date",
+                    validateTask10TransitionalColumn("report_date", "date NOT NULL", "date DEFAULT NULL"), gap);
+            gap = advancePhysicalPrefix("Task 10 transitional column skit_ad_report_pull.request_hash",
+                    validateTask10TransitionalColumn("request_hash", "binary(32) NOT NULL",
+                            "binary(32) DEFAULT NULL"), gap);
+
+            for (Task2ColumnSpec spec : TASK_10_RECONCILIATION_COLUMN_SPECS) {
+                boolean applied = validatePrefixColumn("Task 10", spec);
+                gap = advancePhysicalPrefix("Task 10 column " + spec.table + "." + spec.column,
+                        applied, gap);
+            }
+
+            gap = validatePrefixIndex("Task 10", "skit_ad_account", "idx_skit_ad_account_report_due",
+                    "provider,status,report_next_allowed_at,report_pull_lease_until,id", false, gap);
+            gap = validatePrefixIndex("Task 10", "skit_ad_report_pull", "idx_skit_report_pull_request",
+                    "tenant_id,ad_account_id,report_date,request_hash", false, gap);
+            gap = validatePrefixIndex("Task 10", "skit_ad_report_pull", "idx_skit_report_pull_credential",
+                    "tenant_id,ad_account_id,credential_version", false, gap);
+            gap = validatePrefixIndex("Task 10", "skit_ad_report_pull", "idx_skit_report_pull_final_window",
+                    "tenant_id,ad_account_id,report_date,final_window,status", false, gap);
+            gap = validatePrefixIndex("Task 10", "skit_ad_revenue_event", "idx_skit_revenue_report_pending",
+                    "tenant_id,ad_account_id,reconciliation_revision_id,occurred_time,id", false, gap);
+            gap = validatePrefixReplacementIndex("Task 10", "skit_ad_report_pull",
+                    "uk_skit_report_pull_response",
+                    "tenant_id,ad_account_id,range_start,range_end,response_hash",
+                    "tenant_id,ad_account_id,range_start,range_end,request_hash,response_hash,"
+                            + "credential_version,final_window", true, gap);
+            gap = validatePrefixReplacementIndex("Task 10", "skit_ad_reconciliation_bucket",
+                    "uk_skit_recon_bucket_identity",
+                    "tenant_id,ad_account_id,bucket_key,report_date,report_timezone,placement_id,"
+                            + "network_firm_id,adsource_id,currency",
+                    "tenant_id,ad_account_id,bucket_key,report_date,report_timezone,app_id,placement_id,"
+                            + "ad_format,network_account_id,network_firm_id,adsource_id,currency",
+                    true, gap);
+            gap = validatePrefixForeignKey("Task 10", new Task2ForeignKeySpec("skit_ad_report_pull",
+                    "fk_skit_report_pull_credential", "tenant_id,ad_account_id,credential_version",
+                    "skit_ad_reporting_credential_version", "tenant_id,ad_account_id,credential_version"), gap);
+            for (Task2CheckSpec spec : TASK_10_RECONCILIATION_CHECK_SPECS) {
+                if (!"skit_ad_reconciliation_event_link".equals(spec.table)) {
+                    gap = validatePrefixCheck("Task 10", spec, gap);
+                }
+            }
+            for (Task2TriggerSpec spec : TASK_10_RECONCILIATION_TRIGGER_SPECS) {
+                gap = validatePrefixTrigger("Task 10", spec, gap);
+            }
+        } catch (IllegalStateException exception) {
+            if (exception.getMessage() != null && exception.getMessage().startsWith("Task 10 migration prefix")) {
+                throw exception;
+            }
+            throw new IllegalStateException("Task 10 migration prefix rejected: " + exception.getMessage(),
+                    exception);
+        }
+    }
+
+    private void validateTask12MigrationPrefix() {
+        try {
+            boolean gap = false;
+            for (Task2ColumnSpec spec : TASK_12_READINESS_COLUMN_SPECS) {
+                gap = advancePhysicalPrefix("Task 12 column " + spec.table + "." + spec.column,
+                        validatePrefixColumn("Task 12", spec), gap);
+            }
+            for (Task2CheckSpec spec : TASK_12_READINESS_CHECK_SPECS) {
+                gap = validatePrefixCheck("Task 12", spec, gap);
+            }
+        } catch (IllegalStateException exception) {
+            if (exception.getMessage() != null && exception.getMessage().startsWith("Task 12 migration prefix")) {
+                throw exception;
+            }
+            throw new IllegalStateException("Task 12 migration prefix rejected: " + exception.getMessage(),
+                    exception);
+        }
+    }
+
+    private boolean task12PhysicalStateStarted() {
+        for (Task2ColumnSpec spec : TASK_12_READINESS_COLUMN_SPECS) {
+            if (columnExists(spec.table, spec.column)) {
+                return true;
+            }
+        }
+        for (Task2CheckSpec spec : TASK_12_READINESS_CHECK_SPECS) {
+            if (!jdbcTemplate.queryForList(CHECK_DEFINITION_QUERY,
+                    String.class, spec.table, spec.constraint).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void validateTask10NewTablePrefixShape(String table) {
+        String expected = SkitAdSchemaSignature.expectedTask10FinalFingerprints().get(table);
+        if (expected == null) {
+            throw new IllegalStateException("no canonical fingerprint exists for new table " + table);
+        }
+        String actual = SkitAdSchemaSignature.rawFingerprint(jdbcTemplate, table);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("incompatible same-named Task 10 table " + table
+                    + ": expected fingerprint=" + expected + ", actual fingerprint=" + actual);
+        }
+    }
+
+    private boolean validateTask10TransitionalColumn(String column, String finalDefinition,
+                                                       String transitionalDefinition) {
+        if (!columnExists("skit_ad_report_pull", column)) {
+            return false;
+        }
+        if (!columnDefinitionMatches("skit_ad_report_pull", column, finalDefinition)
+                && !columnDefinitionMatches("skit_ad_report_pull", column, transitionalDefinition)) {
+            throw new IllegalStateException("incompatible transitional column skit_ad_report_pull." + column);
+        }
+        return true;
+    }
+
+    private boolean validatePrefixColumn(String label, Task2ColumnSpec spec) {
+        if (!columnExists(spec.table, spec.column)) {
+            return false;
+        }
+        if (columnDefinitionMatches(spec.table, spec.column, spec.definition)) {
+            return true;
+        }
+        if (spec.compatibleLegacyDefinition != null
+                && columnDefinitionMatches(spec.table, spec.column, spec.compatibleLegacyDefinition)) {
+            return false;
+        }
+        throw new IllegalStateException(label + " has incompatible column " + spec.table + "." + spec.column);
+    }
+
+    private boolean validatePrefixIndex(String label, String table, String index, String columns,
+                                        boolean unique, boolean gap) {
+        String actual = jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY, String.class, table, index);
+        if (actual == null) {
+            return advancePhysicalPrefix(label + " index " + table + "." + index, false, gap);
+        }
+        String expected = indexDefinition(columns, unique);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException(label + " has incompatible index " + table + "." + index
+                    + ": expected=" + expected + ", actual=" + actual);
+        }
+        return advancePhysicalPrefix(label + " index " + table + "." + index, true, gap);
+    }
+
+    private boolean validatePrefixReplacementIndex(String label, String table, String index,
+            String legacyColumns, String replacementColumns, boolean unique, boolean gap) {
+        String actual = jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY, String.class, table, index);
+        String legacy = indexDefinition(legacyColumns, unique);
+        String replacement = indexDefinition(replacementColumns, unique);
+        if (actual == null) {
+            return advancePhysicalPrefix(label + " replacement index " + table + "." + index,
+                    false, gap);
+        }
+        if (legacy.equals(actual)) {
+            return advancePhysicalPrefix(label + " replacement index " + table + "." + index, false, gap);
+        }
+        if (!replacement.equals(actual)) {
+            throw new IllegalStateException(label + " has incompatible replacement index " + table + "." + index
+                    + ": expected legacy=" + legacy + " or replacement=" + replacement + ", actual=" + actual);
+        }
+        return advancePhysicalPrefix(label + " replacement index " + table + "." + index, true, gap);
+    }
+
+    private boolean validatePrefixForeignKey(String label, Task2ForeignKeySpec spec, boolean gap) {
+        String actual = jdbcTemplate.queryForObject(FOREIGN_KEY_DEFINITION_QUERY,
+                String.class, spec.table, spec.constraint);
+        if (actual == null) {
+            return advancePhysicalPrefix(label + " foreign key " + spec.table + "." + spec.constraint,
+                    false, gap);
+        }
+        String expected = foreignKeyDefinition(spec);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException(label + " has incompatible foreign key " + spec.table + "."
+                    + spec.constraint + ": expected=" + expected + ", actual=" + actual);
+        }
+        return advancePhysicalPrefix(label + " foreign key " + spec.table + "." + spec.constraint,
+                true, gap);
+    }
+
+    private boolean validatePrefixCheck(String label, Task2CheckSpec spec, boolean gap) {
+        List<String> existing = jdbcTemplate.queryForList(CHECK_DEFINITION_QUERY,
+                String.class, spec.table, spec.constraint);
+        if (existing.isEmpty()) {
+            return advancePhysicalPrefix(label + " check " + spec.table + "." + spec.constraint, false, gap);
+        }
+        String expected = normalizeCheckExpression(spec.expression);
+        String actual = existing.size() == 1 ? normalizeCheckExpression(existing.get(0)) : null;
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException(label + " has incompatible check " + spec.table + "."
+                    + spec.constraint + ": expected=" + expected + ", actual=" + actual);
+        }
+        return advancePhysicalPrefix(label + " check " + spec.table + "." + spec.constraint, true, gap);
+    }
+
+    private boolean validatePrefixTrigger(String label, Task2TriggerSpec spec, boolean gap) {
+        List<String> existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY, String.class, spec.trigger);
+        if (existing.isEmpty()) {
+            return advancePhysicalPrefix(label + " trigger " + spec.trigger, false, gap);
+        }
+        validateTask2TriggerDefinition(spec, existing);
+        return advancePhysicalPrefix(label + " trigger " + spec.trigger, true, gap);
+    }
+
+    private static boolean advancePhysicalPrefix(String artifact, boolean present, boolean gap) {
+        if (present && gap) {
+            String task = artifact.startsWith("Task 12") ? "Task 12" : "Task 10";
+            throw new IllegalStateException(task + " migration prefix is out of order at " + artifact);
+        }
+        return gap || !present;
     }
 
     private void validateInstalledMigrations(Map<Integer, String> appliedMigrations) {
@@ -531,11 +1301,21 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         + known.getChecksum() + ". Restore the original migration or repair the schema history.");
             }
         }
+        boolean encounteredPending = false;
+        for (Migration migration : migrations) {
+            if (!appliedMigrations.containsKey(migration.getVersion())) {
+                encounteredPending = true;
+            } else if (encounteredPending) {
+                throw new IllegalStateException("Schema migration history is not a continuous prefix: version "
+                        + migration.getVersion() + " is installed after an earlier known migration is missing.");
+            }
+        }
     }
 
     private boolean hasPendingTask2Migration(Map<Integer, String> appliedMigrations) {
         for (Migration migration : migrations) {
             if (migration.getVersion() >= SkitAdSchemaDdl.VERSION
+                    && migration.getVersion() <= TASK_10_RECONCILIATION_MIGRATION_VERSION
                     && !appliedMigrations.containsKey(migration.getVersion())) {
                 return true;
             }
@@ -589,6 +1369,19 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "enforce ad policy snapshot immutability", policySnapshotImmutabilitySteps()));
         result.add(migrationFromSteps(TASK_5_SCHEMA_HARDENING_MIGRATION_VERSION,
                 "harden Task 5 ad session and entitlement bindings", task5SchemaHardeningSteps()));
+        result.add(migrationFromSteps(TASK_7_SCHEMA_HARDENING_MIGRATION_VERSION,
+                "bind callback receipts and verified advertising facts", task7SchemaHardeningSteps()));
+        result.add(migrationFromSteps(TASK_10_RECONCILIATION_MIGRATION_VERSION,
+                "add tenant-safe Taku reporting and reconciliation pipeline",
+                task10ReconciliationSteps()));
+        result.add(migrationFromSteps(TASK_12_READINESS_MIGRATION_VERSION,
+                "add tenant ad readiness rollout gates", task12ReadinessSteps()));
+        result.add(migrationFromSteps(TASK_11_MANAGEMENT_MIGRATION_VERSION,
+                "add tenant-safe management audit and query schema", task11ManagementSteps()));
+        result.add(migrationFromSteps(TASK_17_RUNTIME_UPDATE_MIGRATION_VERSION,
+                "add signed runtime update manifest state", task17RuntimeUpdateSteps()));
+        result.add(migrationFromSteps(TENANT_RUNTIME_UPDATE_TRUST_ROOT_MIGRATION_VERSION,
+                "add tenant runtime update trust roots", tenantRuntimeUpdateTrustRootSteps()));
         return sortedMigrations(result);
     }
 
@@ -772,6 +1565,22 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 + "END IF; END";
     }
 
+    private static String reportingCredentialUpdateAction() {
+        return "BEGIN IF NOT (" + unchangedColumns("id", "tenant_id", "ad_account_id",
+                "credential_version", "ciphertext", "nonce", "encryption_key_id",
+                "envelope_version", "creator", "create_time", "deleted")
+                + ") THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT="
+                + "'reporting credential identity and material are immutable'; "
+                + "ELSEIF NOT ((NEW.`permission_verified_at` <=> OLD.`permission_verified_at`) OR "
+                + "(OLD.`permission_verified_at` IS NULL AND NEW.`permission_verified_at` IS NOT NULL)) "
+                + "OR NOT (((NEW.`active` <=> OLD.`active`) AND "
+                + "(NEW.`revoked_at` <=> OLD.`revoked_at`)) OR "
+                + "(OLD.`active`=b'1' AND NEW.`active`=b'0' AND OLD.`revoked_at` IS NULL "
+                + "AND NEW.`revoked_at` IS NOT NULL)) "
+                + "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT="
+                + "'reporting credential lifecycle is monotonic'; END IF; END";
+    }
+
     private static String inviteRegistryUpdateAction(String... immutableColumns) {
         return "BEGIN IF NOT (" + unchangedColumns(immutableColumns)
                 + ") THEN SIGNAL SQLSTATE '45000' "
@@ -788,6 +1597,79 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
     private static String rejectDeleteAction(String message) {
         return "BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='" + message + "'; END";
+    }
+
+    private static String callbackInboxMonotonicAction() {
+        String immutableProvenance = unchangedColumns("id", "tenant_id", "ad_account_id", "ad_session_id",
+                "callback_key_version", "reward_secret_version", "provider", "callback_type",
+                "idempotency_key", "provider_user_id", "extra_data_hash", "provider_transaction_id",
+                "provider_show_id", "provider_request_id", "placement_id", "adsource_id", "network_firm_id",
+                "source_currency", "source_amount_units", "amount_scale", "signed_field_mask",
+                "evidence_provenance", "canonical_payload_hash", "authentication_level", "signature_status",
+                "ingress_response_code", "received_at", "creator", "create_time", "deleted");
+        String unchangedPayload = unchangedColumns("payload_ciphertext", "payload_nonce", "payload_key_id",
+                "payload_envelope_version", "payload_expires_at");
+        String unchangedProcessing = unchangedColumns("processing_status", "error_code", "lease_owner",
+                "lease_until", "processing_attempt_count", "next_attempt_at", "processed_at");
+        String validProcessingTransition = "(" + unchangedProcessing + ") OR ("
+                + "(OLD.`processing_status`='PENDING' AND NEW.`processing_status`='PROCESSING' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
+                + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='RETRY_WAIT' AND NEW.`processing_status`='PROCESSING' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
+                + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='PROCESSING' AND NEW.`processing_status`='PROCESSING' "
+                + "AND OLD.`lease_until`<=CURRENT_TIMESTAMP "
+                + "AND (NOT (NEW.`lease_owner` <=> OLD.`lease_owner`) "
+                + "OR NOT (NEW.`lease_until` <=> OLD.`lease_until`)) "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
+                + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='PROCESSING' AND NEW.`processing_status`='RETRY_WAIT' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count` "
+                + "AND NEW.`error_code` IS NOT NULL) OR "
+                + "(OLD.`processing_status`='PROCESSING' "
+                + "AND NEW.`processing_status` IN ('SUCCEEDED','REJECTED','DEAD_LETTER') "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`))";
+        String monotonicDeadLetterAlert = "(NEW.`dead_letter_alerted_at` "
+                + "<=> OLD.`dead_letter_alerted_at`) OR (OLD.`dead_letter_alerted_at` IS NULL "
+                + "AND NEW.`dead_letter_alerted_at` IS NOT NULL "
+                + "AND NEW.`processing_status`='DEAD_LETTER')";
+        return "BEGIN IF NOT (" + immutableProvenance + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback inbox provenance is immutable'; "
+                + "ELSEIF NOT (((NEW.`delivery_integrity_status` <=> OLD.`delivery_integrity_status`) "
+                + "AND (NEW.`integrity_conflict_at` <=> OLD.`integrity_conflict_at`)) OR "
+                + "(OLD.`delivery_integrity_status`='CANONICAL' "
+                + "AND NEW.`delivery_integrity_status`='PAYLOAD_CONFLICT' "
+                + "AND OLD.`integrity_conflict_at` IS NULL "
+                + "AND NEW.`integrity_conflict_at` IS NOT NULL)) THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback inbox integrity is monotonic'; "
+                + "ELSEIF NOT (" + validProcessingTransition + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback processing transition is not allowed'; "
+                + "ELSEIF NOT (" + monotonicDeadLetterAlert + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback dead-letter alert is monotonic'; "
+                + "ELSEIF NOT ((" + unchangedPayload + ") OR "
+                + "(OLD.`processing_status` IN ('SUCCEEDED','REJECTED','DEAD_LETTER') "
+                + "AND NEW.`processing_status`=OLD.`processing_status` "
+                + "AND OLD.`payload_ciphertext` IS NOT NULL AND OLD.`payload_nonce` IS NOT NULL "
+                + "AND OLD.`payload_key_id` IS NOT NULL AND OLD.`payload_envelope_version` IS NOT NULL "
+                + "AND OLD.`payload_expires_at` IS NOT NULL AND OLD.`payload_expires_at` <= CURRENT_TIMESTAMP "
+                + "AND NEW.`payload_ciphertext` IS NULL AND NEW.`payload_nonce` IS NULL "
+                + "AND NEW.`payload_key_id` IS NULL AND NEW.`payload_envelope_version` IS NULL "
+                + "AND NEW.`payload_expires_at` IS NULL)) THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback payload can only be erased after expiry'; END IF; END";
+    }
+
+    private static String entitlementGrantSessionRangeAction() {
+        return "BEGIN DECLARE session_episode_from INT DEFAULT NULL; "
+                + "DECLARE session_episode_to INT DEFAULT NULL; "
+                + "SELECT `episode_from`,`episode_to` INTO session_episode_from,session_episode_to "
+                + "FROM `skit_ad_session` WHERE `tenant_id`=NEW.`tenant_id` "
+                + "AND `id`=NEW.`ad_session_id` AND `member_id`=NEW.`member_id` "
+                + "AND `drama_id`=NEW.`drama_id` "
+                + "AND `provider_transaction_id`=NEW.`provider_transaction_id` FOR SHARE; "
+                + "IF session_episode_from IS NULL OR NEW.`episode_no`<session_episode_from "
+                + "OR NEW.`episode_no`>session_episode_to THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='entitlement grant episode is outside the session scope'; END IF; END";
     }
 
     private static String unchangedColumns(String... columns) {
@@ -871,12 +1753,34 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 INDEX_EXISTS_QUERY, table, index, dropIndexSql(table, index));
     }
 
+    private SchemaStep replaceIndexStep(String table, String index, String legacyColumns,
+                                        String replacementColumns, boolean unique) {
+        return schemaStep("replace-index-if-legacy",
+                () -> replaceIndexIfLegacy(table, index, legacyColumns, replacementColumns, unique),
+                INDEX_DEFINITION_QUERY, table, index,
+                indexDefinition(legacyColumns, unique), indexDefinition(replacementColumns, unique),
+                replaceIndexSql(table, index, replacementColumns, unique));
+    }
+
     private SchemaStep addForeignKeyStep(String table, String constraint, String columns,
                                          String referencedTable, String referencedColumns) {
         String sql = addForeignKeySql(table, constraint, columns, referencedTable, referencedColumns);
         return schemaStep("add-foreign-key-if-missing",
                 () -> addForeignKeyIfMissing(table, constraint, columns, referencedTable, referencedColumns),
                 FOREIGN_KEY_DEFINITION_QUERY, table, constraint, sql);
+    }
+
+    private SchemaStep replaceForeignKeyStep(Task2ForeignKeySpec legacy, Task2ForeignKeySpec replacement) {
+        return schemaStep("replace-foreign-key-if-legacy",
+                () -> replaceForeignKeyIfLegacy(legacy, replacement),
+                FOREIGN_KEY_DEFINITION_QUERY, legacy.table, legacy.constraint,
+                foreignKeyDefinition(legacy), foreignKeyDefinition(replacement),
+                dropForeignKeySql(legacy.table, legacy.constraint),
+                INDEX_DEFINITION_QUERY, "1:" + legacy.columns, "1:" + replacement.columns,
+                dropIndexSql(legacy.table, legacy.constraint),
+                addForeignKeySql(replacement.table, replacement.constraint,
+                        quoteColumns(replacement.columns), replacement.referencedTable,
+                        quoteColumns(replacement.referencedColumns)));
     }
 
     private SchemaStep addCheckStep(String table, String constraint, String expression) {
@@ -924,11 +1828,29 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return "ALTER TABLE `" + table + "` DROP INDEX `" + index + "`";
     }
 
+    private static String replaceIndexSql(String table, String index, String columns, boolean unique) {
+        return "ALTER TABLE `" + table + "` DROP INDEX `" + index + "`, ADD "
+                + (unique ? "UNIQUE " : "") + "INDEX `" + index + "` (" + columns + ")";
+    }
+
+    private static String indexDefinition(String columns, boolean unique) {
+        return (unique ? "0:" : "1:") + normalizeColumnList(columns);
+    }
+
+    private static String dropForeignKeySql(String table, String constraint) {
+        return "ALTER TABLE `" + table + "` DROP FOREIGN KEY `" + constraint + "`";
+    }
+
     private static String addForeignKeySql(String table, String constraint, String columns,
                                            String referencedTable, String referencedColumns) {
         return "ALTER TABLE `" + table + "` ADD CONSTRAINT `" + constraint + "` FOREIGN KEY ("
                 + columns + ") REFERENCES `" + referencedTable + "` (" + referencedColumns
                 + ") ON UPDATE RESTRICT ON DELETE RESTRICT";
+    }
+
+    private static String foreignKeyDefinition(Task2ForeignKeySpec spec) {
+        return spec.columns + "->" + spec.referencedTable + "(" + spec.referencedColumns
+                + "):RESTRICT:RESTRICT";
     }
 
     private static String addCheckSql(String table, String constraint, String expression) {
@@ -1632,6 +2554,216 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return steps;
     }
 
+    private List<SchemaStep> task7SchemaHardeningSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (Task2ColumnSpec spec : TASK_7_SCHEMA_COLUMN_SPECS) {
+            steps.add(task2ColumnStep(spec));
+        }
+        steps.add(addIndexStep("skit_ad_session", "uk_skit_ad_session_account_binding",
+                "`tenant_id`,`id`,`ad_account_id`", true));
+        steps.add(addIndexStep("skit_ad_session", "uk_skit_ad_session_revenue_binding",
+                "`tenant_id`,`id`,`ad_account_id`,`member_id`,`policy_snapshot_id`", true));
+        steps.add(addIndexStep("skit_ad_session", "uk_skit_ad_session_grant_envelope",
+                "`tenant_id`,`id`,`member_id`,`drama_id`,`provider_transaction_id`", true));
+        steps.add(addIndexStep("skit_ad_callback_inbox", "uk_skit_callback_inbox_attempt_binding",
+                "`tenant_id`,`id`,`ad_account_id`,`ad_session_ref_id`", true));
+        steps.add(addIndexStep("skit_ad_revenue_event", "uk_skit_revenue_event_snapshot_binding",
+                "`tenant_id`,`id`,`policy_snapshot_id`", true));
+        steps.add(addIndexStep("skit_ad_callback_inbox", "idx_skit_callback_inbox_payload_expiry",
+                "`payload_expires_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_callback_attempt", "idx_skit_callback_attempt_retention",
+                "`received_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_callback_edge_attempt", "idx_skit_callback_edge_retention",
+                "`received_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_network_capability", "idx_skit_network_cap_readiness",
+                "`tenant_id`,`ad_account_id`,`network_firm_id`,`enabled`,`reward_authority`,`verified_at`",
+                false));
+        steps.add(replaceForeignKeyStep(TASK_7_LEGACY_GRANT_SESSION_BINDING,
+                TASK_7_GRANT_SESSION_BINDING));
+        for (Task2ForeignKeySpec spec : TASK_7_SCHEMA_FOREIGN_KEY_SPECS) {
+            steps.add(addForeignKeyStep(spec.table, spec.constraint, quoteColumns(spec.columns),
+                    spec.referencedTable, quoteColumns(spec.referencedColumns)));
+        }
+        for (Task2CheckSpec spec : TASK_7_SCHEMA_CHECK_SPECS) {
+            steps.add(addCheckStep(spec.table, spec.constraint, spec.expression));
+        }
+        for (Task2TriggerSpec spec : TASK_7_SCHEMA_TRIGGER_SPECS) {
+            steps.add(task2TriggerStep(spec));
+        }
+        steps.add(schemaStep("validate-task7-schema-hardening", () -> validateTask7SchemaHardening(true),
+                "task7-callback-finance-signatures-v1",
+                SkitAdSchemaSignature.expectedTask7HardenedFingerprints()));
+        return steps;
+    }
+
+    private List<SchemaStep> task10ReconciliationSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        steps.add(executeSqlStep(CREATE_TASK_10_REPORTING_CREDENTIAL_TABLE_SQL));
+        steps.add(executeSqlStep(CREATE_TASK_10_RECONCILIATION_ALLOCATION_TABLE_SQL));
+        steps.add(executeSqlStep(CREATE_TASK_10_RECONCILIATION_EVENT_LINK_TABLE_SQL));
+
+        // Existing pull history predates the provider-day/request envelope. Backfill it before
+        // making those two facts mandatory; the response hash is the only immutable legacy digest.
+        steps.add(addColumnStep("skit_ad_report_pull", "report_date", "date DEFAULT NULL"));
+        steps.add(addColumnStep("skit_ad_report_pull", "request_hash", "binary(32) DEFAULT NULL"));
+        steps.add(updateSqlStep("UPDATE `skit_ad_report_pull` SET `report_date`=DATE(`range_start`) "
+                + "WHERE `report_date` IS NULL"));
+        steps.add(updateSqlStep("UPDATE `skit_ad_report_pull` SET `request_hash`=`response_hash` "
+                + "WHERE `request_hash` IS NULL"));
+        for (Task2ColumnSpec spec : TASK_10_RECONCILIATION_COLUMN_SPECS) {
+            steps.add(task2ColumnStep(spec));
+        }
+        steps.add(updateSqlStep("UPDATE `skit_ad_account` SET `config_data`="
+                + "JSON_SET(`config_data`,'$.adFormat','rewarded_video') "
+                + "WHERE `provider`='TAKU' AND JSON_VALID(`config_data`) "
+                + "AND JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.adFormat')) IS NULL"));
+        // Old buckets had no attributable/suspense split; preserving their full actual amount as
+        // suspense is the only fail-closed migration that cannot accidentally pay a user.
+        steps.add(updateSqlStep("UPDATE `skit_ad_reconciliation_bucket` SET "
+                + "`attributable_actual_units`=0,`suspense_units`=`report_actual_units` "
+                + "WHERE `attributable_actual_units` + `suspense_units` <> `report_actual_units`"));
+
+        steps.add(addIndexStep("skit_ad_account", "idx_skit_ad_account_report_due",
+                "`provider`,`status`,`report_next_allowed_at`,`report_pull_lease_until`,`id`", false));
+        steps.add(addIndexStep("skit_ad_report_pull", "idx_skit_report_pull_request",
+                "`tenant_id`,`ad_account_id`,`report_date`,`request_hash`", false));
+        steps.add(addIndexStep("skit_ad_report_pull", "idx_skit_report_pull_credential",
+                "`tenant_id`,`ad_account_id`,`credential_version`", false));
+        steps.add(addIndexStep("skit_ad_report_pull", "idx_skit_report_pull_final_window",
+                "`tenant_id`,`ad_account_id`,`report_date`,`final_window`,`status`", false));
+        steps.add(addIndexStep("skit_ad_revenue_event", "idx_skit_revenue_report_pending",
+                "`tenant_id`,`ad_account_id`,`reconciliation_revision_id`,`occurred_time`,`id`", false));
+        steps.add(replaceIndexStep("skit_ad_report_pull", "uk_skit_report_pull_response",
+                "`tenant_id`,`ad_account_id`,`range_start`,`range_end`,`response_hash`",
+                "`tenant_id`,`ad_account_id`,`range_start`,`range_end`,`request_hash`,`response_hash`,"
+                        + "`credential_version`,`final_window`", true));
+        steps.add(replaceIndexStep("skit_ad_reconciliation_bucket", "uk_skit_recon_bucket_identity",
+                "`tenant_id`,`ad_account_id`,`bucket_key`,`report_date`,`report_timezone`,`placement_id`,"
+                        + "`network_firm_id`,`adsource_id`,`currency`",
+                "`tenant_id`,`ad_account_id`,`bucket_key`,`report_date`,`report_timezone`,`app_id`,"
+                        + "`placement_id`,`ad_format`,`network_account_id`,`network_firm_id`,"
+                        + "`adsource_id`,`currency`", true));
+        steps.add(addForeignKeyStep("skit_ad_report_pull", "fk_skit_report_pull_credential",
+                "`tenant_id`,`ad_account_id`,`credential_version`",
+                "skit_ad_reporting_credential_version",
+                "`tenant_id`,`ad_account_id`,`credential_version`"));
+        for (Task2CheckSpec spec : TASK_10_RECONCILIATION_CHECK_SPECS) {
+            steps.add(addCheckStep(spec.table, spec.constraint, spec.expression));
+        }
+        for (Task2TriggerSpec spec : TASK_10_RECONCILIATION_TRIGGER_SPECS) {
+            steps.add(task2TriggerStep(spec));
+        }
+        steps.add(schemaStep("validate-task10-reconciliation-schema",
+                () -> validateTask10ReconciliationSchema(true),
+                "task10-taku-reporting-reconciliation-v1"));
+        return steps;
+    }
+
+    private List<SchemaStep> task12ReadinessSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (Task2ColumnSpec spec : TASK_12_READINESS_COLUMN_SPECS) {
+            steps.add(task2ColumnStep(spec));
+        }
+        for (Task2CheckSpec spec : TASK_12_READINESS_CHECK_SPECS) {
+            steps.add(addCheckStep(spec.table, spec.constraint, spec.expression));
+        }
+        steps.add(schemaStep("validate-task12-ad-readiness-schema",
+                () -> validateTask12ReadinessSchema(true),
+                "task12-ad-readiness-rollout-v1"));
+        return steps;
+    }
+
+    private List<SchemaStep> task11ManagementSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        steps.add(executeSqlStep(CREATE_TASK_11_MANAGEMENT_AUDIT_TABLE_SQL));
+        steps.add(executeSqlStep(CREATE_TASK_11_CALLBACK_REPLAY_TABLE_SQL));
+        steps.add(executeSqlStep(CREATE_TASK_11_SECURITY_REVOCATION_TABLE_SQL));
+        steps.add(executeSqlStep(CREATE_TASK_11_EXPORT_TASK_TABLE_SQL));
+
+        steps.add(addIndexStep("skit_ad_session", "idx_skit_ad_session_management_account",
+                "`tenant_id`,`ad_account_id`,`create_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_session", "idx_skit_ad_session_management_reward",
+                "`tenant_id`,`reward_verification_status`,`create_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_management_account",
+                "`tenant_id`,`ad_account_id`,`received_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_management_status",
+                "`tenant_id`,`processing_status`,`received_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_revenue_event", "idx_skit_revenue_management_time",
+                "`tenant_id`,`occurred_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_revenue_event", "idx_skit_revenue_management_member",
+                "`tenant_id`,`source_member_id`,`occurred_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_revenue_event",
+                "idx_skit_revenue_management_reconciliation",
+                "`tenant_id`,`reconciliation_status`,`source_currency`,`occurred_time`,`id`", false));
+        steps.add(addIndexStep("skit_commission_ledger", "idx_skit_ledger_management_balance",
+                "`tenant_id`,`currency`,`balance_bucket`,`create_time`,`id`", false));
+        steps.add(addIndexStep("skit_commission_ledger", "idx_skit_ledger_management_event",
+                "`tenant_id`,`event_id`,`id`", false));
+        steps.add(addIndexStep("skit_ad_report_pull", "idx_skit_report_pull_management_account",
+                "`tenant_id`,`ad_account_id`,`pulled_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_report_pull", "idx_skit_report_pull_management_status",
+                "`tenant_id`,`status`,`pulled_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_reconciliation_bucket",
+                "idx_skit_recon_bucket_management_account",
+                "`tenant_id`,`ad_account_id`,`report_date`,`id`", false));
+        steps.add(addIndexStep("skit_ad_reconciliation_revision",
+                "idx_skit_recon_revision_management_bucket",
+                "`tenant_id`,`reconciliation_bucket_id`,`revision_no`,`id`", false));
+        steps.add(addIndexStep("skit_member_closure",
+                "idx_skit_member_closure_ancestor_distance",
+                "`tenant_id`,`ancestor_id`,`distance`,`descendant_id`", false));
+        // Platform-wide audit scans are only available to super_admin and intentionally omit
+        // tenant_id as the leading column. Keep the names/shapes explicit in the schema
+        // signature allow-list so a tenant query can never accidentally depend on them.
+        steps.add(addIndexStep("skit_ad_session", "idx_skit_ad_session_global_created",
+                "`create_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_revenue_event", "idx_skit_ad_revenue_global_occurred",
+                "`occurred_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_callback_inbox", "idx_skit_ad_callback_global_received",
+                "`received_at`,`id`", false));
+        steps.add(addIndexStep("skit_ad_reconciliation_bucket", "idx_skit_ad_recon_bucket_global_date",
+                "`report_date`,`id`", false));
+        for (Task2TriggerSpec spec : TASK_11_MANAGEMENT_TRIGGER_SPECS) {
+            steps.add(task2TriggerStep(spec));
+        }
+        steps.add(schemaStep("validate-task11-management-schema",
+                () -> validateTask11ManagementSchema(true),
+                "task11-management-audit-query-v1"));
+        return steps;
+    }
+
+    private List<SchemaStep> task17RuntimeUpdateSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (Task2ColumnSpec spec : TASK_17_RUNTIME_UPDATE_COLUMN_SPECS) {
+            steps.add(task2ColumnStep(spec));
+        }
+        for (Task2CheckSpec spec : TASK_17_RUNTIME_UPDATE_CHECK_SPECS) {
+            steps.add(addCheckStep(spec.table, spec.constraint, spec.expression));
+        }
+        steps.add(schemaStep("validate-task17-runtime-update-schema",
+                () -> validateTask17RuntimeUpdateSchema(true),
+                "task17-signed-runtime-update-v1"));
+        return steps;
+    }
+
+    private List<SchemaStep> tenantRuntimeUpdateTrustRootSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (Task2ColumnSpec spec : TENANT_RUNTIME_UPDATE_TRUST_ROOT_COLUMN_SPECS) {
+            steps.add(task2ColumnStep(spec));
+        }
+        steps.add(addCheckStep(TENANT_RUNTIME_UPDATE_TRUST_ROOT_CHECK_SPEC.table,
+                TENANT_RUNTIME_UPDATE_TRUST_ROOT_CHECK_SPEC.constraint,
+                TENANT_RUNTIME_UPDATE_TRUST_ROOT_CHECK_SPEC.expression));
+        steps.add(addIndexStep("skit_app_release_profile", "uk_skit_app_release_runtime_key",
+                "`active_runtime_update_key_fingerprint`", true));
+        steps.add(schemaStep("validate-tenant-runtime-update-trust-root-schema",
+                () -> validateTenantRuntimeUpdateTrustRootSchema(true),
+                "tenant-runtime-update-trust-root-v1"));
+        return steps;
+    }
+
     void seedStandardAgentPackage() {
         seedStandardAgentPackageStep().execute();
     }
@@ -1767,9 +2899,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         "SELECT `g`.`tenant_id`,`g`.`id`,`g`.`ad_session_id` FROM `skit_entitlement_grant` `g` "
                                 + "LEFT JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`g`.`tenant_id` "
                                 + "AND `s`.`id`=`g`.`ad_session_id` AND `s`.`member_id`=`g`.`member_id` "
-                                + "AND `s`.`drama_id`=`g`.`drama_id` AND `s`.`episode_from`=`g`.`episode_no` "
+                                + "AND `s`.`drama_id`=`g`.`drama_id` "
                                 + "AND `s`.`provider_transaction_id`=`g`.`provider_transaction_id` "
-                                + "WHERE `s`.`id` IS NULL ORDER BY `g`.`tenant_id`,`g`.`id` LIMIT 100");
+                                + "WHERE `s`.`id` IS NULL OR `g`.`episode_no`<`s`.`episode_from` "
+                                + "OR `g`.`episode_no`>`s`.`episode_to` "
+                                + "ORDER BY `g`.`tenant_id`,`g`.`id` LIMIT 100");
             }
             if (tableExists("skit_content_entitlement")) {
                 assertNoTask5PreflightRows("same-tenant entitlement grant binding",
@@ -1787,6 +2921,145 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         if (!rows.isEmpty()) {
             throw new IllegalStateException("Task 5 schema preflight rejected " + diagnostic
                     + " before any Task 5 DDL. Evidence=" + rows);
+        }
+    }
+
+    private void validateTask7SchemaHardeningPreflight() {
+        validateTask7SchemaHardening(false);
+        if (tableExists("skit_ad_callback_inbox") && tableExists("skit_ad_session")) {
+            assertNoTask7PreflightRows("callback inbox session/account binding",
+                    "SELECT `i`.`tenant_id`,`i`.`id` AS `inbox_id`,`i`.`ad_account_id` AS `inbox_account_id`,"
+                            + "`i`.`ad_session_id`,`s`.`ad_account_id` AS `session_account_id` "
+                            + "FROM `skit_ad_callback_inbox` `i` JOIN `skit_ad_session` `s` "
+                            + "ON `s`.`tenant_id`=`i`.`tenant_id` AND `s`.`id`=`i`.`ad_session_id` "
+                            + "WHERE `i`.`ad_account_id`<>`s`.`ad_account_id` "
+                            + "ORDER BY `i`.`tenant_id`,`i`.`id` LIMIT 100");
+        }
+        if (tableExists("skit_ad_callback_attempt") && tableExists("skit_ad_callback_inbox")) {
+            assertNoTask7PreflightRows("callback attempt inbox/account/session binding",
+                    "SELECT `a`.`tenant_id`,`a`.`id` AS `attempt_id`,`a`.`callback_inbox_id`,"
+                            + "`a`.`ad_account_id`,`a`.`ad_session_id` "
+                            + "FROM `skit_ad_callback_attempt` `a` JOIN `skit_ad_callback_inbox` `i` "
+                            + "ON `i`.`tenant_id`=`a`.`tenant_id` AND `i`.`id`=`a`.`callback_inbox_id` "
+                            + "WHERE `a`.`ad_account_id`<>`i`.`ad_account_id` "
+                            + "OR NOT (`a`.`ad_session_id` <=> `i`.`ad_session_id`) "
+                            + "ORDER BY `a`.`tenant_id`,`a`.`id` LIMIT 100");
+        }
+        if (tableExists("skit_ad_revenue_event") && tableExists("skit_ad_session")
+                && tableExists("skit_ad_callback_inbox") && tableExists("skit_ad_policy_snapshot")) {
+            assertNoTask7PreflightRows("verified revenue session/inbox/snapshot binding",
+                    "SELECT `r`.`tenant_id`,`r`.`id` AS `event_id`,`r`.`ad_account_id`,"
+                            + "`r`.`ad_session_id`,`r`.`callback_inbox_id`,`r`.`policy_snapshot_id` "
+                            + "FROM `skit_ad_revenue_event` `r` "
+                            + "LEFT JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`r`.`tenant_id` "
+                            + "AND `s`.`id`=`r`.`ad_session_id` "
+                            + "LEFT JOIN `skit_ad_callback_inbox` `i` ON `i`.`tenant_id`=`r`.`tenant_id` "
+                            + "AND `i`.`id`=`r`.`callback_inbox_id` "
+                            + "LEFT JOIN `skit_ad_policy_snapshot` `p` ON `p`.`tenant_id`=`r`.`tenant_id` "
+                            + "AND `p`.`id`=`r`.`policy_snapshot_id` WHERE `r`.`legacy_unverified`=b'0' AND ("
+                            + "`r`.`ad_session_id` IS NULL OR `r`.`callback_inbox_id` IS NULL "
+                            + "OR `r`.`policy_snapshot_id` IS NULL OR `s`.`id` IS NULL OR `i`.`id` IS NULL "
+                            + "OR `p`.`id` IS NULL OR `s`.`ad_account_id`<>`r`.`ad_account_id` "
+                            + "OR `s`.`member_id`<>`r`.`source_member_id` "
+                            + "OR `s`.`policy_snapshot_id`<>`r`.`policy_snapshot_id` "
+                            + "OR `i`.`ad_account_id`<>`r`.`ad_account_id` "
+                            + "OR NOT (`i`.`ad_session_id` <=> `r`.`ad_session_id`)) "
+                            + "ORDER BY `r`.`tenant_id`,`r`.`id` LIMIT 100");
+        }
+        if (tableExists("skit_commission_ledger") && tableExists("skit_ad_revenue_event")) {
+            assertNoTask7PreflightRows("verified ledger event/snapshot binding",
+                    "SELECT `l`.`tenant_id`,`l`.`id` AS `ledger_id`,`l`.`event_id`,`l`.`policy_snapshot_id` "
+                            + "FROM `skit_commission_ledger` `l` LEFT JOIN `skit_ad_revenue_event` `r` "
+                            + "ON `r`.`tenant_id`=`l`.`tenant_id` AND `r`.`id`=`l`.`event_id` "
+                            + "WHERE `l`.`legacy_unverified`=b'0' AND (`l`.`policy_snapshot_id` IS NULL "
+                            + "OR `r`.`id` IS NULL OR NOT (`l`.`policy_snapshot_id` <=> `r`.`policy_snapshot_id`)) "
+                            + "ORDER BY `l`.`tenant_id`,`l`.`id` LIMIT 100");
+        }
+        if (tableExists("skit_entitlement_grant") && tableExists("skit_ad_session")) {
+            assertNoTask7PreflightRows("entitlement grant session range binding",
+                    "SELECT `g`.`tenant_id`,`g`.`id` AS `grant_id`,`g`.`ad_session_id`,"
+                            + "`g`.`member_id`,`g`.`drama_id`,`g`.`episode_no` "
+                            + "FROM `skit_entitlement_grant` `g` LEFT JOIN `skit_ad_session` `s` "
+                            + "ON `s`.`tenant_id`=`g`.`tenant_id` AND `s`.`id`=`g`.`ad_session_id` "
+                            + "AND `s`.`member_id`=`g`.`member_id` AND `s`.`drama_id`=`g`.`drama_id` "
+                            + "AND `s`.`provider_transaction_id`=`g`.`provider_transaction_id` "
+                            + "WHERE `s`.`id` IS NULL OR `g`.`episode_no`<`s`.`episode_from` "
+                            + "OR `g`.`episode_no`>`s`.`episode_to` "
+                            + "ORDER BY `g`.`tenant_id`,`g`.`id` LIMIT 100");
+        }
+        if (tableExists("skit_ad_callback_inbox")) {
+            assertNoTask7PreflightRows("callback processing error state",
+                    "SELECT `tenant_id`,`id`,`processing_status`,`processing_attempt_count` "
+                            + "FROM `skit_ad_callback_inbox` WHERE NOT ((`processing_status` IN "
+                            + "('PENDING','PROCESSING','SUCCEEDED') AND `error_code` IS NULL) OR "
+                            + "(`processing_status` IN ('RETRY_WAIT','REJECTED','DEAD_LETTER') "
+                            + "AND `error_code` IS NOT NULL)) ORDER BY `tenant_id`,`id` LIMIT 100");
+            assertNoTask7PreflightRows("callback dead-letter alert state",
+                    "SELECT `tenant_id`,`id`,`processing_status`,`processing_attempt_count` "
+                            + "FROM `skit_ad_callback_inbox` WHERE `dead_letter_alerted_at` IS NOT NULL "
+                            + "AND (`processing_status`<>'DEAD_LETTER' OR `processed_at` IS NULL "
+                            + "OR `dead_letter_alerted_at`<`processed_at`) "
+                            + "ORDER BY `tenant_id`,`id` LIMIT 100");
+        }
+        if (tableExists("skit_ad_network_capability")) {
+            assertNoTask7PreflightRows("network reward authority",
+                    "SELECT `tenant_id`,`id`,`ad_account_id`,`network_firm_id`,`reward_authority` "
+                            + "FROM `skit_ad_network_capability` WHERE `reward_authority` NOT IN "
+                            + "('SIGNED_REWARD','UNSIGNED_PROVIDER_OBSERVATION','CLIENT_ONLY','NONE') "
+                            + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            assertNoTask7PreflightRows("signed reward network readiness",
+                    "SELECT `tenant_id`,`id`,`ad_account_id`,`network_firm_id`,`reward_authority`,"
+                            + "`supports_user_id`,`supports_custom_data`,`supports_stable_transaction`,"
+                            + "`verified_at` FROM `skit_ad_network_capability` "
+                            + "WHERE `reward_authority`='SIGNED_REWARD' AND ("
+                            + "`supports_user_id`<>b'1' OR `supports_custom_data`<>b'1' "
+                            + "OR `supports_stable_transaction`<>b'1' OR `verified_at` IS NULL) "
+                            + "ORDER BY `tenant_id`,`id` LIMIT 100");
+        }
+        if (tableExists("skit_ad_session")) {
+            boolean hasInboxId = columnExists("skit_ad_session", "reward_callback_inbox_id");
+            boolean hasReceivedAt = columnExists("skit_ad_session", "reward_callback_received_at");
+            if (hasInboxId && hasReceivedAt && tableExists("skit_ad_callback_inbox")) {
+                assertNoTask7PreflightRows("reward callback receipt marker",
+                        "SELECT `s`.`tenant_id`,`s`.`id` AS `session_id`,`s`.`reward_callback_inbox_id`,"
+                                + "`s`.`reward_callback_received_at` FROM `skit_ad_session` `s` "
+                                + "LEFT JOIN `skit_ad_callback_inbox` `i` ON `i`.`tenant_id`=`s`.`tenant_id` "
+                                + "AND `i`.`id`=`s`.`reward_callback_inbox_id` "
+                                + "AND `i`.`ad_account_id`=`s`.`ad_account_id` "
+                                + "AND `i`.`ad_session_id`=`s`.`id` WHERE NOT (("
+                                + "`s`.`reward_callback_inbox_id` IS NULL "
+                                + "AND `s`.`reward_callback_received_at` IS NULL) OR ("
+                                + "`s`.`reward_callback_inbox_id` IS NOT NULL "
+                                + "AND `s`.`reward_callback_received_at` IS NOT NULL "
+                                + "AND `s`.`reward_callback_received_at`<=`s`.`reward_accept_until` "
+                                + "AND `i`.`id` IS NOT NULL)) ORDER BY `s`.`tenant_id`,`s`.`id` LIMIT 100");
+            } else if (hasInboxId) {
+                assertNoTask7PreflightRows("partial reward callback receipt marker",
+                        "SELECT `tenant_id`,`id` AS `session_id`,`reward_callback_inbox_id` "
+                                + "FROM `skit_ad_session` WHERE `reward_callback_inbox_id` IS NOT NULL "
+                                + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            } else if (hasReceivedAt) {
+                assertNoTask7PreflightRows("partial reward callback receipt marker",
+                        "SELECT `tenant_id`,`id` AS `session_id`,`reward_callback_received_at` "
+                                + "FROM `skit_ad_session` WHERE `reward_callback_received_at` IS NOT NULL "
+                                + "ORDER BY `tenant_id`,`id` LIMIT 100");
+            }
+        }
+        if (tableExists("skit_ad_callback_inbox")
+                && columnExists("skit_ad_callback_inbox", "ingress_response_code")) {
+            assertNoTask7PreflightRows("callback ingress response code",
+                    "SELECT `tenant_id`,`id` AS `inbox_id`,`ingress_response_code` "
+                            + "FROM `skit_ad_callback_inbox` WHERE `ingress_response_code` IS NOT NULL "
+                            + "AND `ingress_response_code` NOT IN (200,601,602) "
+                            + "ORDER BY `tenant_id`,`id` LIMIT 100");
+        }
+    }
+
+    private void assertNoTask7PreflightRows(String diagnostic, String sql) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+        if (!rows.isEmpty()) {
+            throw new IllegalStateException("Task 7 schema preflight rejected " + diagnostic
+                    + " before any Task 7 DDL. Evidence=" + rows);
         }
     }
 
@@ -2071,10 +3344,365 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         }
     }
 
+    void validateTask7SchemaHardening(boolean requireAll) {
+        for (Task2ColumnSpec spec : TASK_7_SCHEMA_COLUMN_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 7 schema is missing required table " + spec.table);
+                }
+                continue;
+            }
+            if (!columnExists(spec.table, spec.column)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 7 schema is missing required column "
+                            + spec.table + "." + spec.column);
+                }
+                continue;
+            }
+            validateColumnDefinition(spec.table, spec.column, spec.definition);
+        }
+        validateTask5Index("skit_ad_session", "uk_skit_ad_session_account_binding",
+                "tenant_id,id,ad_account_id", true, requireAll);
+        validateTask5Index("skit_ad_session", "uk_skit_ad_session_revenue_binding",
+                "tenant_id,id,ad_account_id,member_id,policy_snapshot_id", true, requireAll);
+        validateTask5Index("skit_ad_session", "uk_skit_ad_session_grant_envelope",
+                "tenant_id,id,member_id,drama_id,provider_transaction_id", true, requireAll);
+        validateTask5Index("skit_ad_callback_inbox", "uk_skit_callback_inbox_attempt_binding",
+                "tenant_id,id,ad_account_id,ad_session_ref_id", true, requireAll);
+        validateTask5Index("skit_ad_revenue_event", "uk_skit_revenue_event_snapshot_binding",
+                "tenant_id,id,policy_snapshot_id", true, requireAll);
+        validateTask5Index("skit_ad_callback_inbox", "idx_skit_callback_inbox_payload_expiry",
+                "payload_expires_at,id", false, requireAll);
+        validateTask5Index("skit_ad_callback_attempt", "idx_skit_callback_attempt_retention",
+                "received_at,id", false, requireAll);
+        validateTask5Index("skit_ad_callback_edge_attempt", "idx_skit_callback_edge_retention",
+                "received_at,id", false, requireAll);
+        validateTask5Index("skit_ad_network_capability", "idx_skit_network_cap_readiness",
+                "tenant_id,ad_account_id,network_firm_id,enabled,reward_authority,verified_at",
+                false, requireAll);
+        validateTask7GrantSessionBinding(requireAll);
+        for (Task2ForeignKeySpec spec : TASK_7_SCHEMA_FOREIGN_KEY_SPECS) {
+            validateTask5ForeignKey(spec, requireAll);
+        }
+        for (Task2CheckSpec spec : TASK_7_SCHEMA_CHECK_SPECS) {
+            validateTask5Check(spec, requireAll);
+        }
+        for (Task2TriggerSpec spec : TASK_7_SCHEMA_TRIGGER_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 7 schema is missing required table " + spec.table);
+                }
+                continue;
+            }
+            List<String> existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY,
+                    String.class, spec.trigger);
+            if (existing.isEmpty() && !requireAll) {
+                continue;
+            }
+            validateTask2TriggerDefinition(spec, existing);
+        }
+        if (requireAll) {
+            for (Map.Entry<String, String> expected
+                    : SkitAdSchemaSignature.expectedTask7HardenedFingerprints().entrySet()) {
+                validateExactTableFingerprint("Task 7 hardened", expected.getKey(), expected.getValue(), true);
+            }
+        }
+    }
+
+    void validateTask10ReconciliationSchema(boolean requireAll) {
+        for (String table : Arrays.asList("skit_ad_reporting_credential_version",
+                "skit_ad_reconciliation_allocation", "skit_ad_reconciliation_event_link")) {
+            if (!tableExists(table) && requireAll) {
+                throw new IllegalStateException("Task 10 schema is missing required table " + table);
+            }
+        }
+        for (Task2ColumnSpec spec : TASK_10_RECONCILIATION_COLUMN_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 10 schema is missing required table " + spec.table);
+                }
+                continue;
+            }
+            if (!columnExists(spec.table, spec.column)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 10 schema is missing required column "
+                            + spec.table + "." + spec.column);
+                }
+                continue;
+            }
+            validateColumnDefinition(spec.table, spec.column, spec.definition);
+        }
+        validateCriticalTask2Column("skit_ad_reporting_credential_version", "ciphertext",
+                "varbinary(4096) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_ad_reporting_credential_version", "nonce",
+                "binary(12) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_ad_reconciliation_allocation", "cumulative_target_units",
+                "bigint NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_ad_reconciliation_event_link", "actual_units",
+                "bigint NOT NULL", requireAll);
+        validateTask5Index("skit_ad_account", "idx_skit_ad_account_report_due",
+                "provider,status,report_next_allowed_at,report_pull_lease_until,id", false, requireAll);
+        validateTask5Index("skit_ad_report_pull", "idx_skit_report_pull_request",
+                "tenant_id,ad_account_id,report_date,request_hash", false, requireAll);
+        validateTask5Index("skit_ad_report_pull", "idx_skit_report_pull_credential",
+                "tenant_id,ad_account_id,credential_version", false, requireAll);
+        validateTask5Index("skit_ad_report_pull", "idx_skit_report_pull_final_window",
+                "tenant_id,ad_account_id,report_date,final_window,status", false, requireAll);
+        validateTask5Index("skit_ad_revenue_event", "idx_skit_revenue_report_pending",
+                "tenant_id,ad_account_id,reconciliation_revision_id,occurred_time,id",
+                false, requireAll);
+        validateTask5Index("skit_ad_report_pull", "uk_skit_report_pull_response",
+                "tenant_id,ad_account_id,range_start,range_end,request_hash,response_hash,credential_version,"
+                        + "final_window",
+                true, requireAll);
+        validateTask5Index("skit_ad_reconciliation_bucket", "uk_skit_recon_bucket_identity",
+                "tenant_id,ad_account_id,bucket_key,report_date,report_timezone,app_id,placement_id,"
+                        + "ad_format,network_account_id,network_firm_id,adsource_id,currency",
+                true, requireAll);
+        validateTask5Index("skit_ad_reporting_credential_version",
+                "uk_skit_reporting_credential_version",
+                "tenant_id,ad_account_id,credential_version", true, requireAll);
+        validateTask5Index("skit_ad_reporting_credential_version",
+                "uk_skit_reporting_credential_active", "tenant_id,active_account_id", true, requireAll);
+        validateTask5Index("skit_ad_reconciliation_allocation",
+                "uk_skit_recon_allocation_canonical",
+                "tenant_id,event_id,reconciliation_revision_id,beneficiary_type,"
+                        + "beneficiary_member_id,level_no,policy_snapshot_id", true, requireAll);
+        validateTask5Index("skit_ad_reconciliation_event_link",
+                "uk_skit_recon_event_link_tenant_id", "tenant_id,id", true, requireAll);
+        validateTask5Index("skit_ad_reconciliation_event_link",
+                "uk_skit_recon_event_link_canonical",
+                "tenant_id,reconciliation_revision_id,event_id", true, requireAll);
+        validateTask5Index("skit_ad_reconciliation_event_link",
+                "idx_skit_recon_event_link_history",
+                "tenant_id,event_id,revision_no,id", false, requireAll);
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_ad_report_pull",
+                "fk_skit_report_pull_credential", "tenant_id,ad_account_id,credential_version",
+                "skit_ad_reporting_credential_version", "tenant_id,ad_account_id,credential_version"),
+                requireAll);
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_ad_reconciliation_event_link",
+                "fk_skit_recon_event_link_bucket", "tenant_id,reconciliation_bucket_id",
+                "skit_ad_reconciliation_bucket", "tenant_id,id"), requireAll);
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_ad_reconciliation_event_link",
+                "fk_skit_recon_event_link_revision", "tenant_id,reconciliation_revision_id",
+                "skit_ad_reconciliation_revision", "tenant_id,id"), requireAll);
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_ad_reconciliation_event_link",
+                "fk_skit_recon_event_link_event_snapshot", "tenant_id,event_id,policy_snapshot_id",
+                "skit_ad_revenue_event", "tenant_id,id,policy_snapshot_id"), requireAll);
+        for (Task2CheckSpec spec : TASK_10_RECONCILIATION_CHECK_SPECS) {
+            validateTask5Check(spec, requireAll);
+        }
+        for (Task2TriggerSpec spec : TASK_10_RECONCILIATION_TRIGGER_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Task 10 schema is missing trigger table " + spec.table);
+                }
+                continue;
+            }
+            List<String> existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY,
+                    String.class, spec.trigger);
+            if (existing.isEmpty() && !requireAll) {
+                continue;
+            }
+            validateTask2TriggerDefinition(spec, existing);
+        }
+        if (requireAll) {
+            for (Map.Entry<String, String> expected
+                    : SkitAdSchemaSignature.expectedTask10FinalFingerprints().entrySet()) {
+                validateFinalTableFingerprint("Task 10 final", expected.getKey(), expected.getValue(),
+                        SkitAdSchemaSignature.task10FinalFingerprint(jdbcTemplate, expected.getKey()));
+            }
+        }
+    }
+
+    void validateTask12ReadinessSchema(boolean requireAll) {
+        validateAdditiveColumnSpecs("Task 12", TASK_12_READINESS_COLUMN_SPECS, requireAll);
+        for (Task2CheckSpec spec : TASK_12_READINESS_CHECK_SPECS) {
+            validateTask5Check(spec, requireAll);
+        }
+        if (requireAll) {
+            for (Map.Entry<String, String> expected
+                    : SkitAdSchemaSignature.expectedTask12FinalFingerprints().entrySet()) {
+                validateFinalTableFingerprint("Task 12 final", expected.getKey(), expected.getValue(),
+                        SkitAdSchemaSignature.rawFingerprint(jdbcTemplate, expected.getKey()));
+            }
+        }
+    }
+
+    void validateTask11ManagementSchema(boolean requireAll) {
+        for (String table : Arrays.asList("skit_management_command_audit",
+                "skit_ad_callback_replay_command", "skit_entitlement_security_revocation",
+                "skit_management_export_task")) {
+            if (!tableExists(table) && requireAll) {
+                throw new IllegalStateException("Task 11 schema is missing required table " + table);
+            }
+        }
+        validateCriticalTask2Column("skit_management_command_audit", "before_state_hash",
+                "binary(32) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_management_command_audit", "after_state_hash",
+                "binary(32) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_management_command_audit", "request_fingerprint",
+                "binary(32) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_ad_callback_replay_command", "request_fingerprint",
+                "binary(32) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_entitlement_security_revocation", "evidence_hash",
+                "binary(32) NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_management_export_task", "filter_json",
+                "longtext NOT NULL", requireAll);
+        validateCriticalTask2Column("skit_management_export_task", "filter_hash",
+                "binary(32) NOT NULL", requireAll);
+
+        validateTask5Index("skit_management_command_audit",
+                "uk_skit_management_audit_tenant_id", "tenant_id,id", true, requireAll);
+        validateTask5Index("skit_management_command_audit",
+                "uk_skit_management_audit_command", "command_id", true, requireAll);
+        validateTask5Index("skit_ad_callback_replay_command",
+                "uk_skit_callback_replay_tenant_id", "tenant_id,id", true, requireAll);
+        validateTask5Index("skit_ad_callback_replay_command",
+                "uk_skit_callback_replay_command", "command_id", true, requireAll);
+        validateTask5Index("skit_ad_callback_replay_command",
+                "uk_skit_callback_replay_idempotency",
+                "tenant_id,callback_inbox_id,request_fingerprint", true, requireAll);
+        validateTask5Index("skit_entitlement_security_revocation",
+                "uk_skit_security_revocation_tenant_id", "tenant_id,id", true, requireAll);
+        validateTask5Index("skit_entitlement_security_revocation",
+                "uk_skit_security_revocation_command", "command_id", true, requireAll);
+        validateTask5Index("skit_entitlement_security_revocation",
+                "uk_skit_security_revocation_entitlement", "tenant_id,entitlement_id",
+                true, requireAll);
+        validateTask5Index("skit_management_export_task",
+                "uk_skit_management_export_tenant_id", "tenant_id,id", true, requireAll);
+
+        validateTask5Index("skit_ad_session", "idx_skit_ad_session_management_account",
+                "tenant_id,ad_account_id,create_time,id", false, requireAll);
+        validateTask5Index("skit_ad_session", "idx_skit_ad_session_management_reward",
+                "tenant_id,reward_verification_status,create_time,id", false, requireAll);
+        validateTask5Index("skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_management_account",
+                "tenant_id,ad_account_id,received_at,id", false, requireAll);
+        validateTask5Index("skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_management_status",
+                "tenant_id,processing_status,received_at,id", false, requireAll);
+        validateTask5Index("skit_ad_revenue_event", "idx_skit_revenue_management_time",
+                "tenant_id,occurred_time,id", false, requireAll);
+        validateTask5Index("skit_ad_revenue_event", "idx_skit_revenue_management_member",
+                "tenant_id,source_member_id,occurred_time,id", false, requireAll);
+        validateTask5Index("skit_ad_revenue_event",
+                "idx_skit_revenue_management_reconciliation",
+                "tenant_id,reconciliation_status,source_currency,occurred_time,id",
+                false, requireAll);
+        validateTask5Index("skit_commission_ledger", "idx_skit_ledger_management_balance",
+                "tenant_id,currency,balance_bucket,create_time,id", false, requireAll);
+        validateTask5Index("skit_commission_ledger", "idx_skit_ledger_management_event",
+                "tenant_id,event_id,id", false, requireAll);
+        validateTask5Index("skit_ad_report_pull", "idx_skit_report_pull_management_account",
+                "tenant_id,ad_account_id,pulled_at,id", false, requireAll);
+        validateTask5Index("skit_ad_report_pull", "idx_skit_report_pull_management_status",
+                "tenant_id,status,pulled_at,id", false, requireAll);
+        validateTask5Index("skit_ad_reconciliation_bucket",
+                "idx_skit_recon_bucket_management_account",
+                "tenant_id,ad_account_id,report_date,id", false, requireAll);
+        validateTask5Index("skit_ad_reconciliation_revision",
+                "idx_skit_recon_revision_management_bucket",
+                "tenant_id,reconciliation_bucket_id,revision_no,id", false, requireAll);
+        validateTask5Index("skit_member_closure",
+                "idx_skit_member_closure_ancestor_distance",
+                "tenant_id,ancestor_id,distance,descendant_id", false, requireAll);
+        validateTask5Index("skit_ad_session", "idx_skit_ad_session_global_created",
+                "create_time,id", false, requireAll);
+        validateTask5Index("skit_ad_revenue_event", "idx_skit_ad_revenue_global_occurred",
+                "occurred_time,id", false, requireAll);
+        validateTask5Index("skit_ad_callback_inbox", "idx_skit_ad_callback_global_received",
+                "received_at,id", false, requireAll);
+        validateTask5Index("skit_ad_reconciliation_bucket", "idx_skit_ad_recon_bucket_global_date",
+                "report_date,id", false, requireAll);
+
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_ad_callback_replay_command",
+                "fk_skit_callback_replay_inbox", "tenant_id,callback_inbox_id",
+                "skit_ad_callback_inbox", "tenant_id,id"), requireAll);
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_entitlement_security_revocation",
+                "fk_skit_security_revocation_entitlement", "tenant_id,entitlement_id",
+                "skit_content_entitlement", "tenant_id,id"), requireAll);
+        validateTask5ForeignKey(new Task2ForeignKeySpec("skit_entitlement_security_revocation",
+                "fk_skit_security_revocation_session", "tenant_id,ad_session_id",
+                "skit_ad_session", "tenant_id,id"), requireAll);
+
+        validateTask5Check(new Task2CheckSpec("skit_management_command_audit",
+                "ck_skit_management_audit_target", "`tenant_id`=`target_tenant_id`"), requireAll);
+        validateTask5Check(new Task2CheckSpec("skit_management_command_audit",
+                "ck_skit_management_audit_result", "`result_status`='SUCCESS'"), requireAll);
+        validateTask5Check(new Task2CheckSpec("skit_ad_callback_replay_command",
+                "ck_skit_callback_replay_source",
+                "`source_status` IN ('DEAD_LETTER','REJECTED')"), requireAll);
+        validateTask5Check(new Task2CheckSpec("skit_management_export_task",
+                "ck_skit_management_export_target", "`tenant_id`=`target_tenant_id`"), requireAll);
+        validateTask5Check(new Task2CheckSpec("skit_management_export_task",
+                "ck_skit_management_export_filter", "JSON_VALID(`filter_json`)"), requireAll);
+        validateTask5Check(new Task2CheckSpec("skit_management_export_task",
+                "ck_skit_management_export_status",
+                "`status` IN ('PENDING','RUNNING','SUCCEEDED','FAILED','EXPIRED')"), requireAll);
+        for (Task2TriggerSpec spec : TASK_11_MANAGEMENT_TRIGGER_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException(
+                            "Task 11 schema is missing trigger table " + spec.table);
+                }
+                continue;
+            }
+            List<String> existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY,
+                    String.class, spec.trigger);
+            if (existing.isEmpty() && !requireAll) {
+                continue;
+            }
+            validateTask2TriggerDefinition(spec, existing);
+        }
+    }
+
+    void validateTask17RuntimeUpdateSchema(boolean requireAll) {
+        validateAdditiveColumnSpecs("Task 17", TASK_17_RUNTIME_UPDATE_COLUMN_SPECS, requireAll);
+        for (Task2CheckSpec spec : TASK_17_RUNTIME_UPDATE_CHECK_SPECS) {
+            validateTask5Check(spec, requireAll);
+        }
+    }
+
+    void validateTenantRuntimeUpdateTrustRootSchema(boolean requireAll) {
+        validateAdditiveColumnSpecs("Tenant runtime update trust root",
+                TENANT_RUNTIME_UPDATE_TRUST_ROOT_COLUMN_SPECS, requireAll);
+        validateTask5Check(TENANT_RUNTIME_UPDATE_TRUST_ROOT_CHECK_SPEC, requireAll);
+        validateTask5Index("skit_app_release_profile", "uk_skit_app_release_runtime_key",
+                "active_runtime_update_key_fingerprint", true, requireAll);
+    }
+
+    private void validateAdditiveColumnSpecs(String label, List<Task2ColumnSpec> specs,
+                                             boolean requireAll) {
+        for (Task2ColumnSpec spec : specs) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException(label + " schema is missing required table " + spec.table);
+                }
+                continue;
+            }
+            if (!columnExists(spec.table, spec.column)) {
+                if (requireAll) {
+                    throw new IllegalStateException(label + " schema is missing required column "
+                            + spec.table + "." + spec.column);
+                }
+                continue;
+            }
+            validateColumnDefinition(spec.table, spec.column, spec.definition);
+        }
+    }
+
     private void validateTask5HardenedTableFingerprints() {
+        boolean task7Hardened = columnExists("skit_ad_session", "reward_callback_inbox_id");
         for (Map.Entry<String, String> expected
                 : SkitAdSchemaSignature.expectedTask5HardenedFingerprints().entrySet()) {
-            validateExactTableFingerprint("Task 5 hardened", expected.getKey(), expected.getValue(), true);
+            String expectedFingerprint = expected.getValue();
+            if (task7Hardened) {
+                expectedFingerprint = SkitAdSchemaSignature.expectedTask7HardenedFingerprints()
+                        .getOrDefault(expected.getKey(), expectedFingerprint);
+            }
+            validateExactTableFingerprint("Task 5 hardened", expected.getKey(), expectedFingerprint, true);
         }
     }
 
@@ -2111,10 +3739,36 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         }
         String expected = spec.columns + "->" + spec.referencedTable + "(" + spec.referencedColumns
                 + "):RESTRICT:RESTRICT";
-        if (!expected.equals(actual)) {
+        if (!expected.equals(actual)
+                && !isForwardCompatibleGrantSessionBinding(spec.table, spec.constraint, actual)) {
             throw new IllegalStateException("Incompatible Task 5 foreign key " + spec.table + "."
                     + spec.constraint + ": expected=" + expected + ", actual=" + actual);
         }
+    }
+
+    private void validateTask7GrantSessionBinding(boolean requireAll) {
+        if (!tableExists(TASK_7_GRANT_SESSION_BINDING.table)) {
+            if (requireAll) {
+                throw new IllegalStateException("Task 7 schema is missing required table "
+                        + TASK_7_GRANT_SESSION_BINDING.table);
+            }
+            return;
+        }
+        String actual = jdbcTemplate.queryForObject(FOREIGN_KEY_DEFINITION_QUERY, String.class,
+                TASK_7_GRANT_SESSION_BINDING.table, TASK_7_GRANT_SESSION_BINDING.constraint);
+        if (actual == null && !requireAll) {
+            return;
+        }
+        String expected = foreignKeyDefinition(TASK_7_GRANT_SESSION_BINDING);
+        if (expected.equals(actual)) {
+            return;
+        }
+        if (!requireAll && foreignKeyDefinition(TASK_7_LEGACY_GRANT_SESSION_BINDING).equals(actual)) {
+            return;
+        }
+        throw new IllegalStateException("Incompatible Task 7 foreign key "
+                + TASK_7_GRANT_SESSION_BINDING.table + "." + TASK_7_GRANT_SESSION_BINDING.constraint
+                + ": expected=" + expected + ", actual=" + actual);
     }
 
     private void validateTask5Check(Task2CheckSpec spec, boolean requireAll) {
@@ -2227,14 +3881,41 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
     private void validateTask2OwnedTableFingerprints(boolean requireAll) {
         boolean task5Hardened = columnExists("skit_ad_session", "session_token_key_version");
+        boolean task7Hardened = columnExists("skit_ad_session", "reward_callback_inbox_id");
+        boolean task10Hardened = tableExists("skit_ad_reporting_credential_version")
+                && tableExists("skit_ad_reconciliation_allocation")
+                && columnExists("skit_ad_report_pull", "request_hash")
+                && columnExists("skit_ad_reconciliation_bucket", "app_id")
+                && columnExists("skit_ad_reconciliation_revision", "source_report_impressions");
+        boolean task12Hardened = columnExists("skit_tenant_ad_capability",
+                "dedicated_unlock_placement_id");
         for (Map.Entry<String, String> expected : SkitAdSchemaSignature.expectedFingerprints().entrySet()) {
+            if (laterValidatorOwnsReleasedFingerprint(expected.getKey(), task10Hardened,
+                    task12Hardened)) {
+                continue;
+            }
             String expectedFingerprint = expected.getValue();
             if (task5Hardened) {
                 expectedFingerprint = SkitAdSchemaSignature.expectedTask5HardenedFingerprints()
                         .getOrDefault(expected.getKey(), expectedFingerprint);
             }
+            if (task7Hardened) {
+                expectedFingerprint = SkitAdSchemaSignature.expectedTask7HardenedFingerprints()
+                        .getOrDefault(expected.getKey(), expectedFingerprint);
+            }
             validateExactTableFingerprint("Task 2", expected.getKey(), expectedFingerprint, requireAll);
         }
+        if (task10Hardened) {
+            validateTask10ReconciliationSchema(requireAll);
+        }
+        if (task12Hardened) {
+            validateTask12ReadinessSchema(requireAll);
+        }
+    }
+
+    static boolean laterValidatorOwnsReleasedFingerprint(String table, boolean task10Hardened,
+                                                          boolean task12Hardened) {
+        return false;
     }
 
     private void validateExactTableFingerprint(String schemaLabel, String table, String expected,
@@ -2246,6 +3927,16 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             return;
         }
         String actual = SkitAdSchemaSignature.fingerprint(jdbcTemplate, table);
+        if (!expected.equals(actual)) {
+            throw new IllegalStateException("Incompatible canonical " + schemaLabel + " table " + table
+                    + ": expected fingerprint=" + expected + ", actual fingerprint=" + actual
+                    + ". A same-named column, index, foreign key, check, generated expression, or table "
+                    + "property differs from the released schema.");
+        }
+    }
+
+    private void validateFinalTableFingerprint(String schemaLabel, String table, String expected,
+                                               String actual) {
         if (!expected.equals(actual)) {
             throw new IllegalStateException("Incompatible canonical " + schemaLabel + " table " + table
                     + ": expected fingerprint=" + expected + ", actual fingerprint=" + actual
@@ -2393,6 +4084,28 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         }
     }
 
+    private void replaceIndexIfLegacy(String table, String index, String legacyColumns,
+                                      String replacementColumns, boolean unique) {
+        String actual = jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY, String.class, table, index);
+        String legacy = indexDefinition(legacyColumns, unique);
+        String replacement = indexDefinition(replacementColumns, unique);
+        if (replacement.equals(actual)) {
+            return;
+        }
+        if (actual == null) {
+            jdbcTemplate.execute(addIndexSql(table, index, replacementColumns, unique));
+            return;
+        }
+        if (!legacy.equals(actual)) {
+            throw new IllegalStateException("Incompatible existing index " + table + "." + index
+                    + ": expected legacy=" + legacy + " or replacement=" + replacement
+                    + ", actual=" + actual);
+        }
+        // MySQL can use this index as an implicit child-side foreign-key index. Replacing it in
+        // one ALTER keeps an equivalent left prefix available throughout the DDL operation.
+        jdbcTemplate.execute(replaceIndexSql(table, index, replacementColumns, unique));
+    }
+
     private void addForeignKeyIfMissing(String table, String constraint, String columns,
                                         String referencedTable, String referencedColumns) {
         String actual = jdbcTemplate.queryForObject(FOREIGN_KEY_DEFINITION_QUERY,
@@ -2401,10 +4114,53 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 + normalizeColumnList(referencedColumns) + "):RESTRICT:RESTRICT";
         if (actual == null) {
             jdbcTemplate.execute(addForeignKeySql(table, constraint, columns, referencedTable, referencedColumns));
+        } else if (isForwardCompatibleGrantSessionBinding(table, constraint, actual)) {
+            return;
         } else if (!expected.equals(actual)) {
             throw new IllegalStateException("Incompatible existing foreign key " + table + "." + constraint
                     + ": expected=" + expected + ", actual=" + actual);
         }
+    }
+
+    private void replaceForeignKeyIfLegacy(Task2ForeignKeySpec legacy, Task2ForeignKeySpec replacement) {
+        String actual = jdbcTemplate.queryForObject(FOREIGN_KEY_DEFINITION_QUERY,
+                String.class, legacy.table, legacy.constraint);
+        String expectedLegacy = foreignKeyDefinition(legacy);
+        String expectedReplacement = foreignKeyDefinition(replacement);
+        if (expectedReplacement.equals(actual)) {
+            return;
+        }
+        if (actual != null && !expectedLegacy.equals(actual)) {
+            throw new IllegalStateException("Incompatible existing foreign key " + legacy.table + "."
+                    + legacy.constraint + ": expected legacy=" + expectedLegacy
+                    + " or replacement=" + expectedReplacement + ", actual=" + actual);
+        }
+        if (actual != null) {
+            jdbcTemplate.execute(dropForeignKeySql(legacy.table, legacy.constraint));
+        }
+        String childIndex = jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY,
+                String.class, legacy.table, legacy.constraint);
+        String legacyChildIndex = "1:" + legacy.columns;
+        String replacementChildIndex = "1:" + replacement.columns;
+        if (childIndex != null && !legacyChildIndex.equals(childIndex)
+                && !replacementChildIndex.equals(childIndex)) {
+            throw new IllegalStateException("Incompatible supporting index " + legacy.table + "."
+                    + legacy.constraint + ": expected legacy=" + legacyChildIndex
+                    + " or replacement=" + replacementChildIndex + ", actual=" + childIndex);
+        }
+        if (legacyChildIndex.equals(childIndex)) {
+            jdbcTemplate.execute(dropIndexSql(legacy.table, legacy.constraint));
+        }
+        jdbcTemplate.execute(addForeignKeySql(replacement.table, replacement.constraint,
+                quoteColumns(replacement.columns), replacement.referencedTable,
+                quoteColumns(replacement.referencedColumns)));
+    }
+
+    private static boolean isForwardCompatibleGrantSessionBinding(String table, String constraint,
+                                                                   String actual) {
+        return TASK_7_LEGACY_GRANT_SESSION_BINDING.table.equals(table)
+                && TASK_7_LEGACY_GRANT_SESSION_BINDING.constraint.equals(constraint)
+                && foreignKeyDefinition(TASK_7_GRANT_SESSION_BINDING).equals(actual);
     }
 
     private void addCheckIfMissing(String table, String constraint, String expression) {
@@ -2488,34 +4244,326 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return normalized;
     }
 
-    private static String normalizeCheckExpression(String expression) {
+    static String normalizeCheckExpression(String expression) {
         if (expression == null) {
             return null;
         }
-        String normalized = expression.toLowerCase(Locale.ROOT).replace("_utf8mb4", "")
-                .replace("_binary", "")
-                .replace("\\'", "'")
-                .replace("0x00", "0").replace("0x01", "1")
-                .replace("b'0'", "0").replace("b'1'", "1")
-                .replace("'\\0'", "0").replace("'\\1'", "1")
-                .replace("`", "").replaceAll("\\s+", "");
+        String normalized = markBooleanOperators(normalizeSqlExpressionLexemes(expression));
+        normalized = removeWhitespaceOutsideSqlLiterals(normalized);
         normalized = stripWrappingParentheses(normalized);
         boolean changed;
         do {
-            Matcher matcher = INNER_PARENTHESES_PATTERN.matcher(normalized);
-            StringBuffer result = new StringBuffer();
             changed = false;
-            while (matcher.find()) {
-                String content = matcher.group(1);
-                if (!content.contains("and") && !content.contains("or")) {
-                    matcher.appendReplacement(result, Matcher.quoteReplacement(content));
+            for (int[] pair : findParenthesisPairs(normalized)) {
+                String content = normalized.substring(pair[0] + 1, pair[1]);
+                boolean hasAnd = containsTopLevelMarker(content, BOOLEAN_AND_MARKER);
+                boolean hasOr = containsTopLevelMarker(content, BOOLEAN_OR_MARKER);
+                boolean safeBooleanGrouping = isRedundantBooleanGroupingContext(
+                        normalized, pair[0], pair[1] + 1);
+                boolean safeComparisonOperandGrouping = !hasAnd && !hasOr
+                        && isRedundantComparisonOperandGrouping(normalized, pair[0], pair[1] + 1);
+                if ((safeBooleanGrouping && ((!hasAnd && !hasOr) || (hasAnd && !hasOr
+                        && !isNegatedBooleanGroup(normalized, pair[0]))))
+                        || safeComparisonOperandGrouping) {
+                    normalized = normalized.substring(0, pair[0]) + content
+                            + normalized.substring(pair[1] + 1);
                     changed = true;
+                    break;
                 }
             }
-            matcher.appendTail(result);
-            normalized = result.toString();
         } while (changed);
-        return stripWrappingParentheses(normalized);
+        return stripWrappingParentheses(normalized)
+                .replace(BOOLEAN_AND_MARKER, "and").replace(BOOLEAN_OR_MARKER, "or");
+    }
+
+    /**
+     * Canonicalizes metadata spelling without changing string-literal contents. In particular,
+     * whitespace and case inside a literal are schema semantics and must remain fingerprinted.
+     */
+    private static String normalizeSqlExpressionLexemes(String expression) {
+        String source = expression.replace("\\'", "'"); // INFORMATION_SCHEMA escapes literal delimiters
+        StringBuilder result = new StringBuilder(source.length());
+        boolean quoted = false;
+        for (int index = 0; index < source.length();) {
+            char current = source.charAt(index);
+            if (quoted) {
+                result.append(current);
+                if (current == '\'' && index + 1 < source.length()
+                        && source.charAt(index + 1) == '\'') {
+                    result.append(source.charAt(index + 1));
+                    index += 2;
+                    continue;
+                }
+                if (current == '\'') {
+                    quoted = false;
+                }
+                index++;
+                continue;
+            }
+            if (isCharsetIntroducer(source, index, "_utf8mb4")
+                    || isCharsetIntroducer(source, index, "_binary")) {
+                index += startsSqlFragment(source, index, "_utf8mb4") ? 8 : 7;
+                continue;
+            }
+            if (isStandaloneHexLiteral(source, index, "0x00")
+                    || startsSqlFragment(source, index, "b'0'")
+                    || startsSqlFragment(source, index, "'\\0'")) {
+                result.append('0');
+                index += 4;
+                continue;
+            }
+            if (isStandaloneHexLiteral(source, index, "0x01")
+                    || startsSqlFragment(source, index, "b'1'")
+                    || startsSqlFragment(source, index, "'\\1'")) {
+                result.append('1');
+                index += 4;
+                continue;
+            }
+            if (current == '`') {
+                index++;
+                continue;
+            }
+            if (current == '\'') {
+                quoted = true;
+                result.append(current);
+            } else {
+                result.append(Character.toLowerCase(current));
+            }
+            index++;
+        }
+        return result.toString();
+    }
+
+    private static boolean startsSqlFragment(String expression, int offset, String fragment) {
+        return offset + fragment.length() <= expression.length()
+                && expression.regionMatches(true, offset, fragment, 0, fragment.length());
+    }
+
+    private static boolean isCharsetIntroducer(String expression, int offset, String introducer) {
+        int literalOffset = offset + introducer.length();
+        return startsSqlFragment(expression, offset, introducer)
+                && literalOffset < expression.length() && expression.charAt(literalOffset) == '\''
+                && (offset == 0 || !isSqlIdentifierCharacter(expression.charAt(offset - 1)));
+    }
+
+    private static boolean isStandaloneHexLiteral(String expression, int offset, String literal) {
+        int end = offset + literal.length();
+        return startsSqlFragment(expression, offset, literal)
+                && (offset == 0 || !isSqlIdentifierCharacter(expression.charAt(offset - 1)))
+                && (end == expression.length() || !isSqlIdentifierCharacter(expression.charAt(end)));
+    }
+
+    private static String removeWhitespaceOutsideSqlLiterals(String expression) {
+        StringBuilder result = new StringBuilder(expression.length());
+        boolean quoted = false;
+        for (int index = 0; index < expression.length(); index++) {
+            char current = expression.charAt(index);
+            if (current == '\'' && quoted && index + 1 < expression.length()
+                    && expression.charAt(index + 1) == '\'') {
+                result.append(current).append(expression.charAt(++index));
+                continue;
+            }
+            if (current == '\'') {
+                quoted = !quoted;
+                result.append(current);
+            } else if (quoted || !Character.isWhitespace(current)) {
+                result.append(current);
+            }
+        }
+        return result.toString();
+    }
+
+    private static List<int[]> findParenthesisPairs(String expression) {
+        List<Integer> openings = new ArrayList<>();
+        List<int[]> pairs = new ArrayList<>();
+        boolean quoted = false;
+        for (int index = 0; index < expression.length(); index++) {
+            char current = expression.charAt(index);
+            if (current == '\'' && quoted && index + 1 < expression.length()
+                    && expression.charAt(index + 1) == '\'') {
+                index++;
+                continue;
+            }
+            if (current == '\'') {
+                quoted = !quoted;
+            } else if (!quoted && current == '(') {
+                openings.add(index);
+            } else if (!quoted && current == ')' && !openings.isEmpty()) {
+                int opening = openings.remove(openings.size() - 1);
+                pairs.add(new int[]{opening, index});
+            }
+        }
+        pairs.sort(Comparator.comparingInt(pair -> pair[0]));
+        return pairs;
+    }
+
+    private static boolean containsTopLevelMarker(String expression, String marker) {
+        int depth = 0;
+        boolean quoted = false;
+        for (int index = 0; index < expression.length();) {
+            char current = expression.charAt(index);
+            if (current == '\'' && quoted && index + 1 < expression.length()
+                    && expression.charAt(index + 1) == '\'') {
+                index += 2;
+                continue;
+            }
+            if (current == '\'') {
+                quoted = !quoted;
+                index++;
+                continue;
+            }
+            if (!quoted && current == '(') {
+                depth++;
+            } else if (!quoted && current == ')') {
+                depth--;
+            } else if (!quoted && depth == 0 && expression.startsWith(marker, index)) {
+                return true;
+            }
+            index++;
+        }
+        return false;
+    }
+
+    private static boolean isRedundantBooleanGroupingContext(String expression, int opening, int afterClosing) {
+        return isBooleanBoundaryBefore(expression, opening) && isBooleanBoundaryAfter(expression, afterClosing);
+    }
+
+    /**
+     * MySQL sometimes parenthesizes a complete arithmetic operand of a comparison. Removing that
+     * wrapper is safe only when the opposite side of the group is already a boolean boundary; this
+     * deliberately preserves expressions such as {@code x=(a+b)*c} and {@code x*(a+b)=c}.
+     */
+    private static boolean isRedundantComparisonOperandGrouping(String expression, int opening,
+                                                                 int afterClosing) {
+        return (isBooleanBoundaryBefore(expression, opening)
+                && startsWithComparisonOperator(expression, afterClosing))
+                || (endsWithComparisonOperator(expression, opening)
+                && isBooleanBoundaryAfter(expression, afterClosing));
+    }
+
+    private static boolean startsWithComparisonOperator(String expression, int offset) {
+        return startsSqlFragment(expression, offset, "<=>")
+                || startsSqlFragment(expression, offset, "<>")
+                || startsSqlFragment(expression, offset, "!=")
+                || startsSqlFragment(expression, offset, ">=")
+                || startsSqlFragment(expression, offset, "<=")
+                || startsSqlFragment(expression, offset, "=")
+                || startsSqlFragment(expression, offset, ">")
+                || startsSqlFragment(expression, offset, "<");
+    }
+
+    private static boolean endsWithComparisonOperator(String expression, int end) {
+        return endsWithToken(expression, end, "<=>") || endsWithToken(expression, end, "<>")
+                || endsWithToken(expression, end, "!=") || endsWithToken(expression, end, ">=")
+                || endsWithToken(expression, end, "<=") || endsWithToken(expression, end, "=")
+                || endsWithToken(expression, end, ">") || endsWithToken(expression, end, "<");
+    }
+
+    private static boolean isBooleanBoundaryBefore(String expression, int opening) {
+        if (opening == 0 || expression.charAt(opening - 1) == '(') {
+            return true;
+        }
+        return endsWithToken(expression, opening, BOOLEAN_AND_MARKER)
+                || endsWithToken(expression, opening, BOOLEAN_OR_MARKER)
+                || endsWithSqlKeyword(expression, opening, "not")
+                || endsWithToken(expression, opening, "when");
+    }
+
+    private static boolean isBooleanBoundaryAfter(String expression, int offset) {
+        if (offset == expression.length() || expression.charAt(offset) == ')') {
+            return true;
+        }
+        return expression.startsWith(BOOLEAN_AND_MARKER, offset)
+                || expression.startsWith(BOOLEAN_OR_MARKER, offset)
+                || expression.startsWith("then", offset)
+                || expression.startsWith("else", offset)
+                || expression.startsWith("end", offset);
+    }
+
+    private static boolean endsWithToken(String expression, int end, String token) {
+        int start = end - token.length();
+        return start >= 0 && expression.startsWith(token, start);
+    }
+
+    private static boolean endsWithSqlKeyword(String expression, int end, String keyword) {
+        int start = end - keyword.length();
+        return start >= 0 && expression.regionMatches(start, keyword, 0, keyword.length())
+                && (start == 0 || !isSqlIdentifierCharacter(expression.charAt(start - 1)));
+    }
+
+    private static boolean isNegatedBooleanGroup(String expression, int openingParenthesis) {
+        int keywordStart = openingParenthesis - 3;
+        return keywordStart >= 0 && expression.regionMatches(keywordStart, "not", 0, 3)
+                && (keywordStart == 0
+                || !isSqlIdentifierCharacter(expression.charAt(keywordStart - 1)));
+    }
+
+    private static String markBooleanOperators(String expression) {
+        StringBuilder result = new StringBuilder(expression.length());
+        boolean quoted = false;
+        boolean awaitingBetweenAnd = false;
+        for (int index = 0; index < expression.length();) {
+            char current = expression.charAt(index);
+            if (quoted) {
+                result.append(current);
+                if (current == '\\' && index + 1 < expression.length()) {
+                    result.append(expression.charAt(index + 1));
+                    index += 2;
+                    continue;
+                }
+                if (current == '\'' && index + 1 < expression.length()
+                        && expression.charAt(index + 1) == '\'') {
+                    result.append(expression.charAt(index + 1));
+                    index += 2;
+                    continue;
+                }
+                if (current == '\'') {
+                    quoted = false;
+                }
+                index++;
+                continue;
+            }
+            if (current == '\'') {
+                quoted = true;
+                result.append(current);
+                index++;
+                continue;
+            }
+            if (startsSqlKeyword(expression, index, "between")) {
+                result.append("between");
+                awaitingBetweenAnd = true;
+                index += "between".length();
+                continue;
+            }
+            if (startsSqlKeyword(expression, index, "and")) {
+                result.append(awaitingBetweenAnd ? "and" : BOOLEAN_AND_MARKER);
+                awaitingBetweenAnd = false;
+                index += "and".length();
+                continue;
+            }
+            if (startsSqlKeyword(expression, index, "or")) {
+                result.append(BOOLEAN_OR_MARKER);
+                awaitingBetweenAnd = false;
+                index += "or".length();
+                continue;
+            }
+            result.append(current);
+            index++;
+        }
+        return result.toString();
+    }
+
+    private static boolean startsSqlKeyword(String expression, int offset, String keyword) {
+        int end = offset + keyword.length();
+        if (end > expression.length() || !expression.regionMatches(offset, keyword, 0, keyword.length())) {
+            return false;
+        }
+        return (offset == 0 || !isSqlIdentifierCharacter(expression.charAt(offset - 1)))
+                && (end == expression.length() || !isSqlIdentifierCharacter(expression.charAt(end)));
+    }
+
+    private static boolean isSqlIdentifierCharacter(char value) {
+        return Character.isLetterOrDigit(value) || value == '_' || value == '$';
     }
 
     private static String normalizeTriggerDefinition(String definition) {
@@ -2529,11 +4577,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     }
 
     private static String normalizeGeneratedExpression(String expression) {
-        return expression.toLowerCase(Locale.ROOT).replace("_utf8mb4", "")
-                .replace("_binary", "").replace("b'0'", "0").replace("b'1'", "1")
-                .replace("'\\0'", "0").replace("'\\1'", "1")
-                .replace("`", "").replace("(", "").replace(")", "")
-                .replaceAll("\\s+", "");
+        return normalizeCheckExpression(expression);
     }
 
     private static String stripWrappingParentheses(String expression) {
@@ -2546,8 +4590,21 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
     private static boolean wrapsWholeExpression(String expression) {
         int depth = 0;
+        boolean quoted = false;
         for (int index = 0; index < expression.length(); index++) {
             char character = expression.charAt(index);
+            if (character == '\'' && quoted && index + 1 < expression.length()
+                    && expression.charAt(index + 1) == '\'') {
+                index++;
+                continue;
+            }
+            if (character == '\'') {
+                quoted = !quoted;
+                continue;
+            }
+            if (quoted) {
+                continue;
+            }
             if (character == '(') {
                 depth++;
             } else if (character == ')') {

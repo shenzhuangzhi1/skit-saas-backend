@@ -3,12 +3,12 @@ package cn.iocoder.yudao.module.skit.controller.app.member;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
-import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
 import cn.iocoder.yudao.framework.security.config.SecurityProperties;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.framework.ratelimiter.core.annotation.RateLimiter;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientIpRateLimiterKeyResolver;
+import cn.iocoder.yudao.module.skit.framework.security.SkitTrustedProxyClientIpResolver;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberAppContextService;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -40,6 +40,8 @@ public class SkitMemberAuthController {
     private SkitMemberAppContextService appContextService;
     @Resource
     private SecurityProperties securityProperties;
+    @Resource
+    private SkitTrustedProxyClientIpResolver clientIpResolver;
 
     @PostMapping("/register")
     @ApiAccessLog(sanitizeKeys = {"password"})
@@ -54,7 +56,7 @@ public class SkitMemberAuthController {
         command.setNickname(reqVO.getNickname());
         command.setInviteCode(reqVO.getInviteCode());
         command.setTenantId(appContextService.requireTenantId(reqVO.getContextToken()));
-        command.setRegisterIp(ServletUtils.getClientIP());
+        command.setRegisterIp(clientIpResolver.resolveCurrentRequest());
         return success(memberService.register(command));
     }
 
@@ -69,7 +71,7 @@ public class SkitMemberAuthController {
         command.setMobile(reqVO.getMobile());
         command.setPassword(reqVO.getPassword());
         command.setTenantId(appContextService.requireTenantId(reqVO.getContextToken()));
-        command.setLoginIp(ServletUtils.getClientIP());
+        command.setLoginIp(clientIpResolver.resolveCurrentRequest());
         return success(memberService.login(command));
     }
 

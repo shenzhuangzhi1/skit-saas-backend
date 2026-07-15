@@ -13,6 +13,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitCommissionRule
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberClosureDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdClientEventMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
@@ -24,16 +25,20 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMappe
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.record.SkitAdminRecordMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionCreateTransactionExecutor;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionServiceImpl;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionTokenService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitHmacAdSessionTokenService;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotServiceImpl;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementServiceImpl;
+import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeService;
+import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeServiceImpl;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.dal.mysql.tenant.TenantMapper;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
@@ -156,6 +161,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         SessionFixture fixture = insertSessionFixture(951001L, 951002L, 951003L, 951004L, 951005L);
         long dramaId = 951006L;
         int episodeNo = 7;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
 
         List<SkitAdSessionService.CreateResult> results = concurrentCreates(
                 20, fixture.tenantId, fixture.memberId, command(dramaId, episodeNo));
@@ -191,6 +197,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 951101L, 951102L, 951103L, 951104L, 951105L);
         long secondMemberId = 951106L;
         insertAdditionalMember(firstMember.tenantId, secondMemberId);
+        insertCatalog(firstMember.tenantId, 951107L, 30, 2);
         sourceMemberLockGate.arm(firstMember.tenantId,
                 new HashSet<>(Arrays.asList(firstMember.memberId, secondMemberId)));
 
@@ -224,6 +231,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     void tenantInterceptorKeepsEveryTask5ExclusiveLockQueryValidForMySql() {
         SessionFixture fixture = insertSessionFixture(
                 951201L, 951202L, 951203L, 951204L, 951205L);
+        insertCatalog(fixture.tenantId, 951206L, 30, 4);
         SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
                 () -> sessionService.createForMember(fixture.memberId, command(951206L, 5)));
 
@@ -247,6 +255,8 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         SessionFixture tenantB = insertSessionFixture(952101L, 952102L, 952103L, 952104L, 952105L);
         long dramaId = 952201L;
         int episodeNo = 9;
+        insertCatalog(tenantA.tenantId, dramaId, 30, episodeNo - 1);
+        insertCatalog(tenantB.tenantId, dramaId, 30, episodeNo - 1);
         SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
 
         ExecutorService workers = Executors.newFixedThreadPool(2);
@@ -282,6 +292,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         SessionFixture fixture = insertSessionFixture(953001L, 953002L, 953003L, 953004L, 953005L);
         long dramaId = 953006L;
         int episodeNo = 11;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
         SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
 
         SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
@@ -416,6 +427,15 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         jdbc().update("INSERT INTO skit_member_closure "
                         + "(tenant_id,ancestor_id,descendant_id,distance) VALUES (?,?,?,0)",
                 tenantId, memberId, memberId);
+    }
+
+    private void insertCatalog(long tenantId, long dramaId, int totalEpisodes, int freeEpisodes) {
+        jdbc().update("INSERT INTO skit_admin_record "
+                        + "(tenant_id,page_key,row_key,record_data,status,sort) "
+                        + "VALUES (?,'drama',?,?,0,0)", tenantId, "drama-" + dramaId,
+                "{\"id\":" + dramaId + ",\"episodes\":" + totalEpisodes
+                        + ",\"freeEpisodes\":" + freeEpisodes
+                        + ",\"unlockSize\":1,\"status\":\"上架\"}");
     }
 
     private int sessionCount(long tenantId, long memberId, long dramaId, int episodeNo) {
@@ -613,6 +633,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             initializeTableInfo(assistant, SkitMemberDO.class);
             initializeTableInfo(assistant, SkitAdSessionDO.class);
             initializeTableInfo(assistant, SkitNativePlayerGrantDO.class);
+            initializeTableInfo(assistant, SkitAdminRecordDO.class);
             initializeTableInfo(assistant, TenantDO.class);
             TableInfoHelper.remove(SkitAdPolicySnapshotDO.class);
 
@@ -689,6 +710,12 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        MapperFactoryBean<SkitAdminRecordMapper> adminRecordMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitAdminRecordMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
         MapperFactoryBean<TenantMapper> tenantMapperFactory(SqlSessionFactory sqlSessionFactory) {
             return mapperFactory(TenantMapper.class, sqlSessionFactory);
         }
@@ -750,14 +777,30 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        SkitContentScopeService contentScopeService(
+                SkitAdminRecordMapper recordMapper,
+                SkitContentEntitlementMapper entitlementMapper,
+                ObjectMapper objectMapper) {
+            return new SkitContentScopeServiceImpl(recordMapper, entitlementMapper, objectMapper);
+        }
+
+        @Bean
         SkitContentEntitlementService contentEntitlementService(
                 SkitNativePlayerGrantMapper nativeGrantMapper,
                 SkitContentEntitlementMapper entitlementMapper,
+                SkitContentScopeService contentScopeService,
                 SkitMemberMapper memberMapper,
                 SkitAgentMapper agentMapper,
-                TenantService tenantService) {
+                TenantService tenantService,
+                SkitTenantAdCapabilityService capabilityService) {
             return new SkitContentEntitlementServiceImpl(nativeGrantMapper, entitlementMapper,
-                    memberMapper, agentMapper, tenantService);
+                    contentScopeService,
+                    memberMapper, agentMapper, tenantService, capabilityService);
+        }
+
+        @Bean
+        SkitTenantAdCapabilityService tenantAdCapabilityService() {
+            return mock(SkitTenantAdCapabilityService.class);
         }
 
         @Bean
@@ -782,14 +825,16 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 SkitAdCredentialVersionService credentialService,
                 SkitPolicySnapshotService snapshotService,
                 SkitContentEntitlementService entitlementService,
+                SkitContentScopeService contentScopeService,
                 TenantService tenantService,
                 SkitAdSessionTokenService tokenService,
                 ObjectMapper objectMapper,
-                SkitAdSessionCreateTransactionExecutor createTransactionExecutor) {
+                SkitAdSessionCreateTransactionExecutor createTransactionExecutor,
+                SkitTenantAdCapabilityService capabilityService) {
             return new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, accountMapper,
                     agentMapper, memberMapper, credentialService, snapshotService,
-                    entitlementService, tenantService, tokenService, objectMapper,
-                    createTransactionExecutor);
+                    entitlementService, contentScopeService, tenantService, tokenService, objectMapper,
+                    createTransactionExecutor, capabilityService);
         }
     }
 

@@ -12,6 +12,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,12 +53,16 @@ class SkitContentEntitlementServiceImplTest {
     private static final long MEMBER_ID = 51L;
     private static final long DRAMA_ID = 61L;
     private static final Instant NOW = Instant.parse("2026-07-14T05:00:00Z");
+    private static final SkitTenantAdCapabilityService.ClientRuntime RUNTIME =
+            new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
 
     @Mock private SkitNativePlayerGrantMapper nativeGrantMapper;
     @Mock private SkitContentEntitlementMapper entitlementMapper;
+    @Mock private SkitContentScopeService contentScopeService;
     @Mock private SkitMemberMapper memberMapper;
     @Mock private SkitAgentMapper agentMapper;
     @Mock private TenantService tenantService;
+    @Mock private SkitTenantAdCapabilityService capabilityService;
 
     private SkitContentEntitlementServiceImpl service;
 
@@ -66,9 +71,12 @@ class SkitContentEntitlementServiceImplTest {
         TenantContextHolder.setTenantId(TENANT_ID);
         org.mockito.Mockito.lenient().when(tenantService.getTenantForShare(anyLong()))
                 .thenAnswer(invocation -> enabledTenant(invocation.getArgument(0)));
+        org.mockito.Mockito.lenient().when(contentScopeService.requireAccessibleDrama(DRAMA_ID))
+                .thenReturn(accessibleDrama(TENANT_ID, DRAMA_ID));
         service = new SkitContentEntitlementServiceImpl(nativeGrantMapper, entitlementMapper,
+                contentScopeService,
                 memberMapper, agentMapper, tenantService,
-                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)));
+                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)), capabilityService);
     }
 
     @AfterEach
@@ -86,7 +94,7 @@ class SkitContentEntitlementServiceImplTest {
         });
 
         SkitContentEntitlementService.PlayerGrantIssue issue =
-                service.issuePlayerGrant(MEMBER_ID, DRAMA_ID);
+                service.issuePlayerGrant(MEMBER_ID, DRAMA_ID, RUNTIME);
         String token = issue.consumeGrantToken();
 
         org.mockito.ArgumentCaptor<SkitNativePlayerGrantDO> row =
@@ -105,6 +113,75 @@ class SkitContentEntitlementServiceImplTest {
     }
 
     @Test
+    void playerGrantRolloutGateRunsBeforeMemberOrTokenWork() {
+        SkitTenantAdCapabilityService.ClientRuntime runtime =
+                new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
+        org.mockito.Mockito.doThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ROLLOUT_NOT_READY,
+                        "CLIENT_VERSION_REVOKED"))
+                .when(capabilityService).checkClientAccess(MEMBER_ID, runtime,
+                        SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+
+        assertThrows(RuntimeException.class,
+                () -> service.issuePlayerGrant(MEMBER_ID, DRAMA_ID, runtime));
+
+        verify(capabilityService).checkClientAccess(MEMBER_ID, runtime,
+                SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+        org.mockito.Mockito.verifyNoInteractions(memberMapper, nativeGrantMapper, entitlementMapper);
+    }
+
+    @Test
+    void playerGrantCannotBeIssuedForContentOutsideTheTenantCatalog() {
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        org.mockito.Mockito.doThrow(
+                        cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                                cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID))
+                .when(contentScopeService).requireAccessibleDrama(DRAMA_ID);
+
+        assertThrows(cn.iocoder.yudao.framework.common.exception.ServiceException.class,
+                () -> service.issuePlayerGrant(MEMBER_ID, DRAMA_ID, RUNTIME));
+
+        verify(nativeGrantMapper, never()).insert(any());
+    }
+
+    @Test
+    void protectedContentGateRunsBeforeEntitlementLookup() {
+        SkitTenantAdCapabilityService.ClientRuntime runtime =
+                new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
+        org.mockito.Mockito.doThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ROLLOUT_NOT_READY,
+                        "CLIENT_VERSION_REVOKED"))
+                .when(capabilityService).checkClientAccess(MEMBER_ID, runtime,
+                        SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT);
+
+        assertThrows(RuntimeException.class,
+                () -> service.listGrantedEpisodes(MEMBER_ID, DRAMA_ID, runtime));
+
+        verify(capabilityService).checkClientAccess(MEMBER_ID, runtime,
+                SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT);
+        org.mockito.Mockito.verifyNoInteractions(entitlementMapper);
+    }
+
+    @Test
+    void publicRuntimeContractHasNoUngatedGrantOrProtectedContentOverloads() {
+        assertThrows(NoSuchMethodException.class, () -> SkitContentEntitlementService.class.getMethod(
+                "issuePlayerGrant", Long.class, Long.class));
+        assertThrows(NoSuchMethodException.class, () -> SkitContentEntitlementService.class.getMethod(
+                "listGrantedEpisodes", Long.class, Long.class));
+        assertThrows(NoSuchMethodException.class, () -> SkitContentEntitlementService.class.getMethod(
+                "listGrantedEpisodesForPlayerGrant", String.class));
+    }
+
+    @Test
+    void missingCapabilityGateIsRejectedAtConstruction() {
+        assertThrows(NullPointerException.class, () -> new SkitContentEntitlementServiceImpl(
+                nativeGrantMapper, entitlementMapper, contentScopeService,
+                memberMapper, agentMapper, tenantService,
+                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)), null));
+    }
+
+    @Test
     void shanghaiClockKeepsPlayerGrantExpiryAsTrueEpochInstantInJson() throws Exception {
         ZoneId shanghai = ZoneId.of("Asia/Shanghai");
         TimeZone previousTimeZone = TimeZone.getDefault();
@@ -118,11 +195,12 @@ class SkitContentEntitlementServiceImplTest {
             });
             SkitContentEntitlementServiceImpl shanghaiService =
                     new SkitContentEntitlementServiceImpl(nativeGrantMapper, entitlementMapper,
-                            memberMapper, agentMapper, tenantService, Clock.fixed(NOW, shanghai),
-                            new FixedSecureRandom(sequence(32)));
+                            contentScopeService, memberMapper, agentMapper, tenantService,
+                            Clock.fixed(NOW, shanghai),
+                            new FixedSecureRandom(sequence(32)), capabilityService);
 
             SkitContentEntitlementService.PlayerGrantIssue issue =
-                    shanghaiService.issuePlayerGrant(MEMBER_ID, DRAMA_ID);
+                    shanghaiService.issuePlayerGrant(MEMBER_ID, DRAMA_ID, RUNTIME);
 
             org.mockito.ArgumentCaptor<SkitNativePlayerGrantDO> row =
                     org.mockito.ArgumentCaptor.forClass(SkitNativePlayerGrantDO.class);
@@ -207,7 +285,8 @@ class SkitContentEntitlementServiceImplTest {
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Collections.singletonList(4))).thenReturn(Collections.emptyList());
 
-        assertEquals(Collections.singletonList(3), service.listGrantedEpisodes(MEMBER_ID, DRAMA_ID));
+        assertEquals(Collections.singletonList(3),
+                service.listGrantedEpisodes(MEMBER_ID, DRAMA_ID, RUNTIME));
         assertFalse(service.ownsEpisodeForUpdate(MEMBER_ID, DRAMA_ID, 4));
     }
 
@@ -227,13 +306,19 @@ class SkitContentEntitlementServiceImplTest {
         when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID))
                 .thenReturn(Collections.singletonList(episode));
 
-        assertEquals(Collections.singletonList(3), service.listGrantedEpisodesForPlayerGrant(token));
+        assertEquals(Collections.singletonList(3),
+                service.listGrantedEpisodesForPlayerGrant(token, RUNTIME));
         assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
     }
 
     private SkitAgentDO enabledAgent() {
         return SkitAgentDO.builder().id(1L).tenantId(TENANT_ID)
                 .status(CommonStatusEnum.ENABLE.getStatus()).build();
+    }
+
+    private SkitContentScopeService.AccessibleDrama accessibleDrama(long tenantId, long dramaId) {
+        return new SkitContentScopeService.AccessibleDrama(
+                tenantId, 701L, dramaId, 20, 8, 5);
     }
 
     private TenantDO enabledTenant(long tenantId) {
