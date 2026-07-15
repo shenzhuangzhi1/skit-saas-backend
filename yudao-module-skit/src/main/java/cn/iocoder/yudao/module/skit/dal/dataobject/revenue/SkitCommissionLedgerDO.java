@@ -29,4 +29,17 @@ public class SkitCommissionLedgerDO extends TenantBaseDO {
     private Integer ruleVersion;
     private Integer status;
 
+    /** Task 2 canonical append-only finance fields. */
+    private String entryType;
+    private String balanceBucket;
+    private String currency;
+    private Long grossAmountUnits;
+    private Long amountUnits;
+    private Integer amountScale;
+    private Long reversalOfId;
+    private Long reconciliationRevisionId;
+    private Long policySnapshotId;
+    private Integer revisionNo;
+    private Boolean legacyUnverified;
+
 }

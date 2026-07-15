@@ -10,6 +10,9 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentPageRow;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
 
@@ -51,6 +54,10 @@ public interface SkitAgentMapper extends BaseMapperX<SkitAgentDO> {
         return selectOne(SkitAgentDO::getTenantId, tenantId);
     }
 
+    @Select("SELECT * FROM `skit_agent` WHERE `tenant_id`=#{tenantId} "
+            + "AND `deleted`=b'0' FOR UPDATE")
+    SkitAgentDO selectByTenantIdForUpdate(@Param("tenantId") Long tenantId);
+
     default SkitAgentDO selectByTenantCode(String tenantCode) {
         return selectOne(SkitAgentDO::getTenantCode, tenantCode);
     }
@@ -73,10 +80,13 @@ public interface SkitAgentMapper extends BaseMapperX<SkitAgentDO> {
                 .set(SkitAgentDO::getArchivedBy, null));
     }
 
-    default int updateRootInviteCode(Long tenantId, String inviteCode) {
-        return update(new SkitAgentDO(), new LambdaUpdateWrapper<SkitAgentDO>()
-                .eq(SkitAgentDO::getTenantId, tenantId)
-                .set(SkitAgentDO::getRootInviteCode, inviteCode));
-    }
+    @Update("UPDATE `skit_agent` SET `root_invite_code`=#{newInviteCode},"
+            + "`updater`='invite-rotation',`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{agentId} "
+            + "AND `root_invite_code`=#{oldInviteCode} AND `deleted`=b'0'")
+    int updateRootInviteCode(@Param("tenantId") Long tenantId,
+                             @Param("agentId") Long agentId,
+                             @Param("oldInviteCode") String oldInviteCode,
+                             @Param("newInviteCode") String newInviteCode);
 
 }

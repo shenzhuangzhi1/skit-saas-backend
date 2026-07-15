@@ -13,7 +13,7 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-skit_saas}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./mysql/init/ruoyi-vue-pro.sql:/docker-entrypoint-initdb.d/01-ruoyi-vue-pro.sql:ro
@@ -25,12 +25,12 @@ services:
       retries: 20
 
   redis:
-    image: redis:6-alpine
+    image: redis:6.2-alpine
     container_name: skit-saas-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -49,20 +49,29 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "${BACKEND_PORT:-48080}:48080"
+      - "127.0.0.1:${BACKEND_PORT:-48080}:48080"
+    volumes:
+      - ./ad-keyring.properties:/run/secrets/skit-ad-keyring.properties:ro
     environment:
-      SPRING_PROFILES_ACTIVE: local
+      # runtime contains only production connectivity; prod applies the fail-closed security policy.
+      SPRING_PROFILES_ACTIVE: "runtime,prod"
+      SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties"
+      MYSQL_HOST: mysql
+      MYSQL_SERVICE_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-skit_saas}
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       SKIT_AD_ENCRYPTION_KEY: ${SKIT_AD_ENCRYPTION_KEY:?SKIT_AD_ENCRYPTION_KEY is required}
+      SKIT_AD_CREDENTIAL_KEY: ${SKIT_AD_CREDENTIAL_KEY:?SKIT_AD_CREDENTIAL_KEY is required}
+      SKIT_AD_CREDENTIAL_KEY_ID: ${SKIT_AD_CREDENTIAL_KEY_ID:-primary}
+      SKIT_AD_SESSION_TOKEN_KEY: ${SKIT_AD_SESSION_TOKEN_KEY:?SKIT_AD_SESSION_TOKEN_KEY is required}
+      SKIT_AD_SESSION_TOKEN_KEY_VERSION: ${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-1}
+      SKIT_AD_CALLBACK_PUBLIC_BASE_URL: ${SKIT_AD_CALLBACK_PUBLIC_BASE_URL:?SKIT_AD_CALLBACK_PUBLIC_BASE_URL is required}
+      # Only the immediate Docker reverse proxy may supply the overwritten X-Real-IP value.
+      SKIT_TRUSTED_PROXY_CIDRS: ${SKIT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
       JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx512m -Djava.security.egd=file:/dev/./urandom}
-      ARGS: >-
-        --spring.datasource.dynamic.datasource.master.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-skit_saas}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
-        --spring.datasource.dynamic.datasource.master.username=root
-        --spring.datasource.dynamic.datasource.master.password=${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
-        --spring.datasource.dynamic.datasource.slave.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-skit_saas}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
-        --spring.datasource.dynamic.datasource.slave.username=root
-        --spring.datasource.dynamic.datasource.slave.password=${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
-        --spring.redis.host=redis
-        --spring.redis.port=6379
 
   frontend:
     image: ${FRONTEND_IMAGE:-skit-saas-frontend}:${FRONTEND_IMAGE_TAG:-latest}

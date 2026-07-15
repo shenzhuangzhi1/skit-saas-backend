@@ -1,11 +1,14 @@
 package cn.iocoder.yudao.module.skit.service.ad;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -16,6 +19,7 @@ import java.util.Collections;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_CONFIG_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_REPORT_SCOPE_PENDING;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PROVIDER_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_PANGLE;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_TAKU;
@@ -33,6 +37,16 @@ class SkitAdAccountServiceImplTest {
     private SkitPlatformAdminGuard platformAdminGuard;
     @Spy
     private ObjectMapper objectMapper = new ObjectMapper();
+
+    @BeforeEach
+    void setTenant() {
+        TenantContextHolder.setTenantId(17L);
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContextHolder.clear();
+    }
 
     @Test
     void ordinarySaveTrimsMetadataAndPreservesBlankWriteOnlyCredentials() {
@@ -52,6 +66,64 @@ class SkitAdAccountServiceImplTest {
         assertEquals("old-taku-key", taku.getAppKey());
         assertEquals("old-taku-secret", taku.getSecret());
         verify(accountMapper).updateById(pangle);
+        verify(accountMapper).updateById(taku);
+    }
+
+    @Test
+    void changingTakuReportScopeLocksTheAccountAndFailsClosedWhileSettlementIsPending() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        SkitAdAccountDO taku = account(PROVIDER_TAKU).setAppId("old-taku-app")
+                .setConfigData("{\"placementId\":\"old-slot\",\"adFormat\":\"rewarded_video\"}");
+        mockAccounts(pangle, taku);
+        when(accountMapper.hasHistoricalTakuReportFacts(taku.getTenantId(), taku.getId()))
+                .thenReturn(true);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleEnabled(false);
+        settings.setTakuAppId("new-taku-app");
+
+        assertServiceException(() -> accountService.saveSettings(settings),
+                AD_ACCOUNT_REPORT_SCOPE_PENDING);
+
+        verify(accountMapper).selectByProviderForUpdate(17L, PROVIDER_TAKU);
+        verify(accountMapper).hasHistoricalTakuReportFacts(taku.getTenantId(), taku.getId());
+        verify(accountMapper, never()).updateById(taku);
+    }
+
+    @Test
+    void pendingSettlementDoesNotBlockCredentialRotationWhenTakuReportScopeIsUnchanged() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        SkitAdAccountDO taku = account(PROVIDER_TAKU).setAccountName("old-taku-user")
+                .setAppId("taku-app").setAppKey("old-taku-key")
+                .setConfigData("{\"placementId\":\"taku-slot\",\"adFormat\":\"rewarded_video\"}");
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleEnabled(false);
+        settings.setTakuAppKey("rotated-client-key");
+
+        accountService.saveSettings(settings);
+
+        assertEquals("rotated-client-key", taku.getAppKey());
+        verify(accountMapper, never()).hasHistoricalTakuReportFacts(anyLong(), anyLong());
+        verify(accountMapper).updateById(taku);
+    }
+
+    @Test
+    void takuAccountWithoutHistoricalFactsMayChangeItsReportScopeAfterTheLockedGuardPasses() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        SkitAdAccountDO taku = account(PROVIDER_TAKU).setAppId("old-taku-app")
+                .setConfigData("{\"placementId\":\"old-slot\",\"adFormat\":\"rewarded_video\"}");
+        mockAccounts(pangle, taku);
+        when(accountMapper.hasHistoricalTakuReportFacts(taku.getTenantId(), taku.getId()))
+                .thenReturn(false);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleEnabled(false);
+
+        accountService.saveSettings(settings);
+
+        assertEquals("taku-app", taku.getAppId());
+        assertEquals("taku-slot", objectMapper.readTree(taku.getConfigData())
+                .get("placementId").asText());
+        verify(accountMapper).hasHistoricalTakuReportFacts(taku.getTenantId(), taku.getId());
         verify(accountMapper).updateById(taku);
     }
 
@@ -155,14 +227,21 @@ class SkitAdAccountServiceImplTest {
     }
 
     private SkitAdAccountDO account(String provider) {
-        return SkitAdAccountDO.builder().id(PROVIDER_PANGLE.equals(provider) ? 1L : 2L)
+        SkitAdAccountDO account = SkitAdAccountDO.builder()
+                .id(PROVIDER_PANGLE.equals(provider) ? 1L : 2L)
                 .provider(provider).accountName("").appId("").appKey("").secret("")
                 .configData("{\"placementId\":\"old-slot\"}")
                 .status(CommonStatusEnum.DISABLE.getStatus()).build();
+        account.setTenantId(17L);
+        return account;
     }
 
     private void mockAccounts(SkitAdAccountDO pangle, SkitAdAccountDO taku) {
         when(accountMapper.selectByProvider(PROVIDER_PANGLE)).thenReturn(pangle);
         when(accountMapper.selectByProvider(PROVIDER_TAKU)).thenReturn(taku);
+        lenient().when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_PANGLE))
+                .thenReturn(pangle);
+        lenient().when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_TAKU))
+                .thenReturn(taku);
     }
 }

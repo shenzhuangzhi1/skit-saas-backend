@@ -7,11 +7,19 @@ import cn.iocoder.yudao.framework.mybatis.core.util.MyBatisUtils;
 import cn.iocoder.yudao.module.system.controller.admin.tenant.vo.tenant.TenantPageReqVO;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
 @Mapper
 public interface TenantMapper extends BaseMapperX<TenantDO> {
+
+    @Select("SELECT * FROM `system_tenant` WHERE `id`=#{id} AND `deleted`=b'0' FOR UPDATE")
+    TenantDO selectByIdForUpdate(@Param("id") Long id);
+
+    @Select("SELECT * FROM `system_tenant` WHERE `id`=#{id} AND `deleted`=b'0' FOR SHARE")
+    TenantDO selectByIdForShare(@Param("id") Long id);
 
     default PageResult<TenantDO> selectPage(TenantPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<TenantDO>()

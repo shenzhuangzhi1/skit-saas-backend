@@ -13,11 +13,11 @@ import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAgentRespVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentPageRow;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
-import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService;
 import cn.iocoder.yudao.module.system.controller.admin.tenant.vo.tenant.TenantSaveReqVO;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantPackageDO;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -47,6 +48,7 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.PLATFORM_ADM
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AGENT_NOT_EXISTS;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_MOBILE_EXISTS;
 import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.USER_USERNAME_EXISTS;
+import static cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.OwnerType.AGENT;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -63,7 +65,7 @@ class SkitAgentServiceImplTest {
     @Mock
     private SkitAgentMapper agentMapper;
     @Mock
-    private SkitMemberMapper memberMapper;
+    private SkitInviteCodeRegistryService inviteCodeRegistryService;
     @Mock
     private TenantService tenantService;
     @Mock
@@ -88,18 +90,23 @@ class SkitAgentServiceImplTest {
 
         assertServiceException(() -> agentService.createAgent(createRequest()), PLATFORM_ADMIN_REQUIRED);
 
-        verifyNoInteractions(tenantService, agentMapper, memberMapper, adAccountService, commissionService);
+        verifyNoInteractions(tenantService, agentMapper, inviteCodeRegistryService,
+                adAccountService, commissionService);
     }
 
     @Test
-    void createAgentCreatesTenantRegistryAndTenantDefaults() {
+    void createAgentClaimsRegistryAfterGeneratedAgentIdAndBeforeTenantDefaults() {
         when(tenantPackageService.getTenantPackageByCode("SKIT_AGENT_STANDARD"))
                 .thenReturn(new TenantPackageDO().setId(7L));
         when(tenantService.createTenant(any(TenantSaveReqVO.class))).thenReturn(42L);
         when(agentMapper.selectByTenantCode(anyString())).thenReturn(null);
-        when(agentMapper.selectByRootInviteCode(anyString())).thenReturn(null);
-        when(memberMapper.selectByInviteCode(anyString())).thenReturn(null);
-        when(agentMapper.insert(any(SkitAgentDO.class))).thenReturn(1);
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(false);
+        when(agentMapper.insert(any(SkitAgentDO.class))).thenAnswer(invocation -> {
+            SkitAgentDO agent = invocation.getArgument(0);
+            assertNull(agent.getId(), "数据库生成 ID 前不得抢占邀请码");
+            agent.setId(4L);
+            return 1;
+        });
 
         Long tenantId = agentService.createAgent(createRequest());
 
@@ -119,10 +126,22 @@ class SkitAgentServiceImplTest {
         assertEquals("AG42", agent.getTenantCode());
         assertEquals(CommonStatusEnum.ENABLE.getStatus(), agent.getStatus());
         assertTrue(agent.getRootInviteCode().startsWith("A"));
+        verify(inviteCodeRegistryService).claimAgent(42L, 4L, agent.getRootInviteCode());
         assertNull(TenantContextHolder.getTenantId(), "创建结束后必须恢复平台租户上下文");
         verify(adAccountService).ensureDefaultAccounts();
         verify(adAccountService).saveSettings(any(SkitAdAccountService.Settings.class));
         verify(commissionService).ensureDefaultPlan();
+
+        InOrder order = inOrder(tenantService, inviteCodeRegistryService, agentMapper,
+                appReleaseService, adAccountService, commissionService);
+        order.verify(tenantService).createTenant(any(TenantSaveReqVO.class));
+        order.verify(inviteCodeRegistryService).isClaimed(agent.getRootInviteCode());
+        order.verify(agentMapper).insert(agent);
+        order.verify(inviteCodeRegistryService).claimAgent(42L, 4L, agent.getRootInviteCode());
+        order.verify(appReleaseService).ensureProfile(42L, "AG42");
+        order.verify(adAccountService).ensureDefaultAccounts();
+        order.verify(commissionService).ensureDefaultPlan();
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
     }
 
     @Test
@@ -132,7 +151,8 @@ class SkitAgentServiceImplTest {
 
         assertServiceException(() -> agentService.createAgent(createRequest()), USER_USERNAME_EXISTS);
 
-        verifyNoInteractions(tenantService, agentMapper, memberMapper, adAccountService, commissionService);
+        verifyNoInteractions(tenantService, agentMapper, inviteCodeRegistryService,
+                adAccountService, commissionService);
     }
 
     @Test
@@ -367,56 +387,92 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
-    void rootInviteRotationUsesCollisionProtectedGenerator() {
-        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
-                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
-        when(agentMapper.selectByRootInviteCode(anyString())).thenReturn(null);
-        when(memberMapper.selectByInviteCode(anyString())).thenReturn(null);
+    void rootInviteRotationLocksOwnerThenRegistryAndUsesExactCas() {
+        SkitAgentDO agent = activeAgent();
+        SkitInviteCodeRegistryService.ResolvedOwner oldOwner = resolvedAgentOwner("AOLDINVITE01");
+        when(agentMapper.selectByTenantIdForUpdate(42L)).thenReturn(agent);
+        when(inviteCodeRegistryService.lockActive(AGENT, 42L, 4L, "AOLDINVITE01"))
+                .thenReturn(oldOwner);
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(false);
+        when(agentMapper.updateRootInviteCode(eq(42L), eq(4L), eq("AOLDINVITE01"), anyString()))
+                .thenReturn(1);
 
         String inviteCode = agentService.rotateRootInviteCode(42L);
 
         assertTrue(inviteCode.startsWith("A"));
-        verify(agentMapper).updateRootInviteCode(42L, inviteCode);
+        InOrder order = inOrder(agentMapper, inviteCodeRegistryService);
+        order.verify(agentMapper).selectByTenantIdForUpdate(42L);
+        order.verify(inviteCodeRegistryService).lockActive(AGENT, 42L, 4L, "AOLDINVITE01");
+        order.verify(inviteCodeRegistryService).isClaimed(inviteCode);
+        order.verify(inviteCodeRegistryService).rotate(eq(oldOwner), any(LocalDateTime.class));
+        order.verify(inviteCodeRegistryService).claimAgent(42L, 4L, inviteCode);
+        order.verify(agentMapper).updateRootInviteCode(42L, 4L, "AOLDINVITE01", inviteCode);
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
     }
 
     @Test
-    void rootInviteRotationRejectsArchivedAgent() {
-        when(agentMapper.selectByTenantId(42L)).thenReturn(archivedAgent());
+    void rootInviteRotationRejectsArchivedAgentBeforeRegistryLockOrProbe() {
+        when(agentMapper.selectByTenantIdForUpdate(42L)).thenReturn(archivedAgent());
 
         assertServiceException(() -> agentService.rotateRootInviteCode(42L), AGENT_ARCHIVED);
 
-        verify(agentMapper, never()).selectByRootInviteCode(anyString());
-        verify(agentMapper, never()).updateRootInviteCode(anyLong(), anyString());
+        verifyNoInteractions(inviteCodeRegistryService);
+        verify(agentMapper, never()).updateRootInviteCode(anyLong(), anyLong(), anyString(), anyString());
     }
 
     @Test
-    void rootInviteRotationRetriesAfterAgentCollision() {
-        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
-                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
-        when(agentMapper.selectByRootInviteCode(anyString()))
-                .thenReturn(SkitAgentDO.builder().id(99L).tenantId(99L).build(), (SkitAgentDO) null);
-        when(memberMapper.selectByInviteCode(anyString())).thenReturn(null);
+    void rootInviteRotationRetriesUsingOnlyGlobalRegistryProbe() {
+        SkitInviteCodeRegistryService.ResolvedOwner oldOwner = resolvedAgentOwner("AOLDINVITE01");
+        when(agentMapper.selectByTenantIdForUpdate(42L)).thenReturn(activeAgent());
+        when(inviteCodeRegistryService.lockActive(AGENT, 42L, 4L, "AOLDINVITE01"))
+                .thenReturn(oldOwner);
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(true, false);
+        when(agentMapper.updateRootInviteCode(eq(42L), eq(4L), eq("AOLDINVITE01"), anyString()))
+                .thenReturn(1);
 
         String inviteCode = agentService.rotateRootInviteCode(42L);
 
-        verify(agentMapper, times(2)).selectByRootInviteCode(anyString());
-        verify(agentMapper).updateRootInviteCode(42L, inviteCode);
+        verify(inviteCodeRegistryService, times(2)).isClaimed(anyString());
+        verify(inviteCodeRegistryService).rotate(eq(oldOwner), any(LocalDateTime.class));
+        verify(inviteCodeRegistryService).claimAgent(42L, 4L, inviteCode);
+        verify(agentMapper).updateRootInviteCode(42L, 4L, "AOLDINVITE01", inviteCode);
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
     }
 
     @Test
     void rootInviteRotationFailsAfterCollisionRetryBudgetExhausted() {
-        when(agentMapper.selectByTenantId(42L)).thenReturn(SkitAgentDO.builder().id(4L).tenantId(42L)
-                .tenantCode("AG42").rootInviteCode("AOLDINVITE01").build());
-        when(agentMapper.selectByRootInviteCode(anyString()))
-                .thenReturn(SkitAgentDO.builder().id(99L).tenantId(99L).build());
-        when(memberMapper.selectByInviteCode(anyString())).thenReturn(null);
+        SkitInviteCodeRegistryService.ResolvedOwner oldOwner = resolvedAgentOwner("AOLDINVITE01");
+        when(agentMapper.selectByTenantIdForUpdate(42L)).thenReturn(activeAgent());
+        when(inviteCodeRegistryService.lockActive(AGENT, 42L, 4L, "AOLDINVITE01"))
+                .thenReturn(oldOwner);
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(true);
 
         IllegalStateException exception = assertThrows(IllegalStateException.class,
                 () -> agentService.rotateRootInviteCode(42L));
 
         assertEquals("生成代理商邀请码失败", exception.getMessage());
-        verify(agentMapper, times(10)).selectByRootInviteCode(anyString());
-        verify(agentMapper, never()).updateRootInviteCode(anyLong(), anyString());
+        verify(inviteCodeRegistryService, times(10)).isClaimed(anyString());
+        verify(inviteCodeRegistryService, never()).rotate(any(), any());
+        verify(inviteCodeRegistryService, never()).claimAgent(anyLong(), anyLong(), anyString());
+        verify(agentMapper, never()).updateRootInviteCode(anyLong(), anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void rootInviteRotationFailsClosedWhenAgentCasDoesNotUpdateExactlyOneRow() {
+        SkitInviteCodeRegistryService.ResolvedOwner oldOwner = resolvedAgentOwner("AOLDINVITE01");
+        when(agentMapper.selectByTenantIdForUpdate(42L)).thenReturn(activeAgent());
+        when(inviteCodeRegistryService.lockActive(AGENT, 42L, 4L, "AOLDINVITE01"))
+                .thenReturn(oldOwner);
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(false);
+        when(agentMapper.updateRootInviteCode(eq(42L), eq(4L), eq("AOLDINVITE01"), anyString()))
+                .thenReturn(0);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> agentService.rotateRootInviteCode(42L));
+
+        assertEquals("代理商根邀请码条件更新失败", failure.getMessage());
+        verify(inviteCodeRegistryService).rotate(eq(oldOwner), any(LocalDateTime.class));
+        verify(inviteCodeRegistryService).claimAgent(eq(42L), eq(4L), anyString());
     }
 
     @Test
@@ -479,6 +535,16 @@ class SkitAgentServiceImplTest {
                 .setContactName("Agent 42").setContactMobile("13800000000")
                 .setContactUserId(420L).setStatus(CommonStatusEnum.ENABLE.getStatus())
                 .setPackageId(7L).setExpireTime(LocalDateTime.now().plusDays(30)).setAccountCount(1));
+    }
+
+    private static SkitAgentDO activeAgent() {
+        return SkitAgentDO.builder().id(4L).tenantId(42L).tenantCode("AG42")
+                .rootInviteCode("AOLDINVITE01").build();
+    }
+
+    private static SkitInviteCodeRegistryService.ResolvedOwner resolvedAgentOwner(String code) {
+        return new SkitInviteCodeRegistryService.ResolvedOwner(
+                17L, 42L, AGENT, 4L, null, code, code, "ACTIVE", null);
     }
 
     private static SkitAgentDO archivedAgent() {

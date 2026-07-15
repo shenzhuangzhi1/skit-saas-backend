@@ -284,6 +284,26 @@ public class TenantServiceImplTest extends BaseDbUnitTest {
     }
 
     @Test
+    public void testGetTenantForUpdate() {
+        TenantDO dbTenant = randomPojo(TenantDO.class);
+        tenantMapper.insert(dbTenant);
+
+        TenantDO result = tenantService.getTenantForUpdate(dbTenant.getId());
+
+        assertPojoEquals(result, dbTenant);
+    }
+
+    @Test
+    public void testGetTenantForShare() {
+        TenantDO dbTenant = randomPojo(TenantDO.class);
+        tenantMapper.insert(dbTenant);
+
+        TenantDO result = tenantService.getTenantForShare(dbTenant.getId());
+
+        assertPojoEquals(result, dbTenant);
+    }
+
+    @Test
     public void testGetTenantPage() {
         // mock 数据
         TenantDO dbTenant = randomPojo(TenantDO.class, o -> { // 等会查询到

@@ -26,7 +26,7 @@ public class BaiChuanChatModelTests {
     private final OpenAiChatModel openAiChatModel = OpenAiChatModel.builder()
             .openAiApi(OpenAiApi.builder()
                     .baseUrl(BaiChuanChatModel.BASE_URL)
-                    .apiKey("sk-61b6766a94c70786ed02673f5e16af3c") // apiKey
+                    .apiKey(System.getenv("AI_TEST_BAICHUAN_API_KEY")) // apiKey
                     .build())
             .defaultOptions(OpenAiChatOptions.builder()
                     .model("Baichuan4-Turbo") // 模型（https://platform.baichuan-ai.com/docs/api）

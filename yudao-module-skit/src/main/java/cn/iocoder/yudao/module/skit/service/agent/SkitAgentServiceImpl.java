@@ -10,11 +10,11 @@ import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.*;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentPageRow;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
-import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitCommissionService;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService;
 import cn.iocoder.yudao.module.system.controller.admin.tenant.vo.tenant.TenantSaveReqVO;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantPackageDO;
@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
 import javax.annotation.Resource;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -52,7 +53,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     @Resource
     private SkitAgentMapper agentMapper;
     @Resource
-    private SkitMemberMapper memberMapper;
+    private SkitInviteCodeRegistryService inviteCodeRegistryService;
     @Resource
     private TenantService tenantService;
     @Resource
@@ -125,13 +126,18 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         Long tenantId = tenantService.createTenant(toTenantSaveReqVO(createReqVO, standardPackage));
         String tenantCode = AUTO_TENANT_CODE_PREFIX + tenantId;
         validateTenantCodeDuplicate(tenantCode, null);
-        agentMapper.insert(SkitAgentDO.builder()
+        String rootInviteCode = generateRootInviteCode();
+        SkitAgentDO agent = SkitAgentDO.builder()
                 .tenantId(tenantId)
                 .tenantCode(tenantCode)
-                .rootInviteCode(generateRootInviteCode())
+                .rootInviteCode(rootInviteCode)
                 .status(createReqVO.getStatus())
                 .remark("")
-                .build());
+                .build();
+        if (agentMapper.insert(agent) != 1 || agent.getId() == null) {
+            throw new IllegalStateException("代理商创建后未获得主键");
+        }
+        inviteCodeRegistryService.claimAgent(tenantId, agent.getId(), rootInviteCode);
         appReleaseService.ensureProfile(tenantId, tenantCode);
         TenantUtils.execute(tenantId, () -> {
             adAccountService.ensureDefaultAccounts();
@@ -237,10 +243,37 @@ public class SkitAgentServiceImpl implements SkitAgentService {
     @DSTransactional
     public String rotateRootInviteCode(Long tenantId) {
         platformAdminGuard.check();
-        validateMutableAgent(tenantId);
+        SkitAgentDO agent = lockMutableAgent(tenantId);
+        String oldInviteCode = agent.getRootInviteCode();
+        SkitInviteCodeRegistryService.ResolvedOwner oldOwner = inviteCodeRegistryService.lockActive(
+                SkitInviteCodeRegistryService.OwnerType.AGENT,
+                agent.getTenantId(), agent.getId(), oldInviteCode);
+        if (oldOwner == null) {
+            throw new IllegalStateException("代理商根邀请码登记不存在或已失效");
+        }
         String inviteCode = generateRootInviteCode();
-        agentMapper.updateRootInviteCode(tenantId, inviteCode);
+        inviteCodeRegistryService.rotate(oldOwner, LocalDateTime.now());
+        inviteCodeRegistryService.claimAgent(agent.getTenantId(), agent.getId(), inviteCode);
+        int updated = agentMapper.updateRootInviteCode(
+                agent.getTenantId(), agent.getId(), oldInviteCode, inviteCode);
+        if (updated != 1) {
+            throw new IllegalStateException("代理商根邀请码条件更新失败");
+        }
         return inviteCode;
+    }
+
+    private SkitAgentDO lockMutableAgent(Long tenantId) {
+        if (tenantId == null) {
+            throw exception(AGENT_NOT_EXISTS);
+        }
+        SkitAgentDO agent = agentMapper.selectByTenantIdForUpdate(tenantId);
+        if (agent == null) {
+            throw exception(AGENT_NOT_EXISTS);
+        }
+        if (agent.getArchivedTime() != null) {
+            throw exception(AGENT_ARCHIVED);
+        }
+        return agent;
     }
 
     private SkitAgentDO validateAgent(Long tenantId) {
@@ -403,9 +436,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         for (int attempt = 0; attempt < 10; attempt++) {
             String inviteCode = AGENT_INVITE_CODE_PREFIX
                     + IdUtil.fastSimpleUUID().substring(0, 11).toUpperCase(Locale.ROOT);
-            boolean agentExists = agentMapper.selectByRootInviteCode(inviteCode) != null;
-            boolean memberExists = TenantUtils.executeIgnore(() -> memberMapper.selectByInviteCode(inviteCode)) != null;
-            if (!agentExists && !memberExists) {
+            if (!inviteCodeRegistryService.isClaimed(inviteCode)) {
                 return inviteCode;
             }
         }

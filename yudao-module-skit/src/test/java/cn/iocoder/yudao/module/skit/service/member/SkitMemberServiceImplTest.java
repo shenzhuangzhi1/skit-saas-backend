@@ -14,6 +14,9 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.OwnerType;
+import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.ResolvedOwner;
 import cn.iocoder.yudao.module.system.enums.oauth2.OAuth2ClientConstants;
 import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
@@ -22,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -32,6 +36,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.INVITE_CODE_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_APP_CONTEXT_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_PASSWORD_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_TOKEN_SCOPE_INVALID;
@@ -61,6 +66,8 @@ class SkitMemberServiceImplTest {
     @Mock
     private SkitAgentMapper agentMapper;
     @Mock
+    private SkitInviteCodeRegistryService inviteCodeRegistryService;
+    @Mock
     private TenantService tenantService;
     @Mock
     private PasswordEncoder passwordEncoder;
@@ -76,24 +83,25 @@ class SkitMemberServiceImplTest {
 
     @Test
     void registerWithMemberInviteBuildsCompleteAncestorClosureInInviteTenant() {
-        SkitMemberDO inviter = enabledMember(INVITER_ID, TENANT_ID, 2, "PARENT88");
+        SkitMemberDO inviter = enabledMember(INVITER_ID, TENANT_ID, 2, "MEMBER01");
         SkitAgentDO agent = SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
                 .status(CommonStatusEnum.ENABLE.getStatus()).build();
-        when(agentMapper.selectByRootInviteCode("MEMBER01")).thenReturn(null);
-        when(memberMapper.selectByInviteCode(anyString())).thenAnswer(invocation -> {
-            assertTrue(TenantContextHolder.isIgnore(), "邀请码全局解析必须显式忽略租户过滤");
-            return "MEMBER01".equals(invocation.getArgument(0)) ? inviter : null;
-        });
+        ResolvedOwner discovered = memberOwner(91L, TENANT_ID, INVITER_ID, "MEMBER01");
+        when(inviteCodeRegistryService.resolveActive("MEMBER01")).thenReturn(discovered);
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(agent);
+        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID)).thenAnswer(invocation -> {
+            assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
+            assertFalse(TenantContextHolder.isIgnore());
+            return inviter;
+        });
+        when(inviteCodeRegistryService.lockActive(OwnerType.MEMBER, TENANT_ID, INVITER_ID, "MEMBER01"))
+                .thenReturn(discovered);
         when(memberMapper.selectByMobile("13800000001")).thenAnswer(invocation -> {
             assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
             assertFalse(TenantContextHolder.isIgnore());
             return null;
         });
-        when(memberMapper.selectById(INVITER_ID)).thenAnswer(invocation -> {
-            assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
-            return inviter;
-        });
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(false);
         when(passwordEncoder.encode("secret123")).thenReturn("encoded-password");
         when(memberMapper.insert(any(SkitMemberDO.class))).thenAnswer(invocation -> {
             SkitMemberDO inserted = invocation.getArgument(0);
@@ -101,6 +109,8 @@ class SkitMemberServiceImplTest {
             inserted.setId(MEMBER_ID);
             return 1;
         });
+        when(inviteCodeRegistryService.claimMember(eq(TENANT_ID), eq(MEMBER_ID), anyString()))
+                .thenAnswer(invocation -> memberOwner(92L, TENANT_ID, MEMBER_ID, invocation.getArgument(2)));
         when(closureMapper.selectAncestors(INVITER_ID)).thenReturn(Arrays.asList(
                 SkitMemberClosureDO.builder().ancestorId(INVITER_ID).descendantId(INVITER_ID).distance(0).build(),
                 SkitMemberClosureDO.builder().ancestorId(5L).descendantId(INVITER_ID).distance(1).build()));
@@ -132,6 +142,15 @@ class SkitMemberServiceImplTest {
         assertEquals(3, insertedMember.getDepth());
         assertEquals("encoded-password", insertedMember.getPassword());
 
+        InOrder registrationOrder = inOrder(memberMapper, inviteCodeRegistryService, closureMapper);
+        registrationOrder.verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID);
+        registrationOrder.verify(inviteCodeRegistryService)
+                .lockActive(OwnerType.MEMBER, TENANT_ID, INVITER_ID, "MEMBER01");
+        registrationOrder.verify(memberMapper).insert(any(SkitMemberDO.class));
+        registrationOrder.verify(inviteCodeRegistryService)
+                .claimMember(TENANT_ID, MEMBER_ID, insertedMember.getInviteCode());
+        registrationOrder.verify(closureMapper).insert(any(SkitMemberClosureDO.class));
+
         ArgumentCaptor<SkitMemberClosureDO> closureCaptor = ArgumentCaptor.forClass(SkitMemberClosureDO.class);
         verify(closureMapper, times(3)).insert(closureCaptor.capture());
         List<SkitMemberClosureDO> insertedClosures = closureCaptor.getAllValues();
@@ -148,6 +167,8 @@ class SkitMemberServiceImplTest {
         assertEquals(Collections.singletonList("skit_member"), tokenCaptor.getValue().getScopes());
         // 邀请码解析和签发 Token 都要独立确认租户仍有效。
         verify(tenantService, times(2)).validTenant(TENANT_ID);
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
+        verify(memberMapper, never()).selectByInviteCode(anyString());
     }
 
     @Test
@@ -203,18 +224,25 @@ class SkitMemberServiceImplTest {
 
     @Test
     void registerAllowsMobileAlreadyUsedByAnotherTenant() {
-        SkitAgentDO agent = SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
+        SkitAgentDO agent = SkitAgentDO.builder().id(6L).tenantId(TENANT_ID).tenantCode("AGENT42")
                 .rootInviteCode("ROOT42").status(CommonStatusEnum.ENABLE.getStatus()).build();
-        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(agent);
+        ResolvedOwner discovered = agentOwner(81L, TENANT_ID, agent.getId(), "ROOT42");
+        when(inviteCodeRegistryService.resolveActive("ROOT42")).thenReturn(discovered);
+        when(agentMapper.selectByTenantIdForUpdate(TENANT_ID)).thenReturn(agent);
+        when(inviteCodeRegistryService.lockActive(OwnerType.AGENT, TENANT_ID, agent.getId(), "ROOT42"))
+                .thenReturn(discovered);
         when(memberMapper.selectByMobile("13800000004")).thenAnswer(invocation -> {
             assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
             return null;
         });
+        when(inviteCodeRegistryService.isClaimed(anyString())).thenReturn(false);
         when(passwordEncoder.encode("secret123")).thenReturn("encoded-password");
         when(memberMapper.insert(any(SkitMemberDO.class))).thenAnswer(invocation -> {
             invocation.<SkitMemberDO>getArgument(0).setId(MEMBER_ID);
             return 1;
         });
+        when(inviteCodeRegistryService.claimMember(eq(TENANT_ID), eq(MEMBER_ID), anyString()))
+                .thenAnswer(invocation -> memberOwner(82L, TENANT_ID, MEMBER_ID, invocation.getArgument(2)));
         when(closureMapper.insert(any(SkitMemberClosureDO.class))).thenReturn(1);
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(agent);
         when(oauth2TokenApi.createAccessToken(any(OAuth2AccessTokenCreateReqDTO.class))).thenReturn(token(MEMBER_ID));
@@ -229,15 +257,22 @@ class SkitMemberServiceImplTest {
 
         assertEquals(TENANT_ID, result.getTenantId());
         assertEquals(MEMBER_ID, result.getUserId());
+        InOrder lockOrder = inOrder(agentMapper, inviteCodeRegistryService, memberMapper);
+        lockOrder.verify(agentMapper).selectByTenantIdForUpdate(TENANT_ID);
+        lockOrder.verify(inviteCodeRegistryService)
+                .lockActive(OwnerType.AGENT, TENANT_ID, agent.getId(), "ROOT42");
+        lockOrder.verify(memberMapper).insert(any(SkitMemberDO.class));
+        lockOrder.verify(inviteCodeRegistryService).claimMember(eq(TENANT_ID), eq(MEMBER_ID), anyString());
         verify(memberMapper).insert(any(SkitMemberDO.class));
         verify(memberMapper, never()).selectListByMobile(anyString());
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
+        verify(memberMapper, never()).selectByInviteCode(anyString());
     }
 
     @Test
     void registerRejectsInviteFromAnotherAgentContextBeforeMemberLookup() {
-        SkitAgentDO agent = SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
-                .rootInviteCode("ROOT42").status(CommonStatusEnum.ENABLE.getStatus()).build();
-        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(agent);
+        when(inviteCodeRegistryService.resolveActive("ROOT42"))
+                .thenReturn(agentOwner(81L, TENANT_ID, 6L, "ROOT42"));
         SkitMemberService.RegisterCommand command = new SkitMemberService.RegisterCommand();
         command.setTenantId(43L);
         command.setMobile("13800000005");
@@ -247,8 +282,75 @@ class SkitMemberServiceImplTest {
 
         assertServiceException(() -> memberService.register(command), MEMBER_APP_CONTEXT_INVALID);
 
+        verify(inviteCodeRegistryService).resolveActive("ROOT42");
+        verifyNoInteractions(agentMapper, memberMapper, closureMapper, tenantService, passwordEncoder, oauth2TokenApi);
+        verifyNoMoreInteractions(inviteCodeRegistryService);
+    }
+
+    @Test
+    void registerRejectsMemberWhoseLockedCurrentCodeNoLongerMatchesRegistry() {
+        ResolvedOwner discovered = memberOwner(91L, TENANT_ID, INVITER_ID, "MEMBER01");
+        SkitMemberDO staleOwner = enabledMember(INVITER_ID, TENANT_ID, 2, "OLD-CODE");
+        when(inviteCodeRegistryService.resolveActive("MEMBER01")).thenReturn(discovered);
+        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID)).thenReturn(staleOwner);
+
+        assertServiceException(() -> memberService.register(registerCommand(TENANT_ID, "MEMBER01")),
+                INVITE_CODE_INVALID);
+
+        verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID);
+        verify(inviteCodeRegistryService, never()).lockActive(any(), anyLong(), anyLong(), anyString());
         verify(memberMapper, never()).selectByMobile(anyString());
         verify(memberMapper, never()).insert(any(SkitMemberDO.class));
+    }
+
+    @Test
+    void registerRejectsDisabledLockedMemberBeforeRegistryLock() {
+        ResolvedOwner discovered = memberOwner(91L, TENANT_ID, INVITER_ID, "MEMBER01");
+        SkitMemberDO disabledOwner = enabledMember(INVITER_ID, TENANT_ID, 2, "MEMBER01")
+                .setStatus(CommonStatusEnum.DISABLE.getStatus());
+        when(inviteCodeRegistryService.resolveActive("MEMBER01")).thenReturn(discovered);
+        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID)).thenReturn(disabledOwner);
+
+        assertServiceException(() -> memberService.register(registerCommand(TENANT_ID, "MEMBER01")),
+                INVITE_CODE_INVALID);
+
+        verify(inviteCodeRegistryService, never()).lockActive(any(), anyLong(), anyLong(), anyString());
+        verify(memberMapper, never()).selectByMobile(anyString());
+        verify(memberMapper, never()).insert(any(SkitMemberDO.class));
+    }
+
+    @Test
+    void registerRejectsARegistryRowThatChangesTenantWhileBeingLocked() {
+        ResolvedOwner discovered = memberOwner(91L, TENANT_ID, INVITER_ID, "MEMBER01");
+        SkitMemberDO inviter = enabledMember(INVITER_ID, TENANT_ID, 2, "MEMBER01");
+        when(inviteCodeRegistryService.resolveActive("MEMBER01")).thenReturn(discovered);
+        when(memberMapper.selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID)).thenReturn(inviter);
+        when(inviteCodeRegistryService.lockActive(OwnerType.MEMBER, TENANT_ID, INVITER_ID, "MEMBER01"))
+                .thenReturn(memberOwner(91L, 43L, INVITER_ID, "MEMBER01"));
+
+        assertServiceException(() -> memberService.register(registerCommand(TENANT_ID, "MEMBER01")),
+                INVITE_CODE_INVALID);
+
+        InOrder lockOrder = inOrder(memberMapper, inviteCodeRegistryService);
+        lockOrder.verify(memberMapper).selectByTenantAndIdForUpdate(TENANT_ID, INVITER_ID);
+        lockOrder.verify(inviteCodeRegistryService)
+                .lockActive(OwnerType.MEMBER, TENANT_ID, INVITER_ID, "MEMBER01");
+        verify(memberMapper, never()).selectByMobile(anyString());
+        verify(memberMapper, never()).insert(any(SkitMemberDO.class));
+    }
+
+    @Test
+    void registerRejectsPolymorphicRegistryRowWithTwoOwnersBeforeTenantReads() {
+        ResolvedOwner corrupt = new ResolvedOwner(81L, TENANT_ID, OwnerType.AGENT, 6L, INVITER_ID,
+                "ROOT42", "ROOT42", "ACTIVE", null);
+        when(inviteCodeRegistryService.resolveActive("ROOT42")).thenReturn(corrupt);
+
+        assertServiceException(() -> memberService.register(registerCommand(TENANT_ID, "ROOT42")),
+                INVITE_CODE_INVALID);
+
+        verify(inviteCodeRegistryService).resolveActive("ROOT42");
+        verifyNoMoreInteractions(inviteCodeRegistryService);
+        verifyNoInteractions(agentMapper, memberMapper, closureMapper, tenantService, passwordEncoder, oauth2TokenApi);
     }
 
     @Test
@@ -328,11 +430,21 @@ class SkitMemberServiceImplTest {
 
     @Test
     void agentInvitationUsesCanonicalTenantAndIgnoresLegacyAgentStatus() {
-        SkitAgentDO legacyDisabledAgent = SkitAgentDO.builder().tenantId(TENANT_ID)
+        SkitAgentDO legacyDisabledAgent = SkitAgentDO.builder().id(6L).tenantId(TENANT_ID)
                 .tenantCode("AGENT42").rootInviteCode("ROOT42")
                 .status(CommonStatusEnum.DISABLE.getStatus()).build();
-        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(legacyDisabledAgent);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(legacyDisabledAgent);
+        when(inviteCodeRegistryService.resolveActive("ROOT42"))
+                .thenReturn(agentOwner(81L, TENANT_ID, 6L, "ROOT42"));
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenAnswer(invocation -> {
+            assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
+            assertFalse(TenantContextHolder.isIgnore());
+            return legacyDisabledAgent;
+        });
+        when(tenantService.getTenant(TENANT_ID)).thenAnswer(invocation -> {
+            assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
+            assertFalse(TenantContextHolder.isIgnore());
+            return null;
+        });
 
         SkitMemberService.InvitationView result = memberService.resolveInvitation("root42");
 
@@ -340,12 +452,17 @@ class SkitMemberServiceImplTest {
         assertEquals(TENANT_ID, result.getTenantId());
         assertEquals("AGENT42", result.getTenantCode());
         verify(tenantService).validTenant(TENANT_ID);
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
         verify(memberMapper, never()).selectByInviteCode(anyString());
     }
 
     @Test
     void agentInvitationRejectsDisabledExpiredAndDeletedTenant() {
-        when(agentMapper.selectByRootInviteCode("ROOT42")).thenReturn(enabledAgent());
+        SkitAgentDO agent = SkitAgentDO.builder().id(6L).tenantId(TENANT_ID)
+                .tenantCode("AGENT42").rootInviteCode("ROOT42").build();
+        when(inviteCodeRegistryService.resolveActive("ROOT42"))
+                .thenReturn(agentOwner(81L, TENANT_ID, 6L, "ROOT42"));
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(agent);
         doThrow(exception(TENANT_DISABLE, "agent"),
                 exception(TENANT_EXPIRE, "agent"),
                 exception(TENANT_NOT_EXISTS)).when(tenantService).validTenant(TENANT_ID);
@@ -359,6 +476,40 @@ class SkitMemberServiceImplTest {
         }
 
         verify(tenantService, times(3)).validTenant(TENANT_ID);
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
+        verify(memberMapper, never()).selectByInviteCode(anyString());
+    }
+
+    @Test
+    void publicInvitationRejectsCrossTenantOrStaleMemberRegistryOwnership() {
+        when(inviteCodeRegistryService.resolveActive("MEMBER01"))
+                .thenReturn(memberOwner(91L, TENANT_ID, INVITER_ID, "MEMBER01"));
+        SkitMemberDO corruptOwner = enabledMember(INVITER_ID, 43L, 2, "OTHER01");
+        when(memberMapper.selectById(INVITER_ID)).thenAnswer(invocation -> {
+            assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
+            assertFalse(TenantContextHolder.isIgnore());
+            return corruptOwner;
+        });
+
+        assertServiceException(() -> memberService.resolveInvitation(" member01 "), INVITE_CODE_INVALID);
+
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
+        verify(memberMapper, never()).selectByInviteCode(anyString());
+        verifyNoInteractions(tenantService);
+    }
+
+    @Test
+    void publicInvitationRejectsArchivedAgentEvenWhenRegistryRowIsActive() {
+        when(inviteCodeRegistryService.resolveActive("ROOT42"))
+                .thenReturn(agentOwner(81L, TENANT_ID, 6L, "ROOT42"));
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(SkitAgentDO.builder()
+                .id(6L).tenantId(TENANT_ID).tenantCode("AGENT42").rootInviteCode("ROOT42")
+                .archivedTime(LocalDateTime.now()).build());
+
+        assertServiceException(() -> memberService.resolveInvitation("root42"), INVITE_CODE_INVALID);
+
+        verifyNoInteractions(tenantService);
+        verify(agentMapper, never()).selectByRootInviteCode(anyString());
         verify(memberMapper, never()).selectByInviteCode(anyString());
     }
 
@@ -489,6 +640,27 @@ class SkitMemberServiceImplTest {
     private SkitAgentDO enabledAgent() {
         return SkitAgentDO.builder().tenantId(TENANT_ID).tenantCode("AGENT42")
                 .status(CommonStatusEnum.ENABLE.getStatus()).build();
+    }
+
+    private SkitMemberService.RegisterCommand registerCommand(Long tenantId, String inviteCode) {
+        SkitMemberService.RegisterCommand command = new SkitMemberService.RegisterCommand();
+        command.setTenantId(tenantId);
+        command.setMobile("13800000009");
+        command.setPassword("secret123");
+        command.setNickname("new member");
+        command.setInviteCode(inviteCode);
+        command.setRegisterIp("127.0.0.9");
+        return command;
+    }
+
+    private ResolvedOwner agentOwner(Long registryId, Long tenantId, Long agentId, String code) {
+        return new ResolvedOwner(registryId, tenantId, OwnerType.AGENT, agentId, null,
+                code, code, "ACTIVE", null);
+    }
+
+    private ResolvedOwner memberOwner(Long registryId, Long tenantId, Long memberId, String code) {
+        return new ResolvedOwner(registryId, tenantId, OwnerType.MEMBER, null, memberId,
+                code, code, "ACTIVE", null);
     }
 
     private OAuth2AccessTokenRespDTO token(Long memberId) {

@@ -5,12 +5,28 @@ import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPageReqVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
 @Mapper
 public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
+
+    @Select("SELECT * FROM `skit_admin_record` WHERE `tenant_id`=#{tenantId} "
+            + "AND `page_key`='drama' AND `deleted`=b'0' AND JSON_VALID(`record_data`) "
+            + "AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.pangleDramaId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.dramaId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.drama_id')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.contentId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.nativeId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.id')),''))=#{businessId} "
+            + "ORDER BY `id` FOR SHARE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; JSqlParser otherwise moves ORDER BY after FOR SHARE
+    List<SkitAdminRecordDO> selectDramaCatalogByBusinessIdForShare(
+            @Param("tenantId") Long tenantId, @Param("businessId") String businessId);
 
     default PageResult<SkitAdminRecordDO> selectPage(SkitAdminRecordPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<SkitAdminRecordDO>()

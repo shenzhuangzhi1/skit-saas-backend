@@ -9,7 +9,7 @@ spring:
     host: 127.0.0.1 # Redis 服务器地址
     port: 6379 # Redis 服务器端口
     database: 0 # Redis 数据库索引
-    # password: # Redis 密码，如果有的话
+    # password: ${IOT_DATABASE_PASSWORD:}
     timeout: 30000ms # 连接超时时间
   # Kafka 配置项，对应 KafkaProperties 配置类
   kafka:
@@ -41,7 +41,7 @@ yudao:
         read-timeout: 30s
       # 设备 Token 配置
       token:
-        secret: yudaoIotGatewayTokenSecret123456789 # Token 密钥，至少32位
+        secret: ${IOT_GATEWAY_TOKEN_SECRET:}
         expiration: 7d
 
       # 协议实例列表
@@ -133,7 +133,7 @@ yudao:
             mqtt-host: 127.0.0.1                  # MQTT Broker 地址
             mqtt-port: 1883                       # MQTT Broker 端口
             mqtt-username: admin                  # MQTT 用户名
-            mqtt-password: public                 # MQTT 密码
+            mqtt-password: ${IOT_MQTT_PASSWORD:}
             mqtt-client-id: iot-gateway-mqtt      # MQTT 客户端 ID
             mqtt-ssl: false                       # 是否开启 SSL
             mqtt-topics:
@@ -162,9 +162,9 @@ yudao:
             # 高级 SSL/TLS 配置 (当 trust-all: false 且 mqtt-ssl: true 时生效)
             ssl-options:
               key-store-path: "classpath:certs/client.jks" # 客户端证书库路径
-              key-store-password: "your-keystore-password" # 客户端证书库密码
+              key-store-password: ${IOT_COAP_KEY_STORE_PASSWORD:}
               trust-store-path: "classpath:certs/trust.jks" # 信任的 CA 证书库路径
-              trust-store-password: "your-truststore-password" # 信任的 CA 证书库密码
+              trust-store-password: ${IOT_COAP_TRUST_STORE_PASSWORD:}
         # ====================================
         # 针对引入的 Modbus TCP Client 组件的配置
         # ====================================

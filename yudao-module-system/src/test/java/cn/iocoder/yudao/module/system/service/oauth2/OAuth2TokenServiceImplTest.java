@@ -136,6 +136,7 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
 
     @Test
     public void testRefreshAccessToken_expired() {
+        TenantContextHolder.setTenantId(42L);
         // 准备参数
         String refreshToken = randomString();
         String clientId = randomString();
@@ -145,13 +146,21 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
         // mock 数据（访问令牌）
         OAuth2RefreshTokenDO refreshTokenDO = randomPojo(OAuth2RefreshTokenDO.class)
                 .setRefreshToken(refreshToken).setClientId(clientId)
+                .setUserId(1L).setUserType(UserTypeEnum.ADMIN.getValue())
                 .setExpiresTime(LocalDateTime.now().minusDays(1));
+        refreshTokenDO.setTenantId(42L);
         oauth2RefreshTokenMapper.insert(refreshTokenDO);
+        AdminUserDO user = randomPojo(AdminUserDO.class, o -> {
+            o.setId(1L).setStatus(0);
+            o.setTenantId(42L);
+        });
+        when(adminUserService.getUserIgnoreTenant(1L)).thenReturn(user);
 
         // 调用，并断言
         assertServiceException(() -> oauth2TokenService.refreshAccessToken(refreshToken, clientId),
                 new ErrorCode(401, "刷新令牌已过期"));
         assertEquals(0, oauth2AccessTokenMapper.selectCount());
+        assertNull(oauth2RefreshTokenMapper.selectByRefreshToken(refreshToken));
     }
 
     @Test

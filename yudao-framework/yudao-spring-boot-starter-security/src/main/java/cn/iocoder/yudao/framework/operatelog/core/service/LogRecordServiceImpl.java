@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.common.biz.system.logger.OperateLogCommonApi;
 import cn.iocoder.yudao.framework.common.biz.system.logger.dto.OperateLogCreateReqDTO;
 import cn.iocoder.yudao.framework.common.util.monitor.TracerUtils;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
+import cn.iocoder.yudao.framework.apilog.core.ApiRequestUrlResolver;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import com.mzt.logapi.beans.LogRecord;
@@ -73,7 +74,7 @@ public class LogRecordServiceImpl implements ILogRecordService {
         }
         // 补全请求信息
         reqDTO.setRequestMethod(request.getMethod());
-        reqDTO.setRequestUrl(request.getRequestURI());
+        reqDTO.setRequestUrl(ApiRequestUrlResolver.resolve(request));
         reqDTO.setUserIp(ServletUtils.getClientIP(request));
         reqDTO.setUserAgent(ServletUtils.getUserAgent(request));
     }

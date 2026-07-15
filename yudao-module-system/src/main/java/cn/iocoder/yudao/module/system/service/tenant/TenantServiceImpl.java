@@ -257,6 +257,16 @@ public class TenantServiceImpl implements TenantService {
     }
 
     @Override
+    public TenantDO getTenantForUpdate(Long id) {
+        return tenantMapper.selectByIdForUpdate(id);
+    }
+
+    @Override
+    public TenantDO getTenantForShare(Long id) {
+        return tenantMapper.selectByIdForShare(id);
+    }
+
+    @Override
     public List<TenantDO> getTenantList(Collection<Long> ids) {
         if (CollUtil.isEmpty(ids)) {
             return Collections.emptyList();
