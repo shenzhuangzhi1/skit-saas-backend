@@ -9,8 +9,6 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.MySQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.sql.DataSource;
 import java.util.Locale;
@@ -24,17 +22,33 @@ import java.util.function.Supplier;
  * schema for each concrete test class and applies the production Skit schema
  * initializer after installing only its prerequisite system tables.</p>
  */
-@Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public abstract class SkitMySqlIntegrationTestBase {
 
     private static final String MYSQL_IMAGE = "mysql:8.0.36";
 
-    @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>(MYSQL_IMAGE)
             .withDatabaseName("skit_integration_bootstrap")
             .withUsername("root")
             .withPassword("skit-integration");
+
+    private static final Object MYSQL_LOCK = new Object();
+
+    /**
+     * Starts one MySQL container for the whole Failsafe JVM instead of letting
+     * the JUnit Testcontainers extension stop and restart it for every test
+     * class. Each class still receives an isolated database schema below.
+     */
+    private static void ensureMySqlStarted() {
+        if (MYSQL.isRunning()) {
+            return;
+        }
+        synchronized (MYSQL_LOCK) {
+            if (!MYSQL.isRunning()) {
+                MYSQL.start();
+            }
+        }
+    }
 
     private String schemaName;
     private DriverManagerDataSource dataSource;
@@ -43,6 +57,7 @@ public abstract class SkitMySqlIntegrationTestBase {
 
     @BeforeAll
     final void prepareMySqlSchema() {
+        ensureMySqlStarted();
         schemaName = schemaNameFor(getClass());
         JdbcTemplate adminJdbc = new JdbcTemplate(dataSource(jdbcUrlFor("mysql")));
         adminJdbc.execute("DROP DATABASE IF EXISTS `" + schemaName + "`");
