@@ -12,8 +12,10 @@ import cn.iocoder.yudao.module.skit.framework.observability.SkitAdReportPullObse
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -155,8 +157,7 @@ class SkitAdReportPullServiceImplTest {
         when(pullMapper.selectCanonicalForUpdate(anyLong(), anyLong(), any(), any(),
                 any(), any(), anyInt(), anyBoolean()))
                 .thenAnswer(invocation -> pulls.get(pulls.size() - 1));
-        DataSourceTransactionManager transactions = new DataSourceTransactionManager(
-                new DriverManagerDataSource("jdbc:h2:mem:task10-report-service;DB_CLOSE_DELAY=-1", "sa", ""));
+        PlatformTransactionManager transactions = new NoOpTransactionManager();
         SimpleMeterRegistry metrics = new SimpleMeterRegistry();
         SkitAdReportPullServiceImpl service = new SkitAdReportPullServiceImpl(
                 accountMapper, pullMapper, bucketMapper, revisionMapper, eventLinkMapper, eventMapper,
@@ -210,6 +211,24 @@ class SkitAdReportPullServiceImplTest {
         public void markPermissionVerified(long tenantId, long adAccountId,
                                            int credentialVersion) {
             markedVersions.add(credentialVersion);
+        }
+    }
+
+    private static final class NoOpTransactionManager implements PlatformTransactionManager {
+
+        @Override
+        public TransactionStatus getTransaction(TransactionDefinition definition) {
+            return new SimpleTransactionStatus();
+        }
+
+        @Override
+        public void commit(TransactionStatus status) {
+            // Mapper calls are mocked; the unit test only needs TransactionTemplate boundaries.
+        }
+
+        @Override
+        public void rollback(TransactionStatus status) {
+            // Mapper calls are mocked; the unit test only needs TransactionTemplate boundaries.
         }
     }
 

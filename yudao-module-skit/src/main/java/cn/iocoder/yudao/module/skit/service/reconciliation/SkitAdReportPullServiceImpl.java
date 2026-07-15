@@ -20,8 +20,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -94,7 +94,7 @@ public class SkitAdReportPullServiceImpl implements SkitAdReportPullService {
                                        SkitReconciliationAllocator allocator,
                                        SkitLedgerProjectionService ledgerProjectionService,
                                        ObjectMapper objectMapper,
-                                       DataSourceTransactionManager transactionManager) {
+                                       PlatformTransactionManager transactionManager) {
         this(accountMapper, pullMapper, bucketMapper, revisionMapper, eventLinkMapper, eventMapper,
                 credentialService, reportingClient, allocator, ledgerProjectionService,
                 objectMapper, transactionManager, Clock.systemDefaultZone(),
@@ -112,7 +112,7 @@ public class SkitAdReportPullServiceImpl implements SkitAdReportPullService {
                                 SkitReconciliationAllocator allocator,
                                 SkitLedgerProjectionService ledgerProjectionService,
                                 ObjectMapper objectMapper,
-                                DataSourceTransactionManager transactionManager,
+                                PlatformTransactionManager transactionManager,
                                 Clock clock, Supplier<String> leaseOwnerSupplier,
                                 SkitAdReportPullObservation observation) {
         this.accountMapper = Objects.requireNonNull(accountMapper, "accountMapper");
