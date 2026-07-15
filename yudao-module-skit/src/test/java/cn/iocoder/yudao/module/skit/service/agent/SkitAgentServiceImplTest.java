@@ -210,7 +210,6 @@ class SkitAgentServiceImplTest {
     @Test
     void updateAgentDisablesBoundAdministratorWithTenant() {
         mockExistingAgent();
-        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
         SkitAgentUpdateReqVO request = updateRequest();
         request.setStatus(CommonStatusEnum.DISABLE.getStatus());
 
@@ -227,8 +226,6 @@ class SkitAgentServiceImplTest {
                 .setContactName("Agent 42").setContactMobile("13800000000")
                 .setContactUserId(420L).setStatus(CommonStatusEnum.DISABLE.getStatus())
                 .setPackageId(7L).setExpireTime(LocalDateTime.now().plusDays(30)).setAccountCount(1));
-        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
-
         agentService.updateAgent(updateRequest());
 
         verify(adminUserService).updateUserStatus(420L, CommonStatusEnum.ENABLE.getStatus());
