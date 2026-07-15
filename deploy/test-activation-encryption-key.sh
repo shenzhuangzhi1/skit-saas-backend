@@ -64,6 +64,7 @@ first_credential_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_p
 first_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
 first_session_token_key_version="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY_VERSION=//p' "${deploy_path}/.env")"
 first_callback_public_base_url="$(sed -n 's/^SKIT_AD_CALLBACK_PUBLIC_BASE_URL=//p' "${deploy_path}/.env")"
+first_api_encrypt_enabled="$(sed -n 's/^YUDAO_API_ENCRYPT_ENABLED=//p' "${deploy_path}/.env")"
 if [[ "${#first_key}" -ne 32 ]]; then
   echo "FAIL: first activation did not persist a 32-byte generated AES key" >&2
   exit 1
@@ -96,6 +97,14 @@ if [[ "${first_session_token_key_version}" != "1" ]]; then
 fi
 if [[ "${first_callback_public_base_url}" != "http://localhost:48080/app-api" ]]; then
   echo "FAIL: activation did not persist the normalized trusted callback public base URL" >&2
+  exit 1
+fi
+if [[ "${first_api_encrypt_enabled}" != "false" ]]; then
+  echo "FAIL: activation did not keep the unused framework API encryption disabled by default" >&2
+  exit 1
+fi
+if grep -Eq '^YUDAO_API_ENCRYPT_(REQUEST|RESPONSE)_KEY=' "${deploy_path}/.env"; then
+  echo "FAIL: disabled API encryption persisted unnecessary key material" >&2
   exit 1
 fi
 if stat -c '%a' "${deploy_path}/.env" >/dev/null 2>&1; then
@@ -336,6 +345,70 @@ if ! grep -q '^SKIT_AD_CREDENTIAL_KEY=abcdefghijklmnopqrstuvwx12345678$' "${rest
   echo "FAIL: supplied credential key material or key id was not persisted exactly" >&2
   exit 1
 fi
+
+# Optional framework API encryption stays disabled and keyless by default. When an operator opts
+# in, activation validates and persists one coordinated, independent AES key pair before Docker.
+api_encrypt_path="$(mktemp -d "${temp_root}/api-encrypt.XXXXXX")"
+cp "${compose_file}" "${api_encrypt_path}/docker-compose.prod.yml"
+STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+  DEPLOY_PATH="${api_encrypt_path}" IMAGE_NAME="example/backend" IMAGE_TAG="api-encrypt" \
+  MYSQL_ROOT_PASSWORD="test-root-password" \
+  YUDAO_API_ENCRYPT_ENABLED=true \
+  YUDAO_API_ENCRYPT_REQUEST_KEY='request-key-00000000000000000001' \
+  YUDAO_API_ENCRYPT_RESPONSE_KEY='response-key-0000000000000000001' \
+  "${activation_script}" >/dev/null
+for expected_api_setting in \
+    'YUDAO_API_ENCRYPT_ENABLED=true' \
+    'YUDAO_API_ENCRYPT_REQUEST_KEY=request-key-00000000000000000001' \
+    'YUDAO_API_ENCRYPT_RESPONSE_KEY=response-key-0000000000000000001'; do
+  if ! grep -Fqx "${expected_api_setting}" "${api_encrypt_path}/.env"; then
+    echo "FAIL: activation did not persist ${expected_api_setting%%=*}" >&2
+    exit 1
+  fi
+done
+STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+  DEPLOY_PATH="${api_encrypt_path}" IMAGE_NAME="example/backend" IMAGE_TAG="api-encrypt-reuse" \
+  MYSQL_ROOT_PASSWORD="test-root-password" \
+  "${activation_script}" >/dev/null
+
+api_encrypt_disable_env="${api_encrypt_path}/disable-api-encryption.env"
+printf '%s\n' 'YUDAO_API_ENCRYPT_ENABLED=false' > "${api_encrypt_disable_env}"
+chmod 600 "${api_encrypt_disable_env}"
+STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+  DEPLOY_PATH="${api_encrypt_path}" IMAGE_NAME="example/backend" IMAGE_TAG="api-encrypt-disabled" \
+  MYSQL_ROOT_PASSWORD="test-root-password" SERVER_ENV_FILE="${api_encrypt_disable_env}" \
+  "${activation_script}" >/dev/null
+if ! grep -Fqx 'YUDAO_API_ENCRYPT_ENABLED=false' "${api_encrypt_path}/.env"; then
+  echo "FAIL: activation did not persist an explicit API-encryption disable" >&2
+  exit 1
+fi
+if grep -Eq '^YUDAO_API_ENCRYPT_(REQUEST|RESPONSE)_KEY=' "${api_encrypt_path}/.env"; then
+  echo "FAIL: disabling API encryption retained obsolete symmetric keys" >&2
+  exit 1
+fi
+
+assert_invalid_api_encryption() {
+  enabled="$1"
+  request_key="$2"
+  response_key="$3"
+  invalid_path="$(mktemp -d "${temp_root}/invalid-api-encrypt.XXXXXX")"
+  cp "${compose_file}" "${invalid_path}/docker-compose.prod.yml"
+  if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+      DEPLOY_PATH="${invalid_path}" IMAGE_NAME="example/backend" IMAGE_TAG="invalid-api-encrypt" \
+      MYSQL_ROOT_PASSWORD="test-root-password" \
+      YUDAO_API_ENCRYPT_ENABLED="${enabled}" \
+      YUDAO_API_ENCRYPT_REQUEST_KEY="${request_key}" \
+      YUDAO_API_ENCRYPT_RESPONSE_KEY="${response_key}" \
+      "${activation_script}" >/dev/null 2>&1; then
+    echo "FAIL: activation accepted an invalid framework API encryption configuration" >&2
+    exit 1
+  fi
+}
+
+assert_invalid_api_encryption 'yes' '' ''
+assert_invalid_api_encryption 'true' '' ''
+assert_invalid_api_encryption 'true' 'short' 'response-key-0000000000000000001'
+assert_invalid_api_encryption 'true' 'request-key-00000000000000000001' 'request-key-00000000000000000001'
 
 # Legacy ciphertext cleanup remains available as an explicit, one-shot operator action.
 cleanup_log="${temp_root}/cleanup.log"

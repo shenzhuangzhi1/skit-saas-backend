@@ -142,6 +142,17 @@ upsert_env() {
   chmod 600 .env
 }
 
+remove_env() {
+  key="$1"
+  if [ ! -f .env ]; then
+    return
+  fi
+  temp_file="$(mktemp)"
+  grep -v "^${key}=" .env > "${temp_file}" || true
+  mv "${temp_file}" .env
+  chmod 600 .env
+}
+
 DOCKER_USE_SUDO=0
 DOCKER_SUDO_PASSWORD=0
 
@@ -219,6 +230,40 @@ if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
     MYSQL_ROOT_PASSWORD="$(openssl rand -hex 24)"
   else
     MYSQL_ROOT_PASSWORD="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+fi
+
+# The upstream API-encryption feature is optional and currently has no annotated production
+# endpoint. Keep disabled releases keyless, but fail before replacing the container when an
+# operator explicitly enables the AES mode without a safe coordinated key pair.
+YUDAO_API_ENCRYPT_ENABLED="${YUDAO_API_ENCRYPT_ENABLED:-false}"
+case "${YUDAO_API_ENCRYPT_ENABLED}" in
+  true|false) ;;
+  *)
+    echo "YUDAO_API_ENCRYPT_ENABLED must be true or false."
+    exit 1
+    ;;
+esac
+YUDAO_API_ENCRYPT_REQUEST_KEY="${YUDAO_API_ENCRYPT_REQUEST_KEY:-}"
+YUDAO_API_ENCRYPT_RESPONSE_KEY="${YUDAO_API_ENCRYPT_RESPONSE_KEY:-}"
+if [ "${YUDAO_API_ENCRYPT_ENABLED}" = "true" ]; then
+  for api_encrypt_key_name in YUDAO_API_ENCRYPT_REQUEST_KEY YUDAO_API_ENCRYPT_RESPONSE_KEY; do
+    api_encrypt_key="${!api_encrypt_key_name}"
+    case "${#api_encrypt_key}" in
+      32) ;;
+      *)
+        echo "${api_encrypt_key_name} must contain exactly 32 single-byte characters when API encryption is enabled."
+        exit 1
+        ;;
+    esac
+    if [[ ! "${api_encrypt_key}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+      echo "${api_encrypt_key_name} contains unsafe characters for server-side environment persistence."
+      exit 1
+    fi
+  done
+  if [ "${YUDAO_API_ENCRYPT_REQUEST_KEY}" = "${YUDAO_API_ENCRYPT_RESPONSE_KEY}" ]; then
+    echo "API request and response encryption keys must be independent."
+    exit 1
   fi
 fi
 
@@ -468,6 +513,15 @@ prepare_retained_keyring() {
 prepare_retained_keyring
 
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
+upsert_env YUDAO_API_ENCRYPT_ENABLED "${YUDAO_API_ENCRYPT_ENABLED}"
+if [ "${YUDAO_API_ENCRYPT_ENABLED}" = "true" ]; then
+  upsert_env YUDAO_API_ENCRYPT_REQUEST_KEY "${YUDAO_API_ENCRYPT_REQUEST_KEY}"
+  upsert_env YUDAO_API_ENCRYPT_RESPONSE_KEY "${YUDAO_API_ENCRYPT_RESPONSE_KEY}"
+else
+  remove_env YUDAO_API_ENCRYPT_REQUEST_KEY
+  remove_env YUDAO_API_ENCRYPT_RESPONSE_KEY
+  unset YUDAO_API_ENCRYPT_REQUEST_KEY YUDAO_API_ENCRYPT_RESPONSE_KEY
+fi
 upsert_env SKIT_AD_ENCRYPTION_KEY "${SKIT_AD_ENCRYPTION_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY "${SKIT_AD_CREDENTIAL_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY_ID "${SKIT_AD_CREDENTIAL_KEY_ID}"

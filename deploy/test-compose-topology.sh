@@ -87,6 +87,9 @@ for required_runtime_environment in \
     'MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}' \
     'REDIS_HOST: redis' \
     'REDIS_PORT: 6379' \
+    'YUDAO_API_ENCRYPT_ENABLED: ${YUDAO_API_ENCRYPT_ENABLED:-false}' \
+    'YUDAO_API_ENCRYPT_REQUEST_KEY: ${YUDAO_API_ENCRYPT_REQUEST_KEY:-}' \
+    'YUDAO_API_ENCRYPT_RESPONSE_KEY: ${YUDAO_API_ENCRYPT_RESPONSE_KEY:-}' \
     'SKIT_TRUSTED_PROXY_CIDRS: ${SKIT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}'; do
   if ! grep -Fq -- "${required_runtime_environment}" <<<"${backend_service}"; then
     echo "FAIL: production runtime is missing ${required_runtime_environment}" >&2
@@ -131,6 +134,13 @@ assert_yaml_value "${prod_config}" "yudao.sms-code.begin-code" "100000"
 assert_yaml_value "${prod_config}" "yudao.sms-code.end-code" "999999"
 assert_yaml_value "${prod_config}" "yudao.wxa-code.env-version" "release"
 assert_yaml_value "${prod_config}" "yudao.wxa-subscribe-message.miniprogram-state" "formal"
+assert_yaml_value "${base_config}" "yudao.api-encrypt.enable" '${YUDAO_API_ENCRYPT_ENABLED:false}'
+for production_overlay in "${runtime_config}" "${prod_config}"; do
+  if [[ -n "$(yaml_value "${production_overlay}" "yudao.api-encrypt.enable")" ]]; then
+    echo "FAIL: ${production_overlay} must not override the externally controlled API-encryption setting" >&2
+    exit 1
+  fi
+done
 assert_yaml_value "${prod_config}" "mybatis-plus.encryptor.password" '${SKIT_AD_ENCRYPTION_KEY}'
 assert_yaml_value "${prod_config}" "skit.ad.credential-encryption.current-key" '${SKIT_AD_CREDENTIAL_KEY}'
 assert_yaml_value "${prod_config}" "skit.ad.session-token.current-key" '${SKIT_AD_SESSION_TOKEN_KEY}'
