@@ -2,6 +2,8 @@ package cn.iocoder.yudao.module.skit.integration;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.Collections;
+
 /**
  * Released pre-Task-2 Skit domain schema used to exercise a real legacy upgrade.
  */
@@ -113,7 +115,7 @@ final class SkitLegacyAdSchemaFixture {
                 + "page_key varchar(64) NOT NULL,row_key varchar(128) NOT NULL,record_data longtext NOT NULL,"
                 + "status tinyint NOT NULL DEFAULT 0,sort int NOT NULL DEFAULT 0," + auditColumns()
                 + ",PRIMARY KEY (id))" + tableOptions());
-        String longRowKey = "x".repeat(128);
+        String longRowKey = String.join("", Collections.nCopies(128, "x"));
         String occupiedRepairKey = longRowKey.substring(0, 115) + "~legacy-dup-w";
         jdbc.update("INSERT INTO skit_admin_record "
                         + "(id,tenant_id,page_key,row_key,record_data,status,sort,creator,create_time,updater,update_time,deleted) "

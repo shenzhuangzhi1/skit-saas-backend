@@ -3,6 +3,9 @@ package cn.iocoder.yudao.module.skit.integration;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.AbstractMap;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -41,13 +44,14 @@ class SkitAdSchemaLegacyAdminRepairMySqlIT extends SkitMySqlIntegrationTestBase 
                 + "GROUP BY tenant_id,page_key,row_key HAVING COUNT(*)>1) duplicate_rows", Integer.class));
 
         Map<Long, String> keys = jdbc().query("SELECT id,row_key FROM skit_admin_record ORDER BY id",
-                        (rs, rowNum) -> Map.entry(rs.getLong("id"), rs.getString("row_key")))
+                        (rs, rowNum) -> new AbstractMap.SimpleImmutableEntry<>(
+                                rs.getLong("id"), rs.getString("row_key")))
                 .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         assertEquals("duplicate", keys.get(11L));
         assertEquals("duplicate~legacy-dup-c", keys.get(12L));
         assertEquals("duplicate", keys.get(21L), "the other tenant retains its own lowest-id owner");
         assertEquals("duplicate~legacy-dup-m", keys.get(22L));
-        assertEquals("x".repeat(128), keys.get(31L));
+        assertEquals(String.join("", Collections.nCopies(128, "x")), keys.get(31L));
         assertTrue(keys.get(32L).endsWith("~legacy-dup-w-1"),
                 "a preoccupied first candidate must advance deterministically");
         assertNotEquals(keys.get(32L), keys.get(33L));
@@ -61,7 +65,7 @@ class SkitAdSchemaLegacyAdminRepairMySqlIT extends SkitMySqlIntegrationTestBase 
                 "SELECT migration_version,source_id,tenant_id,page_key,original_row_key,repaired_row_key,"
                         + "retained_id,algorithm FROM skit_admin_record_migration_audit ORDER BY source_id");
         assertEquals(4, auditRows.size());
-        assertEquals(List.of(12L, 22L, 32L, 41L), auditRows.stream()
+        assertEquals(Arrays.asList(12L, 22L, 32L, 41L), auditRows.stream()
                 .map(row -> ((Number) row.get("source_id")).longValue()).collect(Collectors.toList()));
         assertTrue(auditRows.stream().allMatch(row -> ((Number) row.get("migration_version")).intValue()
                 == 2026071502));

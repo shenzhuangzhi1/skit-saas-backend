@@ -43,8 +43,10 @@ class SkitLegacyAdminRecordRepairSchemaContractTest {
     @Test
     void bothBootstrapScriptsContainTheAdminRecordRepairAuditTable() throws Exception {
         Path root = repositoryRoot();
-        String standalone = Files.readString(root.resolve("sql/mysql/skit-saas.sql"), StandardCharsets.UTF_8);
-        String main = Files.readString(root.resolve("sql/mysql/ruoyi-vue-pro.sql"), StandardCharsets.UTF_8);
+        String standalone = new String(Files.readAllBytes(root.resolve("sql/mysql/skit-saas.sql")),
+                StandardCharsets.UTF_8);
+        String main = new String(Files.readAllBytes(root.resolve("sql/mysql/ruoyi-vue-pro.sql")),
+                StandardCharsets.UTF_8);
         String[] fragments = {"`skit_admin_record_migration_audit`",
                 "`uk_skit_admin_record_migration_source`", "`original_row_key`", "`repaired_row_key`"};
         assertContains(standalone, fragments);
