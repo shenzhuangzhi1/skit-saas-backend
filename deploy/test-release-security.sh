@@ -23,14 +23,14 @@ grep -Fq 'install -m 600 deploy/known_hosts ~/.ssh/known_hosts' "${workflow}" \
 grep -Fq '124.221.50.30 ssh-ed25519 ' "${known_hosts}" \
   || fail "pinned backend SSH host key does not cover the production host"
 
-rg -q 'RELEASE_ID: \$\{\{ github\.sha \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}' "${workflow}" \
+grep -Eq 'RELEASE_ID: \$\{\{ github\.sha \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}' "${workflow}" \
   || fail "backend release staging is not bound to commit, workflow run, and rerun attempt"
 grep -Fq 'releases/backend-${RELEASE_ID}' "${workflow}" \
   || fail "backend artifacts do not use the run-unique release identifier"
 if grep -Fq 'releases/backend-${IMAGE_TAG}' "${workflow}"; then
   fail "backend release staging can be reused across reruns of the same commit"
 fi
-rg -q 'mkdir -p .*DEPLOY_PATH.*/releases.*&& mkdir -- .*RELEASE_BUNDLE_PATH' "${workflow}" \
+grep -Eq 'mkdir -p .*DEPLOY_PATH.*/releases.*&& mkdir -- .*RELEASE_BUNDLE_PATH' "${workflow}" \
   || fail "backend upload does not atomically reject an existing release directory"
 grep -Fq 'chmod 600 .deploy/server.env' "${workflow}" \
   || fail "local backend server.env is not protected before upload"
@@ -47,9 +47,9 @@ for staged_secret in GHCR_TOKEN SUDO_PASSWORD; do
   grep -Fq "printf '${staged_secret}=%q\\n'" "${workflow}" \
     || fail "backend ${staged_secret} is not staged in the protected release environment"
 done
-secret_unlink_line="$(rg -n -F -m 1 'rm -f -- "${server_env_file}"' "${activation}" | cut -d: -f1 || true)"
-secret_source_line="$(rg -n -F -m 1 '. "${server_env_file}"' "${activation}" | cut -d: -f1 || true)"
-docker_access_line="$(rg -n -F -m 1 'prepare_docker_access' "${activation}" | tail -n 1 | cut -d: -f1 || true)"
+secret_unlink_line="$(grep -nF -m 1 'rm -f -- "${server_env_file}"' "${activation}" | cut -d: -f1 || true)"
+secret_source_line="$(grep -nF -m 1 '. "${server_env_file}"' "${activation}" | cut -d: -f1 || true)"
+docker_access_line="$(grep -nF -m 1 'prepare_docker_access' "${activation}" | tail -n 1 | cut -d: -f1 || true)"
 [[ -n "${secret_source_line}" && -n "${secret_unlink_line}" && -n "${docker_access_line}" ]] \
   || fail "backend activation does not source, unlink, and then consume release secrets"
 (( secret_source_line < secret_unlink_line && secret_unlink_line < docker_access_line )) \
@@ -90,7 +90,7 @@ grep -Fq '.deploy/cleanup-backend-release-env.sh' "${workflow}" \
   || fail "backend release does not stage the run-scoped cleanup helper"
 grep -Fq 'cleanup_remote_server_env() {' "${workflow}" \
   || fail "backend remote activation has no early server.env cleanup wrapper"
-remote_preflight_line="$(rg -n -m 1 'chmod 600 -- "\$\{remote_server_env_file\}"' "${workflow}" | cut -d: -f1 || true)"
+remote_preflight_line="$(grep -nE -m 1 'chmod 600 -- "\$\{remote_server_env_file\}"' "${workflow}" | cut -d: -f1 || true)"
 [[ -n "${remote_preflight_line}" ]] \
   || fail "backend remote activation has no protected server.env preflight"
 for remote_trap in \
@@ -98,7 +98,7 @@ for remote_trap in \
   "trap 'cleanup_remote_server_env 129' HUP" \
   "trap 'cleanup_remote_server_env 130' INT" \
   "trap 'cleanup_remote_server_env 143' TERM"; do
-  remote_trap_line="$(rg -n -F -m 1 "${remote_trap}" "${workflow}" | cut -d: -f1 || true)"
+  remote_trap_line="$(grep -nF -m 1 "${remote_trap}" "${workflow}" | cut -d: -f1 || true)"
   [[ -n "${remote_trap_line}" ]] \
     || fail "backend remote activation does not install ${remote_trap}"
   (( remote_trap_line < remote_preflight_line )) \
@@ -116,8 +116,8 @@ grep -Fq 'flock -w' "${activation}" \
 grep -Fq 'rm -f "${server_env_file}"' "${activation}" \
   || fail "backend activation does not destroy the uploaded server.env"
 global_runtime_key_name='SKIT_RUNTIME_UPDATE_'"PUBLIC_KEY"
-if rg --hidden -q "${global_runtime_key_name}" "${repo_root}" \
-    --glob '!**/.git/**' --glob '!**/target/**'; then
+if grep -Rq --exclude-dir=.git --exclude-dir=target \
+    "${global_runtime_key_name}" "${repo_root}"; then
   fail "the repository still documents or configures a global runtime-update trust root"
 fi
 
