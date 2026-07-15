@@ -9,6 +9,7 @@ import cn.hutool.crypto.symmetric.SymmetricEncryptor;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.object.ObjectUtils;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
+import cn.iocoder.yudao.framework.apilog.core.ApiRequestUrlResolver;
 import cn.iocoder.yudao.framework.encrypt.config.ApiEncryptProperties;
 import cn.iocoder.yudao.framework.encrypt.core.annotation.ApiEncrypt;
 import cn.iocoder.yudao.framework.web.config.WebProperties;
@@ -152,8 +153,13 @@ public class ApiEncryptFilter extends ApiRequestFilter {
                 return annotation;
             }
         } catch (Exception e) {
-            log.error("[getApiEncrypt][url({}/{}) 获取 @ApiEncrypt 注解失败]",
-                    request.getRequestURI(), request.getMethod(), e);
+            if (ApiRequestUrlResolver.shouldSuppressParameters(request)) {
+                log.error("[getApiEncrypt][url({}/{}) exception({}) 获取 @ApiEncrypt 注解失败]",
+                        ApiRequestUrlResolver.resolve(request), request.getMethod(), e.getClass().getName());
+            } else {
+                log.error("[getApiEncrypt][url({}/{}) 获取 @ApiEncrypt 注解失败]",
+                        ApiRequestUrlResolver.resolve(request), request.getMethod(), e);
+            }
         }
         return null;
     }

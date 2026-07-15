@@ -13,6 +13,9 @@ public interface WebFilterOrderEnum {
 
     int TRACE_FILTER = CORS_FILTER + 1;
 
+    // Must run before request-body caching, encryption error logging, and API access logging.
+    int SENSITIVE_REQUEST_SANITIZER_FILTER = TRACE_FILTER + 1;
+
     int REQUEST_BODY_CACHE_FILTER = Integer.MIN_VALUE + 500;
 
     int API_ENCRYPT_FILTER = REQUEST_BODY_CACHE_FILTER + 1;

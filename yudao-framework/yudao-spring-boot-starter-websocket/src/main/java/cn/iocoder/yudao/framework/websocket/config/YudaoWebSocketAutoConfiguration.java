@@ -4,8 +4,10 @@ import cn.iocoder.yudao.framework.mq.redis.config.YudaoRedisMQConsumerAutoConfig
 import cn.iocoder.yudao.framework.mq.redis.core.RedisMQTemplate;
 import cn.iocoder.yudao.framework.websocket.core.handler.JsonWebSocketMessageHandler;
 import cn.iocoder.yudao.framework.websocket.core.listener.WebSocketMessageListener;
-import cn.iocoder.yudao.framework.websocket.core.security.LoginUserHandshakeInterceptor;
+import cn.iocoder.yudao.framework.websocket.core.security.RedisWebSocketTicketService;
 import cn.iocoder.yudao.framework.websocket.core.security.WebSocketAuthorizeRequestsCustomizer;
+import cn.iocoder.yudao.framework.websocket.core.security.WebSocketTicketHandshakeInterceptor;
+import cn.iocoder.yudao.framework.websocket.core.security.WebSocketTicketService;
 import cn.iocoder.yudao.framework.websocket.core.sender.kafka.KafkaWebSocketMessageConsumer;
 import cn.iocoder.yudao.framework.websocket.core.sender.kafka.KafkaWebSocketMessageSender;
 import cn.iocoder.yudao.framework.websocket.core.sender.local.LocalWebSocketMessageSender;
@@ -23,11 +25,13 @@ import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
@@ -59,8 +63,16 @@ public class YudaoWebSocketAutoConfiguration {
     }
 
     @Bean
-    public HandshakeInterceptor handshakeInterceptor() {
-        return new LoginUserHandshakeInterceptor();
+    public HandshakeInterceptor handshakeInterceptor(WebSocketTicketService ticketService,
+                                                     WebSocketProperties webSocketProperties) {
+        return new WebSocketTicketHandshakeInterceptor(ticketService, webSocketProperties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(WebSocketTicketService.class)
+    public WebSocketTicketService webSocketTicketService(StringRedisTemplate redisTemplate,
+                                                         WebSocketProperties webSocketProperties) {
+        return new RedisWebSocketTicketService(redisTemplate, webSocketProperties);
     }
 
     @Bean

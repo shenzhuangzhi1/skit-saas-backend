@@ -3,6 +3,7 @@ package cn.iocoder.yudao.framework.tenant.core.security;
 import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.common.exception.enums.GlobalErrorCodeConstants;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.framework.apilog.core.ApiRequestUrlResolver;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
@@ -76,7 +77,7 @@ public class TenantSecurityWebFilter extends ApiRequestFilter {
             } else if (!Objects.equals(user.getTenantId(), TenantContextHolder.getTenantId())) {
                 log.error("[doFilterInternal][租户({}) User({}/{}) 越权访问租户({}) URL({}/{})]",
                         user.getTenantId(), user.getId(), user.getUserType(),
-                        TenantContextHolder.getTenantId(), request.getRequestURI(), request.getMethod());
+                        TenantContextHolder.getTenantId(), ApiRequestUrlResolver.resolve(request), request.getMethod());
                 ServletUtils.writeJSON(response, CommonResult.error(GlobalErrorCodeConstants.FORBIDDEN.getCode(),
                         "您无权访问该租户的数据"));
                 return;
@@ -87,7 +88,8 @@ public class TenantSecurityWebFilter extends ApiRequestFilter {
         if (!isIgnoreUrl(request)) {
             // 2. 如果请求未带租户的编号，不允许访问。
             if (tenantId == null) {
-                log.error("[doFilterInternal][URL({}/{}) 未传递租户编号]", request.getRequestURI(), request.getMethod());
+                log.error("[doFilterInternal][URL({}/{}) 未传递租户编号]",
+                        ApiRequestUrlResolver.resolve(request), request.getMethod());
                 ServletUtils.writeJSON(response, CommonResult.error(GlobalErrorCodeConstants.BAD_REQUEST.getCode(),
                         "请求的租户标识未传递，请进行排查"));
                 return;

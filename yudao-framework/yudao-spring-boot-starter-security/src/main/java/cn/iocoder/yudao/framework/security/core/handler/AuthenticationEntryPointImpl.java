@@ -3,6 +3,7 @@ package cn.iocoder.yudao.framework.security.core.handler;
 import cn.iocoder.yudao.framework.common.exception.enums.GlobalErrorCodeConstants;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
+import cn.iocoder.yudao.framework.apilog.core.ApiRequestUrlResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
@@ -27,7 +28,11 @@ public class AuthenticationEntryPointImpl implements AuthenticationEntryPoint {
 
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException e) {
-        log.debug("[commence][访问 URL({}) 时，没有登录]", request.getRequestURI(), e);
+        if (ApiRequestUrlResolver.shouldSuppressParameters(request)) {
+            log.debug("[commence][访问 URL({}) 时，没有登录]", ApiRequestUrlResolver.resolve(request));
+        } else {
+            log.debug("[commence][访问 URL({}) 时，没有登录]", ApiRequestUrlResolver.resolve(request), e);
+        }
         // 返回 401
         ServletUtils.writeJSON(response, CommonResult.error(UNAUTHORIZED));
     }
