@@ -26,7 +26,7 @@ public class TongYiImagesModelTest {
 
     private final DashScopeImageModel imageModel = DashScopeImageModel.builder()
             .dashScopeApi(DashScopeImageApi.builder()
-                    .apiKey("sk-cd9f39e99ea54840bd1888282325f55a") // https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key 获取密钥
+                    .apiKey(System.getenv("AI_TEST_DASHSCOPE_API_KEY")) // https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key 获取密钥
                     .build())
             .build();
 

@@ -34,7 +34,7 @@ public class TongYiChatModelTests {
 
     private final DashScopeChatModel chatModel = DashScopeChatModel.builder()
             .dashScopeApi(DashScopeApi.builder()
-                    .apiKey("sk-cd9f39e99ea54840bd1888282325f55a") // https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key 获取密钥
+                    .apiKey(System.getenv("AI_TEST_DASHSCOPE_API_KEY")) // https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key 获取密钥
                     .build())
             .defaultOptions(DashScopeChatOptions.builder()
                     .multiModel(true) // 注意：当使用 qwen3.6-plus 等多模态模型，需要设置为 true，可见 https://help.aliyun.com/zh/model-studio/error-code#error-url 链接
@@ -105,7 +105,7 @@ public class TongYiChatModelTests {
         // 准备环境
         RerankModel rerankModel = new DashScopeRerankModel(
                 DashScopeApi.builder()
-                        .apiKey("sk-47aa124781be4bfb95244cc62f63f7d0")
+                        .apiKey(System.getenv("AI_TEST_DASHSCOPE_API_KEY"))
                         .build());
         // 准备参数
         String query = "spring";

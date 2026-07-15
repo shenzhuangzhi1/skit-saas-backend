@@ -16,7 +16,7 @@ public class MidjourneyApiTests {
 
     private final MidjourneyApi midjourneyApi = new MidjourneyApi(
             "https://api.holdai.top/mj", // 链接
-            "sk-aN6nWn3fILjrgLFT0fC4Aa60B72e4253826c77B29dC94f17", // 密钥
+            System.getenv("AI_TEST_MIDJOURNEY_API_KEY"), // 密钥
             null);
 
     @Test

@@ -17,9 +17,11 @@ concurrency:
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/skit-saas-backend
   IMAGE_TAG: ${{ github.sha }}
+  RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   build-and-deploy:
+    if: github.ref == 'refs/heads/master'
     name: Build and deploy backend
     runs-on: ubuntu-latest
 
@@ -38,12 +40,23 @@ jobs:
           ./deploy/test-compose-topology.sh
           ./deploy/test-encryption-key.sh
           ./deploy/test-activation-encryption-key.sh
+          ./deploy/test-activation-health.sh
+          ./deploy/test-release-security.sh
 
       - name: Run focused tenant lifecycle tests
         run: >-
-          mvn -B -pl yudao-module-skit,yudao-module-system -am
-          -Dtest='Skit*Test,*SecurityTest,SystemPlatformAdminGuardTest,TenantVisitContextInterceptorTest,AdminAuthServiceImplTest,OAuth2TokenServiceImplTest,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest'
+          mvn -B -pl yudao-module-skit,yudao-module-system,yudao-module-infra -am
+          -Dtest='Skit*Test,Taku*Test,*SecurityTest,SystemPlatformAdminGuardTest,TenantVisitContextInterceptorTest,AdminAuthServiceImplTest,OAuth2TokenServiceImplTest,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest,SpringUtilsTest,AdminServerConfigurationTest,ApiAccessLogInterceptorTest,*SecretRedactionTest'
           -Dsurefire.failIfNoSpecifiedTests=false test
+
+      - name: Verify Skit migrations against MySQL 8
+        run: >-
+          mvn -B -pl yudao-module-skit -am
+          -Dtest=__NoSurefireTests__
+          -Dit.test='Skit*MySqlIT'
+          -Dsurefire.failIfNoSpecifiedTests=false
+          -Dfailsafe.failIfNoSpecifiedTests=false
+          test-compile failsafe:integration-test failsafe:verify
 
       - name: Build server jar
         run: mvn -B -pl yudao-server -am -DskipTests package
@@ -69,6 +82,7 @@ jobs:
           mkdir -p .deploy
           cp deploy/docker-compose.prod.yml .deploy/docker-compose.prod.yml
           cp deploy/activate-backend.sh .deploy/activate-backend.sh
+          cp deploy/cleanup-backend-release-env.sh .deploy/cleanup-backend-release-env.sh
           cp sql/mysql/ruoyi-vue-pro.sql .deploy/ruoyi-vue-pro.sql
           cp sql/mysql/skit-saas.sql .deploy/skit-saas.sql
 
@@ -150,7 +164,13 @@ jobs:
           fi
           EOF
           chmod +x .deploy/ssh .deploy/scp
-          ssh-keyscan -p "${SERVER_PORT}" "${SERVER_HOST}" >> ~/.ssh/known_hosts
+          if [ "${SERVER_PORT}" != "22" ]; then
+            echo "::error::The pinned production SSH host key currently authorizes port 22 only."
+            exit 1
+          fi
+          install -m 600 deploy/known_hosts ~/.ssh/known_hosts
+          ssh-keygen -F "${SERVER_HOST}" -f ~/.ssh/known_hosts >/dev/null \
+            || { echo "::error::SERVER_HOST is not present in deploy/known_hosts"; exit 1; }
 
       - name: Upload release bundle
         if: steps.deploy_config.outputs.enabled == 'true'
@@ -164,18 +184,20 @@ jobs:
           : "${SERVER_USER:?Set SERVER_USER secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-skit-saas}"
+          RELEASE_BUNDLE_PATH="${DEPLOY_PATH}/releases/backend-${RELEASE_ID}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
           chmod +x .deploy/activate-backend.sh
           .deploy/ssh "${SSH_TARGET}" \
-            "mkdir -p '${DEPLOY_PATH}/mysql/init'"
+            "mkdir -p '${DEPLOY_PATH}/releases' && mkdir -- '${RELEASE_BUNDLE_PATH}'"
           .deploy/scp \
             ".deploy/docker-compose.prod.yml" \
             ".deploy/activate-backend.sh" \
-            "${SSH_TARGET}:${DEPLOY_PATH}/"
+            ".deploy/cleanup-backend-release-env.sh" \
+            "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
           .deploy/scp \
             ".deploy/ruoyi-vue-pro.sql" \
             ".deploy/skit-saas.sql" \
-            "${SSH_TARGET}:${DEPLOY_PATH}/mysql/init/"
+            "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
 
       - name: Activate backend on server
         if: steps.deploy_config.outputs.enabled == 'true'
@@ -191,15 +213,20 @@ jobs:
           BACKEND_PORT: ${{ secrets.BACKEND_PORT }}
           BACKEND_HEALTH_PATH: ${{ secrets.BACKEND_HEALTH_PATH }}
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
+          SKIT_AD_CALLBACK_PUBLIC_BASE_URL: ${{ vars.SKIT_AD_CALLBACK_PUBLIC_BASE_URL }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
           set -euo pipefail
+          trap 'rm -f .deploy/server.env' EXIT
           SERVER_PORT="${SERVER_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-skit-saas}"
+          RELEASE_BUNDLE_PATH="${DEPLOY_PATH}/releases/backend-${RELEASE_ID}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
+          SUDO_PASSWORD="${SERVER_SUDO_PASSWORD:-${SERVER_PASSWORD:-}}"
+          install -m 600 /dev/null .deploy/server.env
           {
             if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
               printf 'MYSQL_ROOT_PASSWORD=%q\n' "${MYSQL_ROOT_PASSWORD}"
@@ -210,13 +237,74 @@ jobs:
             printf 'BACKEND_PORT=%q\n' "${BACKEND_PORT:-48080}"
             printf 'BACKEND_HEALTH_PATH=%q\n' "${BACKEND_HEALTH_PATH:-/actuator/health}"
             printf 'FRONTEND_PORT=%q\n' "${FRONTEND_PORT:-80}"
+            if [ -z "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}" ]; then
+              if [ "${FRONTEND_PORT:-80}" = "80" ]; then
+                SKIT_AD_CALLBACK_PUBLIC_BASE_URL="http://${SERVER_HOST}/app-api"
+              else
+                SKIT_AD_CALLBACK_PUBLIC_BASE_URL="http://${SERVER_HOST}:${FRONTEND_PORT}/app-api"
+              fi
+            fi
+            printf 'SKIT_AD_CALLBACK_PUBLIC_BASE_URL=%q\n' "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL%/}"
+            printf 'GHCR_USERNAME=%q\n' "${GHCR_USERNAME}"
+            printf 'GHCR_TOKEN=%q\n' "${GHCR_TOKEN}"
+            printf 'SUDO_PASSWORD=%q\n' "${SUDO_PASSWORD}"
           } > .deploy/server.env
+          chmod 600 .deploy/server.env
           .deploy/scp \
             ".deploy/server.env" \
-            "${SSH_TARGET}:${DEPLOY_PATH}/server.env"
-          SUDO_PASSWORD="${SERVER_SUDO_PASSWORD:-${SERVER_PASSWORD:-}}"
-          printf -v GHCR_USERNAME_Q '%q' "${GHCR_USERNAME}"
-          printf -v GHCR_TOKEN_Q '%q' "${GHCR_TOKEN}"
-          printf -v SUDO_PASSWORD_Q '%q' "${SUDO_PASSWORD}"
+            "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/server.env"
+          printf -v DEPLOY_PATH_Q '%q' "${DEPLOY_PATH}"
+          printf -v RELEASE_ID_Q '%q' "${RELEASE_ID}"
+          printf -v RELEASE_BUNDLE_PATH_Q '%q' "${RELEASE_BUNDLE_PATH}"
+          printf -v IMAGE_NAME_Q '%q' "${IMAGE_NAME}"
+          printf -v IMAGE_TAG_Q '%q' "${IMAGE_TAG}"
           .deploy/ssh "${SSH_TARGET}" \
-            "chmod +x '${DEPLOY_PATH}/activate-backend.sh' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' GHCR_USERNAME=${GHCR_USERNAME_Q} GHCR_TOKEN=${GHCR_TOKEN_Q} SUDO_PASSWORD=${SUDO_PASSWORD_Q} '${DEPLOY_PATH}/activate-backend.sh'"
+            "DEPLOY_PATH=${DEPLOY_PATH_Q} RELEASE_ID=${RELEASE_ID_Q} RELEASE_BUNDLE_PATH=${RELEASE_BUNDLE_PATH_Q} IMAGE_NAME=${IMAGE_NAME_Q} IMAGE_TAG=${IMAGE_TAG_Q} bash -s" <<'REMOTE'
+          set -euo pipefail
+          remote_server_env_file="${RELEASE_BUNDLE_PATH}/server.env"
+          remote_activation_script="${RELEASE_BUNDLE_PATH}/activate-backend.sh"
+          remote_cleanup_script="${RELEASE_BUNDLE_PATH}/cleanup-backend-release-env.sh"
+          cleanup_remote_server_env() {
+            cleanup_status="${1:-0}"
+            trap - EXIT HUP INT TERM
+            DEPLOY_PATH="${DEPLOY_PATH}" RELEASE_ID="${RELEASE_ID}" \
+              bash "${remote_cleanup_script}" || true
+            exit "${cleanup_status}"
+          }
+          trap 'cleanup_remote_server_env $?' EXIT
+          trap 'cleanup_remote_server_env 129' HUP
+          trap 'cleanup_remote_server_env 130' INT
+          trap 'cleanup_remote_server_env 143' TERM
+          chmod 600 -- "${remote_server_env_file}"
+          chmod +x -- "${remote_activation_script}"
+          DEPLOY_PATH="${DEPLOY_PATH}" \
+            RELEASE_BUNDLE_PATH="releases/backend-${RELEASE_ID}" \
+            IMAGE_NAME="${IMAGE_NAME}" \
+            IMAGE_TAG="${IMAGE_TAG}" \
+            "${remote_activation_script}"
+          REMOTE
+
+      - name: Remove staged backend server environment
+        if: always() && steps.deploy_config.outputs.enabled == 'true'
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          if [ ! -x .deploy/ssh ]; then
+            echo "::notice::Remote server.env cleanup skipped because SSH setup did not complete."
+            exit 0
+          fi
+          : "${SERVER_USER:?Set SERVER_USER secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-skit-saas}"
+          RELEASE_BUNDLE_PATH="${DEPLOY_PATH}/releases/backend-${RELEASE_ID}"
+          REMOTE_CLEANUP_SCRIPT="${RELEASE_BUNDLE_PATH}/cleanup-backend-release-env.sh"
+          SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
+          printf -v DEPLOY_PATH_Q '%q' "${DEPLOY_PATH}"
+          printf -v RELEASE_ID_Q '%q' "${RELEASE_ID}"
+          printf -v REMOTE_CLEANUP_SCRIPT_Q '%q' "${REMOTE_CLEANUP_SCRIPT}"
+          .deploy/ssh "${SSH_TARGET}" \
+            "DEPLOY_PATH=${DEPLOY_PATH_Q} RELEASE_ID=${RELEASE_ID_Q} bash ${REMOTE_CLEANUP_SCRIPT_Q}"

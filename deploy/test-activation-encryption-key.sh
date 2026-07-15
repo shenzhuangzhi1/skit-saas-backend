@@ -16,21 +16,45 @@ cp "${compose_file}" "${deploy_path}/docker-compose.prod.yml"
 cat > "${stub_bin}/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${EXPECTED_REMOVED_SERVER_ENV:-}" && -e "${EXPECTED_REMOVED_SERVER_ENV}" ]]; then
+  echo "FAIL: staged backend server.env still exists at first child process" >&2
+  exit 97
+fi
+for argument in "$@"; do
+  if [[ -n "${SECRET_ARG_SENTINEL:-}" && "${argument}" == *"${SECRET_ARG_SENTINEL}"* ]]; then
+    echo "FAIL: backend child argv contains a staged deployment secret" >&2
+    exit 98
+  fi
+done
 printf '%q ' "$@" >> "${STUB_LOG}"
 printf '\n' >> "${STUB_LOG}"
 exit 0
 EOF
 cat > "${stub_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
+output_file=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o) output_file="$2"; shift 2 ;;
+    -w) shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s' '{"status":"UP"}' > "${output_file}"
 printf '200'
 EOF
 chmod +x "${stub_bin}/docker" "${stub_bin}/curl"
 
 run_activation() {
-  STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
-    DEPLOY_PATH="${deploy_path}" IMAGE_NAME="example/backend" IMAGE_TAG="$1" \
-    MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
-    "${activation_script}" >/dev/null
+  activation_output="${temp_root}/activation-$1.log"
+  if ! STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+      DEPLOY_PATH="${deploy_path}" IMAGE_NAME="example/backend" IMAGE_TAG="$1" \
+      MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
+      "${activation_script}" >"${activation_output}" 2>&1; then
+    cat "${activation_output}" >&2
+    return 1
+  fi
 }
 
 run_activation first
@@ -39,6 +63,7 @@ first_credential_key="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY=//p' "${deploy_path}/.
 first_credential_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_path}/.env")"
 first_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
 first_session_token_key_version="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY_VERSION=//p' "${deploy_path}/.env")"
+first_callback_public_base_url="$(sed -n 's/^SKIT_AD_CALLBACK_PUBLIC_BASE_URL=//p' "${deploy_path}/.env")"
 if [[ "${#first_key}" -ne 32 ]]; then
   echo "FAIL: first activation did not persist a 32-byte generated AES key" >&2
   exit 1
@@ -69,6 +94,10 @@ if [[ "${first_session_token_key_version}" != "1" ]]; then
   echo "FAIL: first activation did not persist the default positive session-token key version" >&2
   exit 1
 fi
+if [[ "${first_callback_public_base_url}" != "http://localhost:48080/app-api" ]]; then
+  echo "FAIL: activation did not persist the normalized trusted callback public base URL" >&2
+  exit 1
+fi
 if stat -c '%a' "${deploy_path}/.env" >/dev/null 2>&1; then
   env_mode="$(stat -c '%a' "${deploy_path}/.env")"
 else
@@ -76,6 +105,24 @@ else
 fi
 if [[ "${env_mode}" != "600" ]]; then
   echo "FAIL: persisted server environment must use mode 0600" >&2
+  exit 1
+fi
+keyring_file="${deploy_path}/ad-keyring.properties"
+if [[ ! -f "${keyring_file}" ]]; then
+  echo "FAIL: activation did not provision the retained-key configuration file" >&2
+  exit 1
+fi
+if stat -c '%a' "${keyring_file}" >/dev/null 2>&1; then
+  keyring_mode="$(stat -c '%a' "${keyring_file}")"
+else
+  keyring_mode="$(stat -f '%Lp' "${keyring_file}")"
+fi
+if [[ "${keyring_mode}" != "600" ]]; then
+  echo "FAIL: retained-key configuration must use mode 0600" >&2
+  exit 1
+fi
+if [[ -s "${keyring_file}" ]]; then
+  echo "FAIL: first activation invented retained advertising keys" >&2
   exit 1
 fi
 first_clear_count="$(grep -c 'skit_ad_account' "${stub_log}" || true)"
@@ -110,6 +157,47 @@ if [[ "${second_clear_count}" -ne 0 ]]; then
   exit 1
 fi
 
+# Operators may seed retained keys once as base64-encoded Spring properties. The decoded file is
+# persisted with mode 0600 and routine releases must leave it byte-for-byte unchanged.
+keyring_seed_path="$(mktemp -d "${temp_root}/keyring-seed.XXXXXX")"
+cp "${compose_file}" "${keyring_seed_path}/docker-compose.prod.yml"
+keyring_plaintext="${temp_root}/keyring.properties"
+cat > "${keyring_plaintext}" <<'EOF'
+skit.ad.credential-encryption.keys.previous=previous-credential-key-00000001
+skit.ad.session-token.keys.7=previous-session-token-key-0000001
+EOF
+keyring_base64="$(base64 < "${keyring_plaintext}" | tr -d '\r\n')"
+STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+  DEPLOY_PATH="${keyring_seed_path}" IMAGE_NAME="example/backend" IMAGE_TAG="keyring-seed" \
+  MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
+  SKIT_AD_RETAINED_KEYRING_BASE64="${keyring_base64}" \
+  "${activation_script}" >/dev/null
+cmp "${keyring_plaintext}" "${keyring_seed_path}/ad-keyring.properties"
+keyring_checksum="$(shasum -a 256 "${keyring_seed_path}/ad-keyring.properties" | awk '{print $1}')"
+STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+  DEPLOY_PATH="${keyring_seed_path}" IMAGE_NAME="example/backend" IMAGE_TAG="ordinary-release" \
+  MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
+  "${activation_script}" >/dev/null
+if [[ "$(shasum -a 256 "${keyring_seed_path}/ad-keyring.properties" | awk '{print $1}')" != \
+      "${keyring_checksum}" ]]; then
+  echo "FAIL: ordinary release changed the retained advertising keyring" >&2
+  exit 1
+fi
+
+conflicting_plaintext="${temp_root}/conflicting-keyring.properties"
+cat > "${conflicting_plaintext}" <<'EOF'
+skit.ad.credential-encryption.keys.previous=other-old-credential-key-0000001
+EOF
+conflicting_base64="$(base64 < "${conflicting_plaintext}" | tr -d '\r\n')"
+if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+    DEPLOY_PATH="${keyring_seed_path}" IMAGE_NAME="example/backend" IMAGE_TAG="keyring-conflict" \
+    MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
+    SKIT_AD_RETAINED_KEYRING_BASE64="${conflicting_base64}" \
+    "${activation_script}" >/dev/null 2>&1; then
+  echo "FAIL: activation silently replaced an existing retained-key keyring" >&2
+  exit 1
+fi
+
 # Release-time server configuration must not silently rotate an already-persisted credential key.
 {
   printf 'SKIT_AD_CREDENTIAL_KEY=%s\n' 'override-credential-key-00000001'
@@ -118,7 +206,10 @@ fi
   printf 'SKIT_AD_SESSION_TOKEN_KEY_VERSION=%s\n' '2'
 } > "${deploy_path}/server.env"
 run_activation attempted-override
-rm "${deploy_path}/server.env"
+if [[ -e "${deploy_path}/server.env" ]]; then
+  echo "FAIL: activation retained the uploaded server.env after use" >&2
+  exit 1
+fi
 override_key="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY=//p' "${deploy_path}/.env")"
 override_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_path}/.env")"
 override_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
@@ -131,6 +222,89 @@ fi
 if [[ "${override_session_token_key}" != "${first_session_token_key}" ||
       "${override_session_token_key_version}" != "${first_session_token_key_version}" ]]; then
   echo "FAIL: release-time server configuration overwrote persisted session-token key material" >&2
+  exit 1
+fi
+
+assert_staged_secret_cleanup_on_preflight_failure() {
+  scenario="$1"
+  failed_deploy_path="$(mktemp -d "${temp_root}/release-preflight-${scenario}.XXXXXX")"
+  failed_release_path="${failed_deploy_path}/releases/backend-${scenario}"
+  mkdir -p "${failed_release_path}"
+  printf 'MYSQL_DATABASE=skit_saas\n' > "${failed_release_path}/server.env"
+
+  case "${scenario}" in
+    missing-compose)
+      : > "${failed_release_path}/ruoyi-vue-pro.sql"
+      : > "${failed_release_path}/skit-saas.sql"
+      ;;
+    missing-sql)
+      cp "${compose_file}" "${failed_release_path}/docker-compose.prod.yml"
+      : > "${failed_release_path}/ruoyi-vue-pro.sql"
+      ;;
+    symlinked-compose)
+      ln -s "${compose_file}" "${failed_release_path}/docker-compose.prod.yml"
+      : > "${failed_release_path}/ruoyi-vue-pro.sql"
+      : > "${failed_release_path}/skit-saas.sql"
+      ;;
+    *)
+      echo "FAIL: unsupported staged-secret cleanup scenario ${scenario}" >&2
+      exit 1
+      ;;
+  esac
+
+  if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+      DEPLOY_PATH="${failed_deploy_path}" RELEASE_BUNDLE_PATH="releases/backend-${scenario}" \
+      IMAGE_NAME="example/backend" IMAGE_TAG="${scenario}" \
+      MYSQL_ROOT_PASSWORD="test-root-password" \
+      "${activation_script}" >/dev/null 2>&1; then
+    echo "FAIL: activation accepted unsafe staged release ${scenario}" >&2
+    exit 1
+  fi
+  if [[ -e "${failed_release_path}/server.env" || -L "${failed_release_path}/server.env" ]]; then
+    echo "FAIL: activation retained server.env after ${scenario} preflight failure" >&2
+    exit 1
+  fi
+}
+
+assert_staged_secret_cleanup_on_preflight_failure missing-compose
+assert_staged_secret_cleanup_on_preflight_failure missing-sql
+assert_staged_secret_cleanup_on_preflight_failure symlinked-compose
+
+# A valid staged release must consume and unlink its 0600 environment before the first child
+# process. Registry and sudo credentials are allowed only as shell values/stdin, never argv.
+staged_release_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-67890-3"
+staged_deploy_path="$(mktemp -d "${temp_root}/release-secrets.XXXXXX")"
+staged_release_path="${staged_deploy_path}/releases/backend-${staged_release_id}"
+mkdir -p "${staged_release_path}"
+cp "${compose_file}" "${staged_release_path}/docker-compose.prod.yml"
+: > "${staged_release_path}/ruoyi-vue-pro.sql"
+: > "${staged_release_path}/skit-saas.sql"
+secret_arg_sentinel="backend-secret-argv-sentinel"
+{
+  printf 'MYSQL_ROOT_PASSWORD=%q\n' 'test-root-password'
+  printf 'MYSQL_DATABASE=%q\n' 'skit_saas'
+  printf 'GHCR_USERNAME=%q\n' 'example'
+  printf 'GHCR_TOKEN=%q\n' "${secret_arg_sentinel}"
+  printf 'SUDO_PASSWORD=%q\n' 'backend-sudo-stdin-sentinel'
+} > "${staged_release_path}/server.env"
+chmod 600 "${staged_release_path}/server.env"
+staged_log="${temp_root}/staged-release.log"
+if ! STUB_LOG="${staged_log}" PATH="${stub_bin}:${PATH}" \
+    EXPECTED_REMOVED_SERVER_ENV="${staged_release_path}/server.env" \
+    SECRET_ARG_SENTINEL="${secret_arg_sentinel}" \
+    DEPLOY_PATH="${staged_deploy_path}" \
+    RELEASE_BUNDLE_PATH="releases/backend-${staged_release_id}" \
+    IMAGE_NAME="example/backend" IMAGE_TAG="staged-release" \
+    "${activation_script}" >/dev/null; then
+  echo "FAIL: valid staged backend release did not consume secrets safely" >&2
+  exit 1
+fi
+if [[ -e "${staged_release_path}/server.env" || -L "${staged_release_path}/server.env" ]]; then
+  echo "FAIL: valid staged backend release retained server.env" >&2
+  exit 1
+fi
+if grep -Fq "${secret_arg_sentinel}" "${staged_log}"; then
+  echo "FAIL: backend deployment secret reached child argv logging" >&2
   exit 1
 fi
 
@@ -303,6 +477,17 @@ if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
     MYSQL_ROOT_PASSWORD="test-root-password" SKIT_CLEAR_LEGACY_AD_CREDENTIALS="yes" \
     "${activation_script}" >/dev/null 2>&1; then
   echo "FAIL: activation accepted an invalid legacy cleanup switch" >&2
+  exit 1
+fi
+
+invalid_callback_path="$(mktemp -d "${temp_root}/invalid-callback.XXXXXX")"
+cp "${compose_file}" "${invalid_callback_path}/docker-compose.prod.yml"
+if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+    DEPLOY_PATH="${invalid_callback_path}" IMAGE_NAME="example/backend" IMAGE_TAG="invalid-callback" \
+    MYSQL_ROOT_PASSWORD="test-root-password" \
+    SKIT_AD_CALLBACK_PUBLIC_BASE_URL='https://user@example.com/app-api?tenant=42' \
+    "${activation_script}" >/dev/null 2>&1; then
+  echo "FAIL: activation accepted an ambiguous callback public base URL" >&2
   exit 1
 fi
 

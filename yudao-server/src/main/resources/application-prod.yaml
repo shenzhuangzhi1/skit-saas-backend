@@ -1,0 +1,71 @@
+# Production is loaded after the secret-free application-runtime.yaml connectivity baseline.
+spring:
+  datasource:
+    druid:
+      web-stat-filter:
+        enabled: false
+      stat-view-servlet:
+        enabled: false
+  boot:
+    admin:
+      client:
+        enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      show-components: never
+      probes:
+        enabled: true
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+knife4j:
+  enable: false
+
+yudao:
+  captcha:
+    enable: true
+  security:
+    mock-enable: false
+    # New or changed passwords use BCrypt cost 10; existing hashes remain verifiable.
+    password-encoder-length: 10
+  demo: false
+  # Callback URLs and query strings are sanitized before the API access log is recorded.
+  access-log:
+    enable: true
+  sms-code:
+    begin-code: 100000
+    end-code: 999999
+  wxa-code:
+    env-version: release
+  wxa-subscribe-message:
+    miniprogram-state: formal
+
+# Missing advertising key material must abort a production startup even outside Docker Compose.
+mybatis-plus:
+  encryptor:
+    password: ${SKIT_AD_ENCRYPTION_KEY}
+
+skit:
+  security:
+    client-ip:
+      trusted-proxy-cidrs: ${SKIT_TRUSTED_PROXY_CIDRS}
+  ad:
+    callback:
+      public-base-url: ${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}
+    credential-encryption:
+      current-key-id: ${SKIT_AD_CREDENTIAL_KEY_ID:primary}
+      current-key: ${SKIT_AD_CREDENTIAL_KEY}
+    session-token:
+      current-key-version: ${SKIT_AD_SESSION_TOKEN_KEY_VERSION:1}
+      current-key: ${SKIT_AD_SESSION_TOKEN_KEY}

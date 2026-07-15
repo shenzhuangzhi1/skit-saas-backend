@@ -11,6 +11,7 @@ dev_config="${repo_root}/yudao-server/src/main/resources/application-dev.yaml"
 if MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY= \
     SKIT_AD_CREDENTIAL_KEY=test-only-credential-key-0000001 \
     SKIT_AD_SESSION_TOKEN_KEY=test-only-session-token-key-00001 \
+    SKIT_AD_CALLBACK_PUBLIC_BASE_URL=http://127.0.0.1/app-api \
     docker compose -f "${compose_file}" config >/dev/null 2>&1; then
   echo "FAIL: production Compose accepted an empty advertising encryption key" >&2
   exit 1
@@ -18,6 +19,7 @@ fi
 
 if MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY=test-only-key-000000000000000001 \
     SKIT_AD_CREDENTIAL_KEY= SKIT_AD_SESSION_TOKEN_KEY=test-only-session-token-key-00001 \
+    SKIT_AD_CALLBACK_PUBLIC_BASE_URL=http://127.0.0.1/app-api \
     docker compose -f "${compose_file}" config >/dev/null 2>&1; then
   echo "FAIL: production Compose accepted an empty dedicated credential key" >&2
   exit 1
@@ -25,6 +27,7 @@ fi
 
 if MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY=test-only-key-000000000000000001 \
     SKIT_AD_CREDENTIAL_KEY=test-only-credential-key-0000001 SKIT_AD_SESSION_TOKEN_KEY= \
+    SKIT_AD_CALLBACK_PUBLIC_BASE_URL=http://127.0.0.1/app-api \
     docker compose -f "${compose_file}" config >/dev/null 2>&1; then
   echo "FAIL: production Compose accepted an empty advertising session-token key" >&2
   exit 1
@@ -33,6 +36,7 @@ fi
 MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY=test-only-key-000000000000000001 \
   SKIT_AD_CREDENTIAL_KEY=test-only-credential-key-0000001 SKIT_AD_CREDENTIAL_KEY_ID=primary \
   SKIT_AD_SESSION_TOKEN_KEY=test-only-session-token-key-00001 SKIT_AD_SESSION_TOKEN_KEY_VERSION=1 \
+  SKIT_AD_CALLBACK_PUBLIC_BASE_URL=http://127.0.0.1/app-api \
   docker compose -f "${compose_file}" config >/dev/null
 
 if ! grep -q 'upsert_env SKIT_AD_ENCRYPTION_KEY' "${activation_script}"; then
@@ -67,15 +71,10 @@ fi
 for profile_config in "${local_config}" "${dev_config}"; do
   profile_value="$(sed -n '/^mybatis-plus:/,/^---/p' "${profile_config}" \
     | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)"
-  profile_default="${profile_value#'${SKIT_AD_ENCRYPTION_KEY:'}"
-  profile_default="${profile_default%'}'}"
-  case "${#profile_default}" in
-    16|24|32) ;;
-    *)
-      echo "FAIL: non-production AES default in ${profile_config} has an invalid length" >&2
-      exit 1
-      ;;
-  esac
+  if [[ "${profile_value}" != '${SKIT_AD_ENCRYPTION_KEY:}' ]]; then
+    echo "FAIL: ${profile_config} must not commit a usable advertising encryption key" >&2
+    exit 1
+  fi
 done
 
-echo "PASS: production advertising encryption keys are external, independent, and persistent"
+echo "PASS: advertising encryption keys are external, independent, and persistent"

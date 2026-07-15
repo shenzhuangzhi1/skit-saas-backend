@@ -7,6 +7,90 @@ set -euo pipefail
 
 cd "${DEPLOY_PATH}"
 
+docker_config=""
+health_body_file=""
+portable_lock_dir=""
+server_env_file="${SERVER_ENV_FILE:-}"
+cleanup_server_env=0
+
+cleanup() {
+  exit_code=$?
+  trap - EXIT
+  if [ -n "${health_body_file}" ]; then
+    rm -f "${health_body_file}"
+  fi
+  if [ -n "${docker_config}" ]; then
+    rm -rf "${docker_config}"
+  fi
+  if [ "${cleanup_server_env}" = "1" ] && [ -n "${server_env_file}" ]; then
+    rm -f "${server_env_file}"
+  fi
+  if [ -n "${portable_lock_dir}" ]; then
+    rmdir "${portable_lock_dir}" >/dev/null 2>&1 || true
+  fi
+  exit "${exit_code}"
+}
+trap cleanup EXIT
+
+deploy_lock_wait_seconds="${SKIT_DEPLOY_LOCK_WAIT_SECONDS:-900}"
+if [[ ! "${deploy_lock_wait_seconds}" =~ ^[0-9]+$ ]]; then
+  echo "SKIT_DEPLOY_LOCK_WAIT_SECONDS must be a non-negative integer."
+  exit 1
+fi
+if command -v flock >/dev/null 2>&1; then
+  exec 9> .deploy.lock
+  if ! flock -w "${deploy_lock_wait_seconds}" 9; then
+    echo "Another backend or frontend activation holds ${DEPLOY_PATH}/.deploy.lock."
+    exit 1
+  fi
+else
+  portable_lock_dir=".deploy.lock.d"
+  lock_deadline=$((SECONDS + deploy_lock_wait_seconds))
+  until mkdir "${portable_lock_dir}" 2>/dev/null; do
+    if [ "${SECONDS}" -ge "${lock_deadline}" ]; then
+      portable_lock_dir=""
+      echo "Another backend or frontend activation holds ${DEPLOY_PATH}/.deploy.lock."
+      exit 1
+    fi
+    sleep 1
+  done
+fi
+
+release_bundle_path="${RELEASE_BUNDLE_PATH:-}"
+if [ -n "${release_bundle_path}" ]; then
+  case "${release_bundle_path}" in
+    releases/backend-[A-Za-z0-9._-]*) ;;
+    *)
+      echo "RELEASE_BUNDLE_PATH must identify a staged backend release."
+      exit 1
+      ;;
+  esac
+  if [ -z "${server_env_file}" ]; then
+    server_env_file="${release_bundle_path}/server.env"
+  fi
+  cleanup_server_env=1
+  if [ -L "${release_bundle_path}" ] || [ ! -d "${release_bundle_path}" ]; then
+    echo "The staged backend release directory is missing or unsafe."
+    exit 1
+  fi
+  for release_file in docker-compose.prod.yml ruoyi-vue-pro.sql skit-saas.sql; do
+    if [ -L "${release_bundle_path}/${release_file}" ] ||
+       [ ! -f "${release_bundle_path}/${release_file}" ]; then
+      echo "The staged backend release is missing ${release_file}."
+      exit 1
+    fi
+  done
+  staged_compose="$(mktemp)"
+  cp "${release_bundle_path}/docker-compose.prod.yml" "${staged_compose}"
+  chmod 644 "${staged_compose}"
+  mv "${staged_compose}" docker-compose.prod.yml
+  mkdir -p mysql/init
+  install -m 644 "${release_bundle_path}/ruoyi-vue-pro.sql" mysql/init/ruoyi-vue-pro.sql
+  install -m 644 "${release_bundle_path}/skit-saas.sql" mysql/init/skit-saas.sql
+elif [ -z "${server_env_file}" ]; then
+  server_env_file="server.env"
+fi
+
 persisted_credential_key=""
 persisted_credential_key_id=""
 persisted_session_token_key=""
@@ -20,11 +104,21 @@ if [ -f .env ]; then
   persisted_session_token_key="${SKIT_AD_SESSION_TOKEN_KEY:-}"
   persisted_session_token_key_version="${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-}"
 fi
-if [ -f server.env ]; then
+if [ -e "${server_env_file}" ] || [ -L "${server_env_file}" ]; then
+  if [ -L "${server_env_file}" ] || [ ! -f "${server_env_file}" ]; then
+    echo "The uploaded server environment must be a regular file."
+    exit 1
+  fi
+  chmod 600 "${server_env_file}"
+  cleanup_server_env=1
   # shellcheck disable=SC1091
-  . ./server.env
+  . "${server_env_file}"
+  rm -f -- "${server_env_file}"
+  cleanup_server_env=0
+  server_env_file=""
 fi
 set +a
+export -n GHCR_TOKEN SUDO_PASSWORD 2>/dev/null || true
 
 # The persisted server-side .env is the source of truth after first activation. A newly uploaded
 # server.env may seed a missing key, but it must not silently rotate an existing key/key-id pair.
@@ -36,7 +130,6 @@ if [ -n "${persisted_session_token_key}" ]; then
   SKIT_AD_SESSION_TOKEN_KEY="${persisted_session_token_key}"
   SKIT_AD_SESSION_TOKEN_KEY_VERSION="${persisted_session_token_key_version:-1}"
 fi
-
 upsert_env() {
   key="$1"
   value="$2"
@@ -115,12 +208,10 @@ compose() {
 
 prepare_docker_access
 
-docker_config=""
 if [ -n "${GHCR_TOKEN:-}" ]; then
   docker_config="$(mktemp -d)"
   export DOCKER_CONFIG="${docker_config}"
   printf '%s' "${GHCR_TOKEN}" | docker_cmd login ghcr.io -u "${GHCR_USERNAME:-github-actions}" --password-stdin
-  trap 'rm -rf "${docker_config}"' EXIT
 fi
 
 if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
@@ -226,6 +317,26 @@ if [[ ! "${SKIT_AD_CREDENTIAL_KEY_ID}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
   echo "SKIT_AD_CREDENTIAL_KEY_ID must contain 1 to 64 safe identifier characters."
   exit 1
 fi
+
+# Callback templates use one explicit deployment origin. Never infer it from an incoming Host or
+# X-Forwarded-* header. A localhost HTTP default keeps first-time offline activation possible, but
+# readiness deliberately blocks ENFORCED until the operator supplies an HTTPS public origin.
+SKIT_AD_CALLBACK_PUBLIC_BASE_URL="${SKIT_AD_CALLBACK_PUBLIC_BASE_URL:-http://localhost:${BACKEND_PORT:-48080}/app-api}"
+SKIT_AD_CALLBACK_PUBLIC_BASE_URL="${SKIT_AD_CALLBACK_PUBLIC_BASE_URL%/}"
+if [[ ! "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/app-api$ ]]; then
+  echo "SKIT_AD_CALLBACK_PUBLIC_BASE_URL must be an absolute http(s) URL ending in /app-api without userinfo, query, or fragment."
+  exit 1
+fi
+callback_authority="${SKIT_AD_CALLBACK_PUBLIC_BASE_URL#*://}"
+callback_authority="${callback_authority%/app-api}"
+if [[ "${callback_authority}" == *:* ]]; then
+  callback_port="${callback_authority##*:}"
+  if [ "${callback_port}" -gt 65535 ]; then
+    echo "SKIT_AD_CALLBACK_PUBLIC_BASE_URL contains an invalid port."
+    exit 1
+  fi
+fi
+
 case "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" in
   0|1) ;;
   *)
@@ -234,12 +345,135 @@ case "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" in
     ;;
 esac
 
+validate_retained_keyring() {
+  file="$1"
+  seen_file="$(mktemp)"
+  valid=1
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ''|'#'*) continue ;;
+    esac
+    if [[ "${line}" != *=* ]] || [[ "${line}" =~ ^[[:space:]] ]] ||
+       [[ "${line}" =~ [[:space:]]$ ]]; then
+      valid=0
+      break
+    fi
+    property_name="${line%%=*}"
+    property_value="${line#*=}"
+    if grep -Fqx -- "${property_name}" "${seen_file}"; then
+      valid=0
+      break
+    fi
+    printf '%s\n' "${property_name}" >> "${seen_file}"
+    case "${property_name}" in
+      skit.ad.credential-encryption.keys.*)
+        retained_id="${property_name#skit.ad.credential-encryption.keys.}"
+        if [[ ! "${retained_id}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] ||
+           [[ ! "${property_value}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+          valid=0
+          break
+        fi
+        case "${#property_value}" in
+          16|24|32) ;;
+          *) valid=0; break ;;
+        esac
+        if [ "${retained_id}" = "${SKIT_AD_CREDENTIAL_KEY_ID}" ] &&
+           [ "${property_value}" != "${SKIT_AD_CREDENTIAL_KEY}" ]; then
+          valid=0
+          break
+        fi
+        ;;
+      skit.ad.session-token.keys.*)
+        retained_version="${property_name#skit.ad.session-token.keys.}"
+        if [[ ! "${retained_version}" =~ ^[1-9][0-9]{0,9}$ ]] ||
+           { [ "${#retained_version}" -eq 10 ] && [[ "${retained_version}" > "2147483647" ]]; } ||
+           [ "${#property_value}" -lt 32 ] ||
+           [[ ! "${property_value}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+          valid=0
+          break
+        fi
+        if [ "${retained_version}" = "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}" ] &&
+           [ "${property_value}" != "${SKIT_AD_SESSION_TOKEN_KEY}" ]; then
+          valid=0
+          break
+        fi
+        ;;
+      *)
+        valid=0
+        break
+        ;;
+    esac
+  done < "${file}"
+  rm -f "${seen_file}"
+  if [ "${valid}" != "1" ]; then
+    echo "Retained advertising keyring is invalid; only validated retained key properties are allowed."
+    return 1
+  fi
+}
+
+decode_retained_keyring() {
+  encoded="$1"
+  destination="$2"
+  if printf '%s' "${encoded}" | base64 --decode > "${destination}" 2>/dev/null; then
+    return
+  fi
+  if printf '%s' "${encoded}" | base64 -D > "${destination}" 2>/dev/null; then
+    return
+  fi
+  echo "SKIT_AD_RETAINED_KEYRING_BASE64 is not valid base64."
+  return 1
+}
+
+prepare_retained_keyring() {
+  keyring_file="ad-keyring.properties"
+  if [ -L "${keyring_file}" ] || { [ -e "${keyring_file}" ] && [ ! -f "${keyring_file}" ]; }; then
+    echo "Retained advertising keyring must be a regular file."
+    return 1
+  fi
+
+  decoded_file=""
+  if [ -n "${SKIT_AD_RETAINED_KEYRING_BASE64:-}" ]; then
+    decoded_file="$(mktemp)"
+    if ! decode_retained_keyring "${SKIT_AD_RETAINED_KEYRING_BASE64}" "${decoded_file}" ||
+       ! validate_retained_keyring "${decoded_file}"; then
+      rm -f "${decoded_file}"
+      return 1
+    fi
+  fi
+
+  if [ -f "${keyring_file}" ]; then
+    if ! validate_retained_keyring "${keyring_file}"; then
+      rm -f "${decoded_file}"
+      return 1
+    fi
+    if [ -n "${decoded_file}" ] && ! cmp -s "${decoded_file}" "${keyring_file}"; then
+      rm -f "${decoded_file}"
+      echo "Retained advertising keyring already exists and cannot be replaced by a routine release."
+      return 1
+    fi
+  else
+    staged_file="$(mktemp)"
+    if [ -n "${decoded_file}" ]; then
+      cp "${decoded_file}" "${staged_file}"
+    else
+      : > "${staged_file}"
+    fi
+    chmod 600 "${staged_file}"
+    mv "${staged_file}" "${keyring_file}"
+  fi
+  rm -f "${decoded_file}"
+  chmod 600 "${keyring_file}"
+}
+
+prepare_retained_keyring
+
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
 upsert_env SKIT_AD_ENCRYPTION_KEY "${SKIT_AD_ENCRYPTION_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY "${SKIT_AD_CREDENTIAL_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY_ID "${SKIT_AD_CREDENTIAL_KEY_ID}"
 upsert_env SKIT_AD_SESSION_TOKEN_KEY "${SKIT_AD_SESSION_TOKEN_KEY}"
 upsert_env SKIT_AD_SESSION_TOKEN_KEY_VERSION "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}"
+upsert_env SKIT_AD_CALLBACK_PUBLIC_BASE_URL "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}"
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"
@@ -279,14 +513,21 @@ fi
 compose -f docker-compose.prod.yml --env-file .env up -d backend
 
 health_url="http://127.0.0.1:${BACKEND_PORT:-48080}${BACKEND_HEALTH_PATH:-/actuator/health}"
+health_body_file="$(mktemp)"
 for _ in $(seq 1 90); do
-  status_code="$(curl -sS -o /dev/null -w '%{http_code}' "${health_url}" || true)"
-  if [ "${status_code}" -ge 200 ] 2>/dev/null && [ "${status_code}" -lt 500 ]; then
+  : > "${health_body_file}"
+  status_code="$(curl -sS --max-time 5 -o "${health_body_file}" -w '%{http_code}' "${health_url}" || true)"
+  health_body="$(LC_ALL=C tr -d ' \t\r\n' < "${health_body_file}")"
+  if [ "${status_code}" = "200" ] && [ "${health_body}" = '{"status":"UP"}' ]; then
+    rm -f "${health_body_file}"
+    health_body_file=""
     docker_cmd ps --filter name=skit-saas-backend
     exit 0
   fi
   sleep 2
 done
 
+rm -f "${health_body_file}"
+health_body_file=""
 docker_cmd logs --tail 120 skit-saas-backend || true
 exit 1

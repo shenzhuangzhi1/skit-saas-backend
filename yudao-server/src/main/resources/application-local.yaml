@@ -58,26 +58,26 @@ spring:
           #          url: jdbc:postgresql://127.0.0.1:5432/postgres # OpenGauss 连接的示例
           #          url: jdbc:postgresql://127.0.0.1:5866/ruoyi-vue-pro # 瀚高 HighGo 连接的示例
           username: root
-          password: 123456
+          password: ${LOCAL_MYSQL_MASTER_PASSWORD:}
           #          username: sa # SQL Server 连接的示例
-          #          password: Yudao@2024 # SQL Server 连接的示例
+          #          password: ${LOCAL_DATABASE_PASSWORD:}
           #          username: SYSDBA # DM 连接的示例
-          #          password: SYSDBA001 # DM 连接的示例
+          #          password: ${LOCAL_DATABASE_PASSWORD:}
           #          username: root # OpenGauss 连接的示例
-          #          password: Yudao@2024 # OpenGauss 连接的示例
+          #          password: ${LOCAL_DATABASE_PASSWORD:}
           #          username: root # 瀚高 HighGo 连接的示例
-          #          password: 123456 # 瀚高 HighGo 连接的示例
+          #          password: ${LOCAL_DATABASE_PASSWORD:}
         slave: # 模拟从库，可根据自己需要修改
           lazy: true # 开启懒加载，保证启动速度
           url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro-jdk8?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&nullCatalogMeansCurrent=true
           username: root
-          password: 123456
+          password: ${LOCAL_MYSQL_SLAVE_PASSWORD:}
 #        tdengine: # IoT 数据库（需要 IoT 物联网再开启噢！）
 #          lazy: true # 开启懒加载，保证启动速度
 #          url: jdbc:TAOS-WS://127.0.0.1:6041/ruoyi_vue_pro?varcharAsString=true&enableAutoReconnect=true # 参见：https://t.zsxq.com/qaX9c，开启 TDengine WebSocket 自动重连
 #          driver-class-name: com.taosdata.jdbc.ws.WebSocketDriver
 #          username: root
-#          password: taosdata
+#          password: ${LOCAL_TDENGINE_PASSWORD:}
 #          druid:
 #            validation-query: SELECT SERVER_STATUS() # TDengine 数据源的有效性检查 SQL
 
@@ -86,12 +86,12 @@ spring:
     host: 127.0.0.1 # 地址
     port: 6379 # 端口
     database: 0 # 数据库索引
-#    password: dev # 密码，建议生产环境开启
+#    password: ${LOCAL_REDIS_PASSWORD:}
 
 # 仅用于本地开发。生产 Compose 必须注入并持久化 SKIT_AD_ENCRYPTION_KEY。
 mybatis-plus:
   encryptor:
-    password: ${SKIT_AD_ENCRYPTION_KEY:skit-local-dev-only-key-00000010}
+    password: ${SKIT_AD_ENCRYPTION_KEY:}
 
 --- #################### 定时任务相关配置 ####################
 
@@ -136,7 +136,7 @@ spring:
     host: 127.0.0.1 # RabbitMQ 服务的地址
     port: 5672 # RabbitMQ 服务的端口
     username: rabbit # RabbitMQ 服务的账号
-    password: rabbit # RabbitMQ 服务的密码
+    password: ${LOCAL_RABBITMQ_PASSWORD:}
   # Kafka 配置项，对应 KafkaProperties 配置类
   kafka:
     bootstrap-servers: 127.0.0.1:9092 # 指定 Kafka Broker 地址，可以设置多个，以逗号分隔
@@ -168,7 +168,7 @@ spring:
         instance:
           service-host-type: IP # 注册实例时，优先使用 IP [IP, HOST_NAME, CANONICAL_HOST_NAME]
         username: admin
-        password: admin
+        password: ${LOCAL_SPRING_BOOT_ADMIN_PASSWORD:}
       # Spring Boot Admin Server 服务端的相关配置
       context-path: /admin # 配置 Spring
       # 允许嵌入 iframe 的域名（支持通配符），实际部署时，可以改为 "'self' [你的公网域名]"
@@ -211,11 +211,11 @@ debug: false
 wx:
   mp: # 公众号配置（必填），参见 https://github.com/Wechat-Group/WxJava/blob/develop/spring-boot-starters/wx-java-mp-spring-boot-starter/README.md 文档
 #    app-id: wx041349c6f39b268b # 测试号（牛希尧提供的）
-#    secret: 5abee519483bc9f8cb37ce280e814bd0
+#    secret: ${LOCAL_WX_MP_SECRET:}
 #    app-id: wx5b23ba7a5589ecbb # 测试号（自己的）
-#    secret: 2a7b3b20c537e52e74afd395eb85f61f
+#    secret: ${LOCAL_WX_MP_SECRET:}
     app-id: wxf56b1542b9e85f8a # 测试号（Kongdy 提供的）
-    secret: 496379dcef1ba869e9234de8d598cfd3
+    secret: ${LOCAL_WX_MP_SECRET:}
     # 存储配置，解决 AccessToken 的跨节点的共享
     config-storage:
       type: RedisTemplate # 采用 RedisTemplate 操作 Redis，会自动从 Spring 中获取
@@ -223,13 +223,13 @@ wx:
       http-client-type: HttpComponents # 采用 HttpComponents（HttpClient 5）请求微信公众号平台
   miniapp: # 小程序配置（必填），参见 https://github.com/Wechat-Group/WxJava/blob/develop/spring-boot-starters/wx-java-miniapp-spring-boot-starter/README.md 文档
     #    appid: wx62056c0d5e8db250 # 测试号（牛希尧提供的）
-    #    secret: 333ae72f41552af1e998fe1f54e1584a
+#    secret: ${LOCAL_WX_MINIAPP_SECRET:}
 #    appid: wx63c280fe3248a3e7 # wenhualian的接口测试号
-#    secret: 6f270509224a7ae1296bbf1c8cb97aed
+#    secret: ${LOCAL_WX_MINIAPP_SECRET:}
     appid: wxc4598c446f8a9cb3 # 测试号（Kongdy 提供的）
-    secret: 4a1a04e07f6a4a0751b39c3064a92c8b
+    secret: ${LOCAL_WX_MINIAPP_SECRET:}
 #    appid: wx66186af0759f47c9 # 测试号（puhui 提供的）
-#    secret: 3218bcbd112cbc614c7264ceb20144ac
+#    secret: ${LOCAL_WX_MINIAPP_SECRET:}
     config-storage:
       type: RedisTemplate # 采用 RedisTemplate 操作 Redis，会自动从 Spring 中获取
       key-prefix: wa # Redis Key 的前缀
@@ -254,34 +254,34 @@ yudao:
     env-version: develop # 小程序版本: 正式版为 "release"；体验版为 "trial"；开发版为 "develop"
   wxa-subscribe-message:
     miniprogram-state: developer # 跳转小程序类型：开发版为 “developer”；体验版为 “trial”为；正式版为 “formal”
-  tencent-lbs-key: TVDBZ-TDILD-4ON4B-PFDZA-RNLKH-VVF6E # QQ 地图的密钥 https://lbs.qq.com/service/staticV2/staticGuide/staticDoc
+  tencent-lbs-key: ${LOCAL_TENCENT_LBS_KEY:}
 
 justauth:
   enabled: true
   type:
     DINGTALK: # 钉钉
       client-id: dingvrnreaje3yqvzhxg
-      client-secret: i8E6iZyDvZj51JIb0tYsYfVQYOks9Cq1lgryEjFRqC79P3iJcrxEwT6Qk2QvLrLI
+      client-secret: ${LOCAL_JUSTAUTH_DINGTALK_CLIENT_SECRET:}
       ignore-check-redirect-uri: true
     WECHAT_ENTERPRISE: # 企业微信
       client-id: wwd411c69a39ad2e54
-      client-secret: 1wTb7hYxnpT2TUbIeHGXGo7T0odav1ic10mLdyyATOw
+      client-secret: ${LOCAL_JUSTAUTH_WECHAT_ENTERPRISE_CLIENT_SECRET:}
       agent-id: 1000004
       ignore-check-redirect-uri: true
     # noinspection SpringBootApplicationYaml
     WECHAT_MINI_PROGRAM: # 微信小程序
       client-id: ${wx.miniapp.appid}
-      client-secret: ${wx.miniapp.secret}
+      client-secret: ${LOCAL_JUSTAUTH_WECHAT_MINI_PROGRAM_CLIENT_SECRET:}
       ignore-check-redirect-uri: true
       ignore-check-state: true # 微信小程序，不会使用到 state，所以不进行校验
     WECHAT_MP: # 微信公众号
       client-id: ${wx.mp.app-id}
-      client-secret: ${wx.mp.secret}
+      client-secret: ${LOCAL_JUSTAUTH_WECHAT_MP_CLIENT_SECRET:}
       ignore-check-redirect-uri: true
     ALIPAY: # 支付宝小程序
       client-id: xx
-      client-secret: xx
-      alipay-public-key: xx
+      client-secret: ${LOCAL_JUSTAUTH_ALIPAY_CLIENT_SECRET:}
+      alipay-public-key: ${LOCAL_JUSTAUTH_ALIPAY_PUBLIC_KEY:}
       ignore-check-redirect-uri: true
       ignore-check-state: true
   cache:
