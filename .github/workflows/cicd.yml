@@ -56,6 +56,15 @@ jobs:
     name: Backend MySQL 8 integration checks
     runs-on: ubuntu-latest
 
+    # GitHub-hosted runners do not expose the Docker bridge network to the
+    # Testcontainers JVM consistently. Ryuk can therefore be started but is
+    # unreachable from the test process, causing every integration class to
+    # wait for the same 30-second retry loop and eventually fail. The runner
+    # is ephemeral, so disabling Ryuk here is safe; containers disappear with
+    # the runner after this job.
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
