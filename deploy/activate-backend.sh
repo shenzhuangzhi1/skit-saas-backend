@@ -566,6 +566,23 @@ mysql_in_container() {
     mysql-in-container "$@"
 }
 
+# Keep the release self-diagnosing without exposing row data or encrypted credentials.  The
+# application can be HTTP-healthy while an old production database still carries a stale table
+# shape, so print the structural facts needed to diagnose write failures in the activation log.
+print_skit_schema_summary() {
+  local summary_sql="SELECT 'MIGRATIONS' AS kind,`version`,`description` FROM `skit_schema_migration` ORDER BY `version`; \
+SELECT 'COLUMNS' AS kind,`TABLE_NAME`,`COLUMN_NAME`,`COLUMN_TYPE`,`IS_NULLABLE`,`COLUMN_DEFAULT` \
+  FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() \
+  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
+  ORDER BY `TABLE_NAME`,`ORDINAL_POSITION`; \
+SELECT 'TRIGGERS' AS kind,`TRIGGER_NAME`,`EVENT_OBJECT_TABLE`,`ACTION_TIMING`,`EVENT_MANIPULATION` \
+  FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() \
+  AND EVENT_OBJECT_TABLE IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
+  ORDER BY `EVENT_OBJECT_TABLE`,`TRIGGER_NAME`;"
+  echo "Skit production schema summary (structure only):"
+  mysql_in_container --batch --skip-column-names -e "${summary_sql}"
+}
+
 quartz_table_names="'QRTZ_BLOB_TRIGGERS','QRTZ_CALENDARS','QRTZ_CRON_TRIGGERS','QRTZ_FIRED_TRIGGERS','QRTZ_JOB_DETAILS','QRTZ_LOCKS','QRTZ_PAUSED_TRIGGER_GRPS','QRTZ_SCHEDULER_STATE','QRTZ_SIMPLE_TRIGGERS','QRTZ_SIMPROP_TRIGGERS','QRTZ_TRIGGERS'"
 quartz_schema_state_sql="SELECT CONCAT((SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND ENGINE = 'InnoDB' AND TABLE_NAME IN (${quartz_table_names})), ':', (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${quartz_table_names})), ':', (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_NAME IN (${quartz_table_names})));"
 quartz_schema_probe_sql="SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,BLOB_DATA FROM QRTZ_BLOB_TRIGGERS LIMIT 0; SELECT SCHED_NAME,CALENDAR_NAME,CALENDAR FROM QRTZ_CALENDARS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,CRON_EXPRESSION,TIME_ZONE_ID FROM QRTZ_CRON_TRIGGERS LIMIT 0; SELECT SCHED_NAME,ENTRY_ID,TRIGGER_NAME,TRIGGER_GROUP,INSTANCE_NAME,FIRED_TIME,SCHED_TIME,PRIORITY,STATE,JOB_NAME,JOB_GROUP,IS_NONCONCURRENT,REQUESTS_RECOVERY FROM QRTZ_FIRED_TRIGGERS LIMIT 0; SELECT SCHED_NAME,JOB_NAME,JOB_GROUP,DESCRIPTION,JOB_CLASS_NAME,IS_DURABLE,IS_NONCONCURRENT,IS_UPDATE_DATA,REQUESTS_RECOVERY,JOB_DATA FROM QRTZ_JOB_DETAILS LIMIT 0; SELECT SCHED_NAME,LOCK_NAME FROM QRTZ_LOCKS LIMIT 0; SELECT SCHED_NAME,TRIGGER_GROUP FROM QRTZ_PAUSED_TRIGGER_GRPS LIMIT 0; SELECT SCHED_NAME,INSTANCE_NAME,LAST_CHECKIN_TIME,CHECKIN_INTERVAL FROM QRTZ_SCHEDULER_STATE LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,REPEAT_COUNT,REPEAT_INTERVAL,TIMES_TRIGGERED FROM QRTZ_SIMPLE_TRIGGERS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,STR_PROP_1,STR_PROP_2,STR_PROP_3,INT_PROP_1,INT_PROP_2,LONG_PROP_1,LONG_PROP_2,DEC_PROP_1,DEC_PROP_2,BOOL_PROP_1,BOOL_PROP_2 FROM QRTZ_SIMPROP_TRIGGERS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,JOB_NAME,JOB_GROUP,DESCRIPTION,NEXT_FIRE_TIME,PREV_FIRE_TIME,PRIORITY,TRIGGER_STATE,TRIGGER_TYPE,START_TIME,END_TIME,CALENDAR_NAME,MISFIRE_INSTR,JOB_DATA FROM QRTZ_TRIGGERS LIMIT 0;"
@@ -653,6 +670,10 @@ for _ in $(seq 1 90); do
           "${backend_log_file}"; then
         cat "${backend_log_file}" >&2
         echo "Backend became HTTP-healthy while Quartz persistence was broken."
+        break
+      fi
+      if ! print_skit_schema_summary; then
+        echo "Skit schema summary failed; refusing activation because the production database cannot be inspected safely."
         break
       fi
       rm -f "${health_body_file}" "${backend_log_file}"
