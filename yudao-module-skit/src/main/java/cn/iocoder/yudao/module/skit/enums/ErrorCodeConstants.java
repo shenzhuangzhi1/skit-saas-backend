@@ -39,6 +39,7 @@ public interface ErrorCodeConstants {
     ErrorCode REVENUE_EVENT_CONFLICT = new ErrorCode(1_030_005_001, "externalEventId 已被不同的广告事件占用");
 
     ErrorCode APP_RELEASE_PROFILE_INVALID = new ErrorCode(1_030_006_000, "App 发布档案不合法：{}");
+    ErrorCode APP_BUILD_MATERIAL_INVALID = new ErrorCode(1_030_006_001, "App 构建资料不合法：{}");
 
     ErrorCode AD_SESSION_INVALID = new ErrorCode(1_030_007_000, "广告会话请求不合法");
     ErrorCode AD_SESSION_NOT_EXISTS = new ErrorCode(1_030_007_001, "广告会话不存在");

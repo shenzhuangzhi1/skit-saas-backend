@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.framework.security.SkitManagementAccessMode;
 import cn.iocoder.yudao.module.skit.framework.security.SkitManagementCommandType;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
+import cn.iocoder.yudao.module.skit.service.app.SkitAppBuildMaterialService;
 import cn.iocoder.yudao.module.skit.service.management.SkitManagementCommandExecutor;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportingConfigurationService;
@@ -49,6 +50,8 @@ class SkitTenantBusinessControllerTest {
     private SkitAdAccountService adAccountService;
     @Mock
     private SkitAppReleaseService appReleaseService;
+    @Mock
+    private SkitAppBuildMaterialService appBuildMaterialService;
     @Mock
     private SkitMemberService memberService;
     @Mock
@@ -250,6 +253,51 @@ class SkitTenantBusinessControllerTest {
         verify(appReleaseService).saveProfile(profileCaptor.capture());
         assertTrue("tenant-public-key".equals(
                 profileCaptor.getValue().getRuntimeUpdatePublicKey()));
+    }
+
+    @Test
+    void appBuildMaterialIsGuardedAuditedAndWriteOnly() throws Exception {
+        SkitTenantBusinessController.AppBuildMaterialSaveReqVO request =
+                new SkitTenantBusinessController.AppBuildMaterialSaveReqVO();
+        request.setTenantId(20L);
+        request.setApiBaseUrl("https://api.example.com");
+        request.setAppName("tenant app");
+        request.setNativeVersionCode(3L);
+        request.setNativeVersionName("2.3.0");
+        request.setRuntimeReleaseNo(3L);
+        request.setPangleSettingsJson("private-pangle-settings");
+        request.setReleaseKeystoreBase64("private-keystore");
+        request.setStorePassword("private-store-password");
+        request.setKeyAlias("release");
+        request.setKeyPassword("private-key-password");
+        request.setReason("rotate tenant native build material safely");
+        executeWrite(SkitManagementCommandType.APP_BUILD_MATERIAL_UPDATE, request.getReason());
+
+        SkitAppBuildMaterialService.MaterialView before = new SkitAppBuildMaterialService.MaterialView()
+                .setTenantId(20L).setMaterialVersion(2);
+        SkitAppBuildMaterialService.MaterialView saved = new SkitAppBuildMaterialService.MaterialView()
+                .setTenantId(20L).setMaterialVersion(3);
+        when(appBuildMaterialService.getMaterial(20L)).thenReturn(before);
+        when(appBuildMaterialService.saveMaterial(any())).thenReturn(saved);
+        when(managementCommandExecutor.execute(any(), eq(SkitManagementCommandType.APP_BUILD_MATERIAL_UPDATE),
+                eq("APP_BUILD_MATERIAL"), eq("20"), eq(request.getReason()),
+                anyString(), anyString(), any())).thenAnswer(invocation -> {
+            Supplier<?> mutation = invocation.getArgument(7);
+            mutation.get();
+            return saved;
+        });
+
+        controller.saveAppBuildMaterial(request);
+
+        verify(adminTenantScopeGuard).writeTenant(eq(20L),
+                eq(SkitManagementCommandType.APP_BUILD_MATERIAL_UPDATE), eq(request.getReason()), any());
+        assertFalse(request.toString().contains("private-pangle-settings"));
+        assertFalse(request.toString().contains("private-store-password"));
+        Method save = SkitTenantBusinessController.class.getDeclaredMethod(
+                "saveAppBuildMaterial", SkitTenantBusinessController.AppBuildMaterialSaveReqVO.class);
+        assertTrue(Arrays.asList(save.getAnnotation(ApiAccessLog.class).sanitizeKeys())
+                .containsAll(Arrays.asList("pangleSettingsJson", "releaseKeystoreBase64", "storePassword",
+                        "keyAlias", "keyPassword")));
     }
 
     private SkitTenantBusinessController.AdAccountSaveReqVO validAdAccountSave() {

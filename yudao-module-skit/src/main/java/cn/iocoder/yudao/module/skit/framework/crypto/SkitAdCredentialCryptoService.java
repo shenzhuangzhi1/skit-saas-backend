@@ -17,6 +17,7 @@ public interface SkitAdCredentialCryptoService {
 
         private static final String REWARD_SECRET_PURPOSE = "TAKU_REWARD_SECRET";
         private static final String PUBLISHER_KEY_PURPOSE = "TAKU_PUBLISHER_KEY";
+        private static final String APP_BUILD_MATERIAL_PURPOSE = "APP_BUILD_MATERIAL";
         private static final String CALLBACK_PAYLOAD_PURPOSE = "CALLBACK_PAYLOAD";
 
         private final String purpose;
@@ -30,7 +31,8 @@ public interface SkitAdCredentialCryptoService {
 
         private Context(String purpose, long tenantId, long adAccountId,
                         int credentialVersion, int envelopeVersion) {
-            if (tenantId <= 0 || adAccountId <= 0 || credentialVersion <= 0 || envelopeVersion <= 0) {
+            if (tenantId <= 0 || credentialVersion <= 0 || envelopeVersion <= 0
+                    || (!APP_BUILD_MATERIAL_PURPOSE.equals(purpose) && adAccountId <= 0)) {
                 throw new IllegalArgumentException("Credential encryption context identifiers must be positive");
             }
             this.purpose = Objects.requireNonNull(purpose, "purpose");
@@ -76,6 +78,12 @@ public interface SkitAdCredentialCryptoService {
                     credentialVersion, envelopeVersion);
         }
 
+        public static Context appBuildMaterial(long tenantId, int materialVersion,
+                                               int envelopeVersion) {
+            return new Context(APP_BUILD_MATERIAL_PURPOSE, tenantId, 0L,
+                    materialVersion, envelopeVersion);
+        }
+
         static Context callbackPayload(long tenantId, long adAccountId, String callbackType,
                                        String idempotencyKey, byte[] canonicalPayloadHash,
                                        int envelopeVersion) {
@@ -119,12 +127,21 @@ public interface SkitAdCredentialCryptoService {
             return CALLBACK_PAYLOAD_PURPOSE.equals(purpose);
         }
 
+        boolean isAppBuildMaterial() {
+            return APP_BUILD_MATERIAL_PURPOSE.equals(purpose);
+        }
+
         @Override
         public String toString() {
             if (isCallbackPayload()) {
                 return "Context{purpose='" + purpose + "', tenantId=" + tenantId
                         + ", adAccountId=" + adAccountId + ", callbackType='" + callbackType
                         + "', idempotencyKey=<redacted>, canonicalPayloadHash=<redacted>"
+                        + ", envelopeVersion=" + envelopeVersion + '}';
+            }
+            if (isAppBuildMaterial()) {
+                return "Context{purpose='" + purpose + "', tenantId=" + tenantId
+                        + ", materialVersion=" + credentialVersion
                         + ", envelopeVersion=" + envelopeVersion + '}';
             }
             return "Context{purpose='" + purpose + "', tenantId=" + tenantId

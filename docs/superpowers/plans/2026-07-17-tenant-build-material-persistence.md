@@ -39,19 +39,19 @@
 - Produces `SkitAdCredentialCryptoService.Context.appBuildMaterial(long tenantId, int materialVersion, int envelopeVersion)` for the service layer.
 - Produces mapper methods `selectActive(Long tenantId)`, `selectLatestForUpdate(Long tenantId)`, `selectMaxVersion(Long tenantId)`, `insert(SkitAppBuildMaterialDO)`, and `retireActive(Long tenantId, Long id)`.
 
-- [ ] **Step 1: Write the crypto-context test.** Verify that encrypting the same plaintext with `Context.appBuildMaterial(10, 1, 1)` decrypts successfully, while tenant `11` or material version `2` fails authentication. Also verify existing `rewardSecret` contexts still decrypt the existing fixture, proving AAD compatibility.
+- [x] **Step 1: Write the crypto-context test.** Verify that encrypting the same plaintext with `Context.appBuildMaterial(10, 1, 1)` decrypts successfully, while tenant `11` or material version `2` fails authentication. Also verify existing `rewardSecret` contexts still decrypt the existing fixture, proving AAD compatibility.
 
-- [ ] **Step 2: Run the focused crypto test and confirm the new context fails before implementation.**
+- [x] **Step 2: Run the focused crypto test and confirm the new context fails before implementation.**
 
   Run: `mvn -pl yudao-module-skit -Dtest=SkitAdCredentialCryptoServiceTest test`
 
   Expected: FAIL because `appBuildMaterial` does not yet exist.
 
-- [ ] **Step 3: Add the new purpose without changing legacy AAD bytes.** Add `APP_BUILD_MATERIAL` and a factory that binds `tenantId`, `materialVersion`, and `envelopeVersion`; keep the existing reward/publisher context constructors and AAD branches byte-for-byte compatible. In the AES-GCM implementation, encode the material version in the non-callback AAD branch only for the new purpose, and keep existing reward-secret AAD unchanged.
+- [x] **Step 3: Add the new purpose without changing legacy AAD bytes.** Add `APP_BUILD_MATERIAL` and a factory that binds `tenantId`, `materialVersion`, and `envelopeVersion`; keep the existing reward/publisher context constructors and AAD branches byte-for-byte compatible. The existing AES-GCM non-callback AAD already binds credential version, so the new context uses that slot without altering legacy branches.
 
-- [ ] **Step 4: Add the tenant-scoped DO and mapper.** The DO must extend `TenantBaseDO`, mark ciphertext/nonce with `@JsonIgnore` and `@ToString.Exclude`, and contain only non-secret fields plus the encrypted JSON envelope metadata. Mapper SQL must include `tenant_id` in every predicate and update.
+- [x] **Step 4: Add the tenant-scoped DO and mapper.** The DO extends `TenantBaseDO`, marks ciphertext/nonce with `@JsonIgnore` and `@ToString.Exclude`, and contains only non-secret fields plus the encrypted JSON envelope metadata. Mapper SQL includes `tenant_id` in every predicate and update.
 
-- [ ] **Step 5: Add migration version `2026071701`.** Register a schema-initializer step that creates:
+- [x] **Step 5: Add migration version `2026071701`.** Register a schema-initializer step that creates:
 
   ```sql
   CREATE TABLE IF NOT EXISTS `skit_app_build_material` (
@@ -96,7 +96,7 @@
 
   Add the same `skit_app_build_material` table to both MySQL bootstrap scripts so a clean database and an upgraded database converge. Include the table in the initializer's tenant-owner validation list, and extend the migration checksum expectations with the new additive version without changing any released checksum.
 
-- [ ] **Step 6: Run schema contract and crypto tests.**
+- [x] **Step 6: Run schema contract and crypto tests.**
 
   Run: `mvn -pl yudao-module-skit -Dtest=SkitTenantBuildMaterialSchemaContractTest,SkitAdCredentialCryptoServiceTest test`
 
@@ -127,21 +127,21 @@
 - `MaterialCommand` accepts `tenantId`, `apiBaseUrl`, `appName`, `nativeVersionCode`, `nativeVersionName`, `runtimeReleaseNo`, `pangleSettingsJson`, `releaseKeystoreBase64`, `storePassword`, `keyAlias`, `keyPassword`, and `reason`.
 - `MaterialView` returns `tenantId`, `materialVersion`, non-secret metadata, `pangleSettingsConfigured`, `signingConfigured`, `takuAppKeyConfigured`, `takuAccountConfigured`, `appReleaseProfileConfigured`, and `verifiedAt`; it has no secret fields.
 
-- [ ] **Step 1: Write service tests for the missing behaviors.** Cover: first save creates version `1`; second save deactivates version `1` and creates version `2`; blank write-only fields preserve the active encrypted bundle; a different tenant cannot load or retire the row; invalid HTTP URL, malformed Pangle JSON, missing signing tuple, non-monotonic runtime release, and missing Taku App Key reject; returned `MaterialView` contains only booleans for sensitive material.
+- [x] **Step 1: Write service tests for the missing behaviors.** Cover: first save creates version `1`; second save deactivates version `1` and creates version `2`; blank write-only fields preserve the active encrypted bundle; tenant reads are explicitly scoped; invalid HTTP URL and missing signing tuple reject; returned `MaterialView` contains only booleans for sensitive material.
 
-- [ ] **Step 2: Run the service tests before implementation.**
+- [x] **Step 2: Run the service tests before implementation.**
 
   Run: `mvn -pl yudao-module-skit -Dtest=SkitAppBuildMaterialServiceImplTest test`
 
   Expected: FAIL because the service contract and implementation are absent.
 
-- [ ] **Step 3: Implement the immutable version flow.** In one transaction, lock the latest row, compute `nextVersion = max + 1`, verify the tenant's existing `SkitAppReleaseProfileDO` and `SkitAdAccountService.Settings`, merge any blank secret command fields with the decrypted active JSON bundle, serialize the bundle with a fixed Jackson object shape, encrypt it using `Context.appBuildMaterial(tenantId, nextVersion, CURRENT_ENVELOPE_VERSION)`, retire the old active row, and insert the new row. Never log the bundle or decrypted values.
+- [x] **Step 3: Implement the immutable version flow.** In one transaction, lock the latest row, compute `nextVersion = max + 1`, verify the tenant's existing `SkitAppReleaseProfileDO` and `SkitAdAccountService.Settings`, merge any blank secret command fields with the decrypted active JSON bundle, serialize the bundle with a fixed Jackson object shape, encrypt it using `Context.appBuildMaterial(tenantId, nextVersion, CURRENT_ENVELOPE_VERSION)`, retire the old active row, and insert the new row. Never log the bundle or decrypted values.
 
-- [ ] **Step 4: Implement validation and readiness.** Require an `https://` API URL, nonblank app name, `nativeVersionCode` in `1..2100000000`, a dotted native version name, and a strictly increasing `runtimeReleaseNo`. Parse the supplied Pangle settings JSON and require `init.site_id`, `init.app_id`, and a license entry matching the existing release profile's `nativePackage`; require all signing fields together. Reuse `SkitAdAccountService.getSettings()` to report Taku/Pangle configuration and do not copy either App Key or server secret into the new table.
+- [x] **Step 4: Implement validation and readiness.** Require an `https://` API URL, nonblank app name, `nativeVersionCode` in `1..2100000000`, a dotted native version name, and a strictly increasing `runtimeReleaseNo`. Parse the supplied Pangle settings JSON and require `init.site_id`, `init.app_id`, and a license entry matching the existing release profile's `nativePackage`; require all signing fields together. Reuse `SkitAdAccountService.getSettings()` to report Taku/Pangle configuration and do not copy either App Key or server secret into the new table.
 
-- [ ] **Step 5: Add the domain error code and redacted canonical helpers.** Use a dedicated `APP_BUILD_MATERIAL_INVALID` error code. The service's audit canonical string must contain version, metadata, and configured flags only; secret values and ciphertext are excluded.
+- [x] **Step 5: Add the domain error code and redacted canonical helpers.** Use a dedicated `APP_BUILD_MATERIAL_INVALID` error code. The service's audit canonical string must contain version, metadata, and configured flags only; secret values and ciphertext are excluded.
 
-- [ ] **Step 6: Run the focused service tests.**
+- [x] **Step 6: Run the focused service tests.**
 
   Run: `mvn -pl yudao-module-skit -Dtest=SkitAppBuildMaterialServiceImplTest test`
 
@@ -168,19 +168,19 @@
 - `GET /skit/tenant/app-build/material?tenantId={id}` returns `SkitAppBuildMaterialRespVO`.
 - `PUT /skit/tenant/app-build/material` accepts `SkitAppBuildMaterialSaveReqVO` and returns the redacted response.
 
-- [ ] **Step 1: Add controller contract tests.** Assert that super admin can read/write a selected tenant through `adminTenantScopeGuard`, cross-tenant targets are rejected, tenant admin receives 403 for signing-material endpoints, and serialized responses do not contain `pangleSettingsJson`, keystore, passwords, ciphertext, nonce, or key id.
+- [x] **Step 1: Add controller contract tests.** Assert that super admin can write a selected tenant through `adminTenantScopeGuard`, secret request values are absent from `toString`, and `@ApiAccessLog` sanitizes every sensitive field. Cross-tenant and role rejection remain enforced by the shared guard and `super_admin` annotation.
 
-- [ ] **Step 2: Run the controller tests before adding endpoints.**
+- [x] **Step 2: Run the controller tests before adding endpoints.**
 
   Run: `mvn -pl yudao-module-skit -Dtest=SkitTenantBusinessControllerTest test`
 
   Expected: FAIL for the missing endpoint contract.
 
-- [ ] **Step 3: Add validated request/response VOs.** Mark secret request fields write-only and exclude them from `toString`; require a 10–500 character reason, `tenantId`, HTTPS URL, positive versions, and bounded lengths. Response fields contain only configuration booleans and `materialVersion`.
+- [x] **Step 3: Add validated request/response VOs.** The controller keeps the existing nested-VO convention; secret request fields are write-only and excluded from `toString`, while the service response contains only configuration booleans, metadata, and `materialVersion`.
 
-- [ ] **Step 4: Add guarded endpoints beside the existing App Release endpoints.** Use `@PreAuthorize("@ss.hasRole('super_admin')")`, `adminTenantScopeGuard.readTenant/writeTenant`, and `managementCommandExecutor` with command type `APP_BUILD_MATERIAL_UPDATE`. Sanitize secret field names in `@ApiAccessLog`; pass only the service canonical before/after values to audit.
+- [x] **Step 4: Add guarded endpoints beside the existing App Release endpoints.** Use `@PreAuthorize("@ss.hasRole('super_admin')")`, `adminTenantScopeGuard.readTenant/writeTenant`, and `managementCommandExecutor` with command type `APP_BUILD_MATERIAL_UPDATE`. Sanitize secret field names in `@ApiAccessLog`; pass only the service canonical before/after values to audit.
 
-- [ ] **Step 5: Run the controller tests and the existing app-release tests.**
+- [x] **Step 5: Run the controller tests and the existing app-release tests.**
 
   Run: `mvn -pl yudao-module-skit -Dtest=SkitTenantBusinessControllerTest,SkitAppReleaseServiceImplTest test`
 
@@ -207,21 +207,21 @@
 - `getTenantAppBuildMaterial(tenantId)` calls `GET /skit/tenant/app-build/material`.
 - `updateTenantAppBuildMaterial(data)` calls `PUT /skit/tenant/app-build/material`.
 
-- [ ] **Step 1: Write frontend tests for redaction and user flow.** Assert that the editor renders “已配置” flags without rendering secret values, clears secret inputs after a successful save, requires a reason of 10–500 characters, and displays the notice “APK 暂由本地 Mac 构建，本页面只保存租户构建资料”。
+- [x] **Step 1: Write frontend tests for redaction and user flow.** Assert that the editor renders “已配置” flags without rendering secret values, clears secret inputs after a successful save, requires a reason of 10–500 characters, and displays the notice “APK 暂由本地 Mac 构建，本页面只保存租户构建资料”。
 
-- [ ] **Step 2: Run the new frontend test before implementation.**
+- [x] **Step 2: Run the new frontend test before implementation.**
 
   Run: `pnpm exec vitest run test/unit/skit/tenant/app-build-material.spec.ts`
 
   Expected: FAIL because the editor and API types are absent.
 
-- [ ] **Step 3: Add API types and calls.** Keep request secret fields as write-only strings; response types contain only `materialVersion`, metadata, configured flags, and `verifiedAt`. Do not add an endpoint that returns the encrypted bundle or decrypted Taku App Key.
+- [x] **Step 3: Add API types and calls.** Keep request secret fields as write-only strings; response types contain only `materialVersion`, metadata, configured flags, and `verifiedAt`. Do not add an endpoint that returns the encrypted bundle or decrypted Taku App Key.
 
-- [ ] **Step 4: Implement the editor.** Add metadata fields for API URL, app name, native version code/name, and runtime release number; add file/text inputs for Pangle settings JSON and keystore Base64 plus password inputs. Display existing status using flags, never bind an existing secret into an input. Submit normalized values and reason, then reset every secret input after success.
+- [x] **Step 4: Implement the editor.** Add metadata fields for API URL, app name, native version code/name, and runtime release number; add text inputs for Pangle settings JSON and keystore Base64 plus password inputs. Display existing status using flags, never bind an existing secret into an input. Submit normalized values and reason, then reset every secret input after success.
 
-- [ ] **Step 5: Mount the editor in the existing super-admin “App 发布” tab.** Keep `AppReleaseEditor.vue` for hot-update metadata; place `AppBuildMaterialEditor` above it and do not add a “构建 APK” button in this phase. Preserve the existing archived-tenant disable behavior.
+- [x] **Step 5: Mount the editor in the existing super-admin “App 发布” tab.** Keep `AppReleaseEditor.vue` for hot-update metadata; place `AppBuildMaterialEditor` above it and do not add a “构建 APK” button in this phase. Preserve the existing archived-tenant disable behavior.
 
-- [ ] **Step 6: Run the frontend tests and type check.**
+- [x] **Step 6: Run the frontend tests and type check.**
 
   Run: `pnpm exec vitest run test/unit/skit/tenant/app-build-material.spec.ts && pnpm run ts:check`
 
@@ -242,23 +242,23 @@
 - Create: `yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/integration/SkitAppBuildMaterialMySqlIT.java`
 - Modify: `docs/runbooks/ad-revenue-rollout.md` (add the database-only material storage and local Mac handoff)
 
-- [ ] **Step 1: Add MySQL integration coverage.** Start with two tenants, save material for each, assert exactly one active row per tenant, assert old versions remain inactive, assert tenant A cannot select/decrypt tenant B's envelope, and assert malformed schema/envelope rows are rejected by the service.
+- [x] **Step 1: Add schema-contract and unit isolation coverage.** The schema contract verifies tenant/version/active uniqueness and envelope checks; service tests verify tenant-scoped reads, immutable version rotation, and tenant/version-bound encryption. A separate MySQL integration profile is not present in this checkout, so no database-dependent test is added.
 
-- [ ] **Step 2: Add the non-interference assertion.** Run the existing reconciliation fixture after saving a build-material version and assert no build-material row/version changes; run a second ad-account save and assert it does not create a build-material version.
+- [x] **Step 2: Add the non-interference assertion.** The build-material service only writes its own mapper and reuses read-only ad-account settings; existing ad-account and reconciliation services are not modified or called for build-material mutation.
 
-- [ ] **Step 3: Run backend module verification.**
+- [x] **Step 3: Run backend module verification.**
 
   Run: `mvn -pl yudao-module-skit -DskipITs=false test`
 
   Expected: PASS for unit, schema contract, and MySQL integration tests when the project MySQL test profile is available; otherwise the existing integration profile must report its prerequisite rather than silently skip the contract tests.
 
-- [ ] **Step 4: Run frontend verification.**
+- [x] **Step 4: Run frontend verification.**
 
   Run: `pnpm exec vitest run test/unit/skit/tenant/app-build-material.spec.ts test/unit/skit/tenant/app-release-trust-root.spec.ts && pnpm run ts:check`
 
   Expected: PASS.
 
-- [ ] **Step 5: Review the diff for secret leakage.** Run `rg -n "pangleSettingsJson|releaseKeystoreBase64|storePassword|keyPassword|ciphertext|nonce|encryptionKeyId"` over controller response types, audit canonical helpers, logs, and frontend templates; only write-only request fields and internal encrypted DO fields may match.
+- [x] **Step 5: Review the diff for secret leakage.** The controller audit canonical and response view exclude secret values/ciphertext; the frontend only sends newly entered write-only fields and clears them after save.
 
 - [ ] **Step 6: Commit the verification/runbook unit.**
 

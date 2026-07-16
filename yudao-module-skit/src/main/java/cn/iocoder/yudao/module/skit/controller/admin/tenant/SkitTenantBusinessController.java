@@ -12,6 +12,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
 import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
+import cn.iocoder.yudao.module.skit.service.app.SkitAppBuildMaterialService;
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import cn.iocoder.yudao.module.skit.service.management.SkitManagementCommandExecutor;
 import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportingConfigurationService;
@@ -52,6 +53,8 @@ public class SkitTenantBusinessController {
     private SkitAdAccountService adAccountService;
     @Resource
     private SkitAppReleaseService appReleaseService;
+    @Resource
+    private SkitAppBuildMaterialService appBuildMaterialService;
     @Resource
     private SkitMemberService memberService;
     @Resource
@@ -217,6 +220,51 @@ public class SkitTenantBusinessController {
                 }));
     }
 
+    @GetMapping("/app-build/material")
+    @PreAuthorize("@ss.hasRole('super_admin')")
+    @Operation(summary = "获得代理商 App 原生构建资料状态")
+    public CommonResult<SkitAppBuildMaterialService.MaterialView> getAppBuildMaterial(
+            @RequestParam("tenantId") Long tenantId) {
+        return success(adminTenantScopeGuard.readTenant(tenantId, true,
+                scope -> appBuildMaterialService.getMaterial(scope.getTargetTenantId())));
+    }
+
+    @PutMapping("/app-build/material")
+    @PreAuthorize("@ss.hasRole('super_admin')")
+    @ApiAccessLog(sanitizeKeys = {"pangleSettingsJson", "releaseKeystoreBase64", "storePassword", "keyAlias",
+            "keyPassword"})
+    @Operation(summary = "保存代理商 App 原生构建资料")
+    public CommonResult<SkitAppBuildMaterialService.MaterialView> saveAppBuildMaterial(
+            @Valid @RequestBody AppBuildMaterialSaveReqVO reqVO) {
+        SkitAppBuildMaterialService.MaterialCommand command = new SkitAppBuildMaterialService.MaterialCommand()
+                .setTenantId(reqVO.getTenantId())
+                .setApiBaseUrl(reqVO.getApiBaseUrl())
+                .setAppName(reqVO.getAppName())
+                .setNativeVersionCode(reqVO.getNativeVersionCode())
+                .setNativeVersionName(reqVO.getNativeVersionName())
+                .setRuntimeReleaseNo(reqVO.getRuntimeReleaseNo())
+                .setPangleSettingsJson(reqVO.getPangleSettingsJson())
+                .setReleaseKeystoreBase64(reqVO.getReleaseKeystoreBase64())
+                .setStorePassword(reqVO.getStorePassword())
+                .setKeyAlias(reqVO.getKeyAlias())
+                .setKeyPassword(reqVO.getKeyPassword())
+                .setReason(reqVO.getReason());
+        return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
+                SkitManagementCommandType.APP_BUILD_MATERIAL_UPDATE, reqVO.getReason(), scope -> {
+                    SkitAppBuildMaterialService.MaterialView before =
+                            appBuildMaterialService.getMaterial(scope.getTargetTenantId());
+                    return managementCommandExecutor.execute(scope,
+                            SkitManagementCommandType.APP_BUILD_MATERIAL_UPDATE, "APP_BUILD_MATERIAL",
+                            scope.getTargetTenantId().toString(), reqVO.getReason(), before.auditCanonical(),
+                            canonical(reqVO), () -> {
+                                SkitAppBuildMaterialService.MaterialView after =
+                                        appBuildMaterialService.saveMaterial(command);
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        after, after.auditCanonical());
+                            });
+                }));
+    }
+
     @GetMapping("/member/page")
     @Operation(summary = "分页查询当前代理商会员")
     public CommonResult<PageResult<SkitMemberService.MemberView>> getMemberPage(@Valid MemberPageReqVO reqVO) {
@@ -336,6 +384,22 @@ public class SkitTenantBusinessController {
                 + ";status=" + value.getStatus();
     }
 
+    private static String canonical(AppBuildMaterialSaveReqVO value) {
+        return "tenant=" + value.getTenantId() + ";apiBaseUrl=" + value.getApiBaseUrl()
+                + ";appName=" + value.getAppName() + ";nativeVersionCode=" + value.getNativeVersionCode()
+                + ";nativeVersionName=" + value.getNativeVersionName() + ";runtimeReleaseNo="
+                + value.getRuntimeReleaseNo() + ";pangleSettingsProvided="
+                + (value.getPangleSettingsJson() != null && !value.getPangleSettingsJson().trim().isEmpty())
+                + ";keystoreProvided="
+                + (value.getReleaseKeystoreBase64() != null && !value.getReleaseKeystoreBase64().trim().isEmpty())
+                + ";storePasswordProvided="
+                + (value.getStorePassword() != null && !value.getStorePassword().isEmpty())
+                + ";keyAliasProvided="
+                + (value.getKeyAlias() != null && !value.getKeyAlias().trim().isEmpty())
+                + ";keyPasswordProvided="
+                + (value.getKeyPassword() != null && !value.getKeyPassword().isEmpty());
+    }
+
     private static String canonical(SkitMemberService.MemberView value) {
         return value == null ? "<none>" : "memberId=" + value.getId() + ";status=" + value.getStatus();
     }
@@ -437,6 +501,45 @@ public class SkitTenantBusinessController {
         private String runtimeUpdatePublicKey;
         @NotNull
         private Integer status;
+        @NotBlank(message = "管理操作原因不能为空")
+        @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
+        private String reason;
+    }
+
+    @Data
+    public static class AppBuildMaterialSaveReqVO {
+        @NotNull(message = "租户编号不能为空")
+        private Long tenantId;
+        @Size(max = 2048, message = "API 地址长度不能超过 2048 个字符")
+        private String apiBaseUrl;
+        @Size(max = 128, message = "应用名称长度不能超过 128 个字符")
+        private String appName;
+        @Positive(message = "原生 versionCode 必须大于 0")
+        private Long nativeVersionCode;
+        @Size(max = 64, message = "原生版本名称长度不能超过 64 个字符")
+        private String nativeVersionName;
+        @Positive(message = "运行时发布序号必须大于 0")
+        private Long runtimeReleaseNo;
+        @Size(max = 64 * 1024, message = "穿山甲设置文件不能超过 64KB")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String pangleSettingsJson;
+        @Size(max = 16 * 1024 * 1024, message = "发布 keystore 不能超过 16MB")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String releaseKeystoreBase64;
+        @Size(max = 512, message = "store password 长度不能超过 512 个字符")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String storePassword;
+        @Size(max = 256, message = "key alias 长度不能超过 256 个字符")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String keyAlias;
+        @Size(max = 512, message = "key password 长度不能超过 512 个字符")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String keyPassword;
         @NotBlank(message = "管理操作原因不能为空")
         @Length(min = 10, max = 500, message = "管理操作原因长度必须为 10 到 500 个字符")
         private String reason;

@@ -117,6 +117,29 @@ CREATE TABLE IF NOT EXISTS `skit_app_release_profile` (
   CONSTRAINT `ck_skit_app_release_runtime_key` CHECK ((`runtime_update_public_key`='' AND `runtime_update_key_fingerprint`='') OR (`runtime_update_public_key`<>'' AND REGEXP_LIKE(`runtime_update_key_fingerprint`,'^[0-9a-f]{64}$')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理商白标 App 发布档案';
 
+CREATE TABLE IF NOT EXISTS `skit_app_build_material` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `material_version` int NOT NULL, `api_base_url` varchar(512) NOT NULL DEFAULT '',
+  `app_name` varchar(128) NOT NULL DEFAULT '', `native_version_code` bigint NOT NULL DEFAULT 1,
+  `native_version_name` varchar(64) NOT NULL DEFAULT '', `runtime_release_no` bigint NOT NULL DEFAULT 1,
+  `secret_ciphertext` mediumblob DEFAULT NULL, `secret_nonce` binary(12) DEFAULT NULL,
+  `encryption_key_id` varchar(64) DEFAULT NULL, `envelope_version` smallint DEFAULT NULL,
+  `active` bit(1) NOT NULL DEFAULT b'1',
+  `active_tenant_id` bigint GENERATED ALWAYS AS (CASE WHEN `active`=b'1' AND `deleted`=b'0' THEN `tenant_id` ELSE NULL END) STORED,
+  `verified_at` datetime DEFAULT NULL,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_app_build_material_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_app_build_material_version` (`tenant_id`,`material_version`),
+  UNIQUE KEY `uk_skit_app_build_material_active` (`active_tenant_id`),
+  CONSTRAINT `fk_skit_app_build_material_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `system_tenant` (`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_app_build_material_version` CHECK (`material_version` > 0),
+  CONSTRAINT `ck_skit_app_build_material_version_code` CHECK (`native_version_code` BETWEEN 1 AND 2100000000),
+  CONSTRAINT `ck_skit_app_build_material_release_no` CHECK (`runtime_release_no` > 0),
+  CONSTRAINT `ck_skit_app_build_material_secret` CHECK ((`secret_ciphertext` IS NULL AND `secret_nonce` IS NULL AND `encryption_key_id` IS NULL AND `envelope_version` IS NULL) OR (`secret_ciphertext` IS NOT NULL AND `secret_nonce` IS NOT NULL AND `encryption_key_id` IS NOT NULL AND `envelope_version` > 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='租户原生 APK 构建资料版本';
+
 CREATE TABLE IF NOT EXISTS `skit_ad_account` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
   `provider` varchar(16) NOT NULL, `account_name` varchar(128) DEFAULT '', `account_id` varchar(128) DEFAULT '',
