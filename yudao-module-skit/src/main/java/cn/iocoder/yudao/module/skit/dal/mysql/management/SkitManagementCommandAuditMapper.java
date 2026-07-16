@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.management;
 
 import cn.iocoder.yudao.module.skit.dal.dataobject.management.SkitManagementCommandAuditDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
@@ -8,6 +9,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 @Mapper
+@InterceptorIgnore(tenantLine = "true") // Every statement binds tenant_id explicitly; avoid rewriting audit SQL across delegated tenants.
 public interface SkitManagementCommandAuditMapper {
 
     @Insert("INSERT INTO `skit_management_command_audit` "
