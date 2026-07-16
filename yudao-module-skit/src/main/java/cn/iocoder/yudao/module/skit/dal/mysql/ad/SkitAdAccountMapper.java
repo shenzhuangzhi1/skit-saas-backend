@@ -92,7 +92,6 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
 
     @Select("SELECT `id` FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} AND `id`=#{id} "
             + "AND `deleted`=b'0' FOR UPDATE")
-    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; keep the locking clause valid
     Long lockByTenantAndId(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
     @Select("SELECT * FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
