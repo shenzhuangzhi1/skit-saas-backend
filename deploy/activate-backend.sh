@@ -620,19 +620,27 @@ health_body_file="$(mktemp)"
 backend_log_file="$(mktemp)"
 required_healthy_samples=5
 healthy_samples=0
+max_startup_restarts=3
+last_restart_count=0
 for _ in $(seq 1 90); do
   backend_state="$(docker_cmd inspect --format '{{.RestartCount}} {{.State.Status}}' \
     skit-saas-backend 2>/dev/null || true)"
   restart_count="${backend_state%% *}"
   container_state="${backend_state#* }"
-  if [[ "${restart_count}" =~ ^[0-9]+$ ]] && ((restart_count > 0)); then
-    echo "Backend restarted ${restart_count} time(s) during activation."
-    break
+  if [[ "${restart_count}" =~ ^[0-9]+$ ]]; then
+    if ((restart_count > max_startup_restarts)); then
+      echo "Backend restarted ${restart_count} time(s) during activation (maximum tolerated: ${max_startup_restarts})."
+      break
+    fi
+    if ((restart_count != last_restart_count)); then
+      healthy_samples=0
+      last_restart_count="${restart_count}"
+    fi
   fi
   : > "${health_body_file}"
   status_code="$(curl -sS --max-time 5 -o "${health_body_file}" -w '%{http_code}' "${health_url}" || true)"
   health_body="$(LC_ALL=C tr -d ' \t\r\n' < "${health_body_file}")"
-  if [ "${container_state}" = "running" ] && [ "${restart_count}" = "0" ] &&
+  if [ "${container_state}" = "running" ] &&
      [ "${status_code}" = "200" ] && [ "${health_body}" = '{"status":"UP"}' ]; then
     healthy_samples=$((healthy_samples + 1))
     if [ "${healthy_samples}" -ge "${required_healthy_samples}" ]; then

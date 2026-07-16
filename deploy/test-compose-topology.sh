@@ -114,6 +114,7 @@ for required_startup_guard in \
     "trap 'exit 130' INT" \
     "trap 'exit 143' TERM" \
     'required_healthy_samples=5' \
+    'max_startup_restarts=3' \
     "'{{.RestartCount}} {{.State.Status}}'"; do
   if ! grep -Fq -- "${required_startup_guard}" "${startup_smoke}"; then
     echo "FAIL: packaged startup smoke is missing guard ${required_startup_guard}" >&2
@@ -132,12 +133,14 @@ fi
 for quartz_release_contract in \
     "${startup_smoke}|sql/mysql/quartz.sql" \
     "${startup_smoke}|JobPersistenceException" \
+    "${startup_smoke}|max_startup_restarts=3" \
     "${activation_script}|docker-compose.prod.yml ruoyi-vue-pro.sql skit-saas.sql quartz.sql" \
     "${activation_script}|information_schema.TABLES" \
     "${activation_script}|information_schema.COLUMNS" \
     "${activation_script}|information_schema.TABLE_CONSTRAINTS" \
     "${activation_script}|quartz_schema_state_after" \
     "${activation_script}|required_healthy_samples=5" \
+    "${activation_script}|max_startup_restarts=3" \
     "${activation_script}|up -d --no-deps --force-recreate backend" \
     "${activation_script}|JobPersistenceException" \
     "${activation_script}|< mysql/init/quartz.sql" \

@@ -86,6 +86,8 @@ compose -p "${project_name}" -f "${compose_file}" --env-file "${env_file}" \
 health_url="http://127.0.0.1:${backend_port}/actuator/health"
 required_healthy_samples=5
 healthy_samples=0
+max_startup_restarts=3
+last_restart_count=0
 startup_failure=""
 for _ in $(seq 1 120); do
   backend_id="$(compose -p "${project_name}" -f "${compose_file}" --env-file "${env_file}" \
@@ -97,9 +99,18 @@ for _ in $(seq 1 120); do
   fi
   restart_count="${backend_state%% *}"
   container_state="${backend_state#* }"
-  if [[ "${restart_count}" =~ ^[0-9]+$ ]] && ((restart_count > 0)); then
-    startup_failure="backend restarted ${restart_count} time(s) during startup"
-    break
+  if [[ "${restart_count}" =~ ^[0-9]+$ ]]; then
+    if ((restart_count > max_startup_restarts)); then
+      startup_failure="backend restarted ${restart_count} time(s) during startup (maximum tolerated: ${max_startup_restarts})"
+      break
+    fi
+    if ((restart_count != last_restart_count)); then
+      # A dependency can become reachable just after the first JVM attempt. Require a
+      # fresh run of healthy samples after every bounded restart instead of failing on
+      # the transient connection-refused event itself.
+      healthy_samples=0
+      last_restart_count="${restart_count}"
+    fi
   fi
   if [[ "${container_state}" == "dead" || "${container_state}" == "exited" ]]; then
     startup_failure="backend entered ${container_state} state during startup"
@@ -110,7 +121,7 @@ for _ in $(seq 1 120); do
   status_code="$(curl -s --max-time 3 -o "${health_body_file}" -w '%{http_code}' \
     "${health_url}" || true)"
   health_body="$(LC_ALL=C tr -d ' \t\r\n' < "${health_body_file}")"
-  if [[ "${container_state}" == "running" && "${restart_count}" == "0" &&
+  if [[ "${container_state}" == "running" &&
         "${status_code}" == "200" && "${health_body}" == '{"status":"UP"}' ]]; then
     ((healthy_samples += 1))
     if ((healthy_samples >= required_healthy_samples)); then

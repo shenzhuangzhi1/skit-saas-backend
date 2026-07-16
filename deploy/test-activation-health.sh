@@ -115,8 +115,12 @@ if run_activation bad-quartz-repair 200 '{"status":"UP"}' \
   echo "FAIL: activation accepted an incomplete Quartz schema after repair" >&2
   exit 1
 fi
-if run_activation restarted-backend 200 '{"status":"UP"}' '11:79:11' '1 running'; then
-  echo "FAIL: activation accepted a backend that restarted during startup" >&2
+if ! run_activation restarted-backend 200 '{"status":"UP"}' '11:79:11' '1 running'; then
+  echo "FAIL: activation rejected a backend after a bounded startup dependency restart" >&2
+  exit 1
+fi
+if run_activation too-many-restarts 200 '{"status":"UP"}' '11:79:11' '4 running'; then
+  echo "FAIL: activation accepted a backend that exceeded the startup restart budget" >&2
   exit 1
 fi
 if run_activation quartz-persistence-error 200 '{"status":"UP"}' \
@@ -142,4 +146,4 @@ for rejected_case in \
   fi
 done
 
-echo "PASS: activation requires complete Quartz state, zero restarts, clean logs, and exact health"
+echo "PASS: activation requires complete Quartz state, bounded restarts, clean logs, and exact health"
