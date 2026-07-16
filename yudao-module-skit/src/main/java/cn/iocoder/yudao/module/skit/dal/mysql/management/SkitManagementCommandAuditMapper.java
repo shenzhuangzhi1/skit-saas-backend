@@ -19,16 +19,19 @@ public interface SkitManagementCommandAuditMapper {
             + "(#{tenantId},#{commandId},#{operatorUserId},#{originalTenantId},#{targetTenantId},"
             + "#{commandType},#{resourceType},#{resourceId},#{reason},#{beforeStateHash},"
             + "#{afterStateHash},#{requestFingerprint},#{traceId},#{resultStatus},#{createdAt})")
+    @InterceptorIgnore(tenantLine = "true") // method-level guard is required by MyBatis-Plus for mapper statements
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insertSuccess(SkitManagementCommandAuditDO row);
 
     @Select("SELECT * FROM `skit_management_command_audit` WHERE `tenant_id`=#{tenantId} "
             + "AND `id`=#{id}")
+    @InterceptorIgnore(tenantLine = "true")
     SkitManagementCommandAuditDO selectByTenantAndId(@Param("tenantId") Long tenantId,
                                                        @Param("id") Long id);
 
     @Select("SELECT * FROM `skit_management_command_audit` WHERE `tenant_id`=#{tenantId} "
             + "AND `command_id`=#{commandId}")
+    @InterceptorIgnore(tenantLine = "true")
     SkitManagementCommandAuditDO selectByTenantAndCommandId(@Param("tenantId") Long tenantId,
                                                               @Param("commandId") String commandId);
 

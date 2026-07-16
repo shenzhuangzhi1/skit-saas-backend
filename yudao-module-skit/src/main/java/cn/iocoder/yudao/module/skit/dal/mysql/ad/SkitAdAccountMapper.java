@@ -6,6 +6,7 @@ import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -91,10 +92,12 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
 
     @Select("SELECT `id` FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} AND `id`=#{id} "
             + "AND `deleted`=b'0' FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; keep the locking clause valid
     Long lockByTenantAndId(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
     @Select("SELECT * FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
             + "AND `provider`=#{provider} AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; avoid appending predicates after FOR UPDATE
     SkitAdAccountDO selectByProviderForUpdate(@Param("tenantId") long tenantId,
                                                @Param("provider") String provider);
 
@@ -106,6 +109,7 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
     @Select("SELECT " + REPORT_ACCOUNT_UNSETTLED + " FROM `skit_ad_account` `a` "
             + "WHERE `a`.`tenant_id`=#{tenantId} AND `a`.`id`=#{adAccountId} "
             + "AND `a`.`provider`='TAKU' AND `a`.`deleted`=b'0'")
+    @InterceptorIgnore(tenantLine = "true") // all correlated tables are explicitly scoped by tenant_id
     boolean hasUnsettledTakuReportScope(@Param("tenantId") long tenantId,
                                         @Param("adAccountId") long adAccountId);
 
@@ -116,6 +120,7 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
             + "AND `e`.`deleted`=b'0') OR EXISTS (SELECT 1 FROM `skit_ad_report_pull` `p` "
             + "WHERE `p`.`tenant_id`=#{tenantId} AND `p`.`ad_account_id`=#{adAccountId} "
             + "AND `p`.`provider`='TAKU' AND `p`.`deleted`=b'0'))")
+    @InterceptorIgnore(tenantLine = "true") // explicit tenant predicates are required for delegated checks
     boolean hasHistoricalTakuReportFacts(@Param("tenantId") long tenantId,
                                          @Param("adAccountId") long adAccountId);
 
