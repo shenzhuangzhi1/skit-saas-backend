@@ -150,7 +150,9 @@ if [[ -s "${keyring_file}" ]]; then
   echo "FAIL: first activation invented retained advertising keys" >&2
   exit 1
 fi
-first_clear_count="$(grep -c 'skit_ad_account' "${stub_log}" || true)"
+# Schema diagnostics may legitimately mention the account table. Only the explicit
+# destructive cleanup statement counts as credential clearing here.
+first_clear_count="$(grep -c 'UPDATE\\ skit_ad_account\\ SET\\ app_key' "${stub_log}" || true)"
 if [[ "${first_clear_count}" -ne 0 ]]; then
   echo "FAIL: normal activation must never infer that advertising credentials need clearing" >&2
   exit 1
@@ -162,7 +164,7 @@ second_credential_key="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY=//p' "${deploy_path}/
 second_credential_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_path}/.env")"
 second_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
 second_session_token_key_version="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY_VERSION=//p' "${deploy_path}/.env")"
-second_clear_count="$(grep -c 'skit_ad_account' "${stub_log}" || true)"
+second_clear_count="$(grep -c 'UPDATE\\ skit_ad_account\\ SET\\ app_key' "${stub_log}" || true)"
 if [[ "${second_key}" != "${first_key}" ]]; then
   echo "FAIL: subsequent activation rotated the persisted AES key" >&2
   exit 1
@@ -348,7 +350,7 @@ STUB_LOG="${restore_log}" PATH="${stub_bin}:${PATH}" \
   SKIT_AD_SESSION_TOKEN_KEY="restore-session-token-key-00000001" \
   SKIT_AD_SESSION_TOKEN_KEY_VERSION="7" \
   "${activation_script}" >/dev/null
-if grep -q 'skit_ad_account' "${restore_log}"; then
+if grep -q 'UPDATE\\ skit_ad_account\\ SET\\ app_key' "${restore_log}"; then
   echo "FAIL: a valid supplied key without a marker triggered credential cleanup" >&2
   exit 1
 fi
@@ -434,7 +436,7 @@ STUB_LOG="${cleanup_log}" PATH="${stub_bin}:${PATH}" \
   MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
   SKIT_CLEAR_LEGACY_AD_CREDENTIALS=1 \
   "${activation_script}" >/dev/null
-if [[ "$(grep -c 'skit_ad_account' "${cleanup_log}" || true)" -ne 1 ]]; then
+if [[ "$(grep -c 'UPDATE\\ skit_ad_account\\ SET\\ app_key' "${cleanup_log}" || true)" -ne 1 ]]; then
   echo "FAIL: explicit legacy credential cleanup did not execute exactly once" >&2
   exit 1
 fi
