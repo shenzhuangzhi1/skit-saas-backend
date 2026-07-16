@@ -570,15 +570,15 @@ mysql_in_container() {
 # application can be HTTP-healthy while an old production database still carries a stale table
 # shape, so print the structural facts needed to diagnose write failures in the activation log.
 print_skit_schema_summary() {
-  local summary_sql="SELECT 'MIGRATIONS' AS kind,version,description FROM skit_schema_migration ORDER BY version; \
-SELECT 'COLUMNS' AS kind,TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT \
+  local summary_sql="SELECT 'MIGRATIONS' AS kind,\`version\`,\`description\` FROM \`skit_schema_migration\` ORDER BY \`version\`; \
+SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\` \
   FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() \
   AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
-  ORDER BY TABLE_NAME,ORDINAL_POSITION; \
-SELECT 'TRIGGERS' AS kind,TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION \
+  ORDER BY \`TABLE_NAME\`,\`ORDINAL_POSITION\`; \
+SELECT 'TRIGGERS' AS kind,\`TRIGGER_NAME\`,\`EVENT_OBJECT_TABLE\`,\`ACTION_TIMING\`,\`EVENT_MANIPULATION\` \
   FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() \
   AND EVENT_OBJECT_TABLE IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
-  ORDER BY EVENT_OBJECT_TABLE,TRIGGER_NAME;"
+  ORDER BY \`EVENT_OBJECT_TABLE\`,\`TRIGGER_NAME\`;"
   echo "Skit production schema summary (structure only):"
   mysql_in_container --batch --skip-column-names -e "${summary_sql}"
 }
