@@ -27,9 +27,12 @@
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/framework/crypto/SkitAdCredentialCryptoService.java`
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/framework/crypto/SkitAesGcmCredentialCryptoService.java`
 - Modify: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/framework/schema/SkitSchemaInitializer.java`
+- Modify: `yudao-module-skit/sql/mysql/skit-saas.sql`
+- Modify: `yudao-module-skit/sql/mysql/ruoyi-vue-pro.sql`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/dataobject/app/SkitAppBuildMaterialDO.java`
 - Create: `yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/dal/mysql/app/SkitAppBuildMaterialMapper.java`
 - Create: `yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/framework/schema/SkitTenantBuildMaterialSchemaContractTest.java`
+- Modify: `yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/framework/schema/SkitSchemaInitializerTest.java`
 - Create: `yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/framework/crypto/SkitAdCredentialCryptoServiceTest.java`
 
 **Interfaces:**
@@ -90,6 +93,8 @@
   ```
 
   Register the version in the initializer's ordered migration list and add a contract assertion for the tenant/version/active uniqueness and secret envelope checks.
+
+  Add the same `skit_app_build_material` table to both MySQL bootstrap scripts so a clean database and an upgraded database converge. Include the table in the initializer's tenant-owner validation list, and extend the migration checksum expectations with the new additive version without changing any released checksum.
 
 - [ ] **Step 6: Run schema contract and crypto tests.**
 
