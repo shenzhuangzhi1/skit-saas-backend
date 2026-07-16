@@ -1006,6 +1006,19 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     + "AND NOT EXISTS (SELECT 1 FROM `system_user_role` `ur` "
                     + "WHERE `ur`.`user_id`=`u`.`id` AND `ur`.`role_id`=`r`.`id` "
                     + "AND `ur`.`tenant_id`=`u`.`tenant_id` AND `ur`.`deleted`=b'0')";
+    private static final int AD_ACCOUNT_TENANT_BACKFILL_MIGRATION_VERSION = 2026071601;
+    private static final String BACKFILL_TENANT_AD_ACCOUNTS_SQL =
+            "INSERT INTO `skit_ad_account` (`tenant_id`,`provider`,`account_name`,`account_id`,`app_id`,"
+                    + "`app_key`,`secret`,`config_data`,`status`,`creator`,`create_time`,`updater`,`update_time`,"
+                    + "`deleted`) "
+                    + "SELECT `a`.`tenant_id`,`p`.`provider`,'','','','','',"
+                    + "'{\"placementId\":\"\",\"adFormat\":\"rewarded_video\"}',1,"
+                    + "'skit-migration-2026071601',CURRENT_TIMESTAMP,'skit-migration-2026071601',"
+                    + "CURRENT_TIMESTAMP,b'0' FROM `skit_agent` `a` "
+                    + "CROSS JOIN (SELECT 'PANGLE' AS `provider` UNION ALL SELECT 'TAKU') `p` "
+                    + "LEFT JOIN `skit_ad_account` `existing` ON `existing`.`tenant_id`=`a`.`tenant_id` "
+                    + "AND `existing`.`provider`=`p`.`provider` "
+                    + "WHERE `a`.`deleted`=b'0' AND `existing`.`id` IS NULL";
 
     private final JdbcTemplate jdbcTemplate;
     private final List<Migration> migrations;
@@ -1438,6 +1451,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         result.add(migrationFromSteps(ADMIN_SUPER_ADMIN_BINDING_MIGRATION_VERSION,
                 "bind the platform admin account to super_admin",
                 Collections.singletonList(updateSqlStep(ENSURE_ADMIN_SUPER_ADMIN_BINDING_SQL))));
+        result.add(migrationFromSteps(AD_ACCOUNT_TENANT_BACKFILL_MIGRATION_VERSION,
+                "backfill default advertising accounts for existing tenants",
+                Collections.singletonList(updateSqlStep(BACKFILL_TENANT_AD_ACCOUNTS_SQL))));
         return sortedMigrations(result);
     }
 

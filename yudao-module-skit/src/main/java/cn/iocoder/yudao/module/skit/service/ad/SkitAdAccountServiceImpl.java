@@ -130,12 +130,23 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     }
 
     private void ensureProvider(String provider) {
-        if (accountMapper.selectByProvider(provider) != null) {
+        long tenantId = TenantContextHolder.getRequiredTenantId();
+        // This method is also called while a platform admin is delegated into a
+        // tenant. Use the explicit tenant-scoped lock instead of relying only on
+        // the ambient MyBatis tenant interceptor, otherwise an older tenant with
+        // no account rows can fail to initialize and the subsequent save reports
+        // a generic "system error".
+        if (accountMapper.selectByProviderForUpdate(tenantId, provider) != null) {
             return;
         }
-        accountMapper.insert(SkitAdAccountDO.builder().provider(provider).accountName("").accountId("")
+        SkitAdAccountDO account = SkitAdAccountDO.builder().provider(provider).accountName("").accountId("")
                 .appId("").appKey("").configData(writePlacementId(""))
-                .status(CommonStatusEnum.DISABLE.getStatus()).build());
+                .status(CommonStatusEnum.DISABLE.getStatus()).build();
+        // TenantLineInnerInterceptor fills SQL in normal requests, but the
+        // entity must carry the tenant explicitly for delegated writes and for
+        // deterministic tests/alternate mapper implementations.
+        account.setTenantId(tenantId);
+        accountMapper.insert(account);
     }
 
     private void saveProvider(String provider, String username, String appId, String appKey, String appSecret,

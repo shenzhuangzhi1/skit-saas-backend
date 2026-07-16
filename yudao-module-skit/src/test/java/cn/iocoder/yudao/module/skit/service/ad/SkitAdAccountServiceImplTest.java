@@ -16,6 +16,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Collections;
+import java.util.List;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_CONFIG_INVALID;
@@ -24,6 +25,7 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PROVIDER_
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_PANGLE;
 import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_TAKU;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -84,7 +86,7 @@ class SkitAdAccountServiceImplTest {
         assertServiceException(() -> accountService.saveSettings(settings),
                 AD_ACCOUNT_REPORT_SCOPE_PENDING);
 
-        verify(accountMapper).selectByProviderForUpdate(17L, PROVIDER_TAKU);
+        verify(accountMapper, times(2)).selectByProviderForUpdate(17L, PROVIDER_TAKU);
         verify(accountMapper).hasHistoricalTakuReportFacts(taku.getTenantId(), taku.getId());
         verify(accountMapper, never()).updateById(taku);
     }
@@ -172,6 +174,24 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
+    void ensureDefaultAccountsBindsNewRowsToTheActiveTenant() {
+        when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_PANGLE)).thenReturn(null);
+        when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_TAKU)).thenReturn(null);
+
+        accountService.ensureDefaultAccounts();
+
+        org.mockito.ArgumentCaptor<SkitAdAccountDO> captor =
+                org.mockito.ArgumentCaptor.forClass(SkitAdAccountDO.class);
+        verify(accountMapper, times(2)).insert(captor.capture());
+        List<SkitAdAccountDO> inserted = captor.getAllValues();
+        assertEquals(2, inserted.size());
+        inserted.forEach(account -> {
+            assertNotNull(account.getTenantId());
+            assertEquals(17L, account.getTenantId());
+        });
+    }
+
+    @Test
     void saveRejectsOversizedFieldsBeforeAnyDatabaseMutation() {
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleUsername(String.join("", Collections.nCopies(129, "x")));
@@ -237,8 +257,8 @@ class SkitAdAccountServiceImplTest {
     }
 
     private void mockAccounts(SkitAdAccountDO pangle, SkitAdAccountDO taku) {
-        when(accountMapper.selectByProvider(PROVIDER_PANGLE)).thenReturn(pangle);
-        when(accountMapper.selectByProvider(PROVIDER_TAKU)).thenReturn(taku);
+        lenient().when(accountMapper.selectByProvider(PROVIDER_PANGLE)).thenReturn(pangle);
+        lenient().when(accountMapper.selectByProvider(PROVIDER_TAKU)).thenReturn(taku);
         lenient().when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_PANGLE))
                 .thenReturn(pangle);
         lenient().when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_TAKU))
