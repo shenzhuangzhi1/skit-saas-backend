@@ -429,7 +429,7 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
     private void installSameTenantMutationTargets() {
         jdbc().update("INSERT INTO skit_ad_account "
                         + "(id,tenant_id,provider,account_name,account_id,app_id,app_key,status) "
-                        + "VALUES (94002,101,'MINTEGRAL','mutation target','mutation-target','mutation-app','',1)");
+                        + "VALUES (94002,101,'MUTATION','mutation target','mutation-target','mutation-app','',1)");
         jdbc().update("INSERT INTO skit_member "
                         + "(id,tenant_id,mobile,password,nickname,invite_code,depth,status) "
                         + "VALUES (94003,101,'13900009403','hash','mutation target','MUTATION94003',1,0)");
@@ -440,7 +440,7 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
         jdbc().update("INSERT INTO skit_ad_revenue_event "
                         + "(id,tenant_id,ad_account_id,provider,placement_id,external_event_id,source_member_id,"
                         + "gross_amount,occurred_time,completed,mock,status,source_type,policy_snapshot_id,"
-                        + "legacy_unverified) VALUES (94005,101,94002,'MINTEGRAL','mutation-target','mutation-target',"
+                        + "legacy_unverified) VALUES (94005,101,94002,'MUTATION','mutation-target','mutation-target',"
                         + "94003,1.00000000,CURRENT_TIMESTAMP,b'1',b'0',0,'LEGACY_CLIENT',94004,b'1')");
     }
 
