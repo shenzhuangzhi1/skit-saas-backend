@@ -51,7 +51,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             "SELECT `version`, `checksum` FROM `skit_schema_migration` ORDER BY `version`";
     private static final String INSERT_APPLIED_MIGRATION_SQL = "INSERT INTO `skit_schema_migration` "
             + "(`version`, `description`, `checksum`, `installed_on`) VALUES (?, ?, ?, CURRENT_TIMESTAMP)";
-    private static final String MIGRATION_LOCK_NAME = "skit_schema_migration";
+    private static final String MIGRATION_LOCK_NAME_PREFIX = "skit_schema_migration_";
     private static final int MIGRATION_LOCK_TIMEOUT_SECONDS = 10;
     private static final String ACQUIRE_MIGRATION_LOCK_SQL = "SELECT GET_LOCK(?, ?)";
     private static final String RELEASE_MIGRATION_LOCK_SQL = "SELECT RELEASE_LOCK(?)";
@@ -1038,7 +1038,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         jdbcTemplate.execute((ConnectionCallback<Void>) connection -> {
             if (!acquireMigrationLock(connection)) {
-                throw new IllegalStateException("Could not acquire MySQL advisory lock " + MIGRATION_LOCK_NAME
+                throw new IllegalStateException("Could not acquire MySQL advisory lock " + migrationLockName(connection)
                         + " within " + MIGRATION_LOCK_TIMEOUT_SECONDS + " seconds; schema migrations were not run.");
             }
             Throwable migrationFailure = null;
@@ -1386,9 +1386,19 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return false;
     }
 
+    private static String migrationLockName(Connection connection) throws SQLException {
+        String catalog = connection.getCatalog();
+        if (catalog == null || catalog.isEmpty()) {
+            return MIGRATION_LOCK_NAME_PREFIX + "default";
+        }
+        // MySQL limits advisory lock names to 64 bytes. A stable catalog hash
+        // keeps the lock scoped to one database without exceeding that limit.
+        return MIGRATION_LOCK_NAME_PREFIX + Integer.toHexString(catalog.hashCode());
+    }
+
     private static boolean acquireMigrationLock(Connection connection) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(ACQUIRE_MIGRATION_LOCK_SQL)) {
-            statement.setString(1, MIGRATION_LOCK_NAME);
+            statement.setString(1, migrationLockName(connection));
             statement.setInt(2, MIGRATION_LOCK_TIMEOUT_SECONDS);
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() && resultSet.getInt(1) == 1 && !resultSet.wasNull();
@@ -1398,10 +1408,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
     private static void releaseMigrationLock(Connection connection) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(RELEASE_MIGRATION_LOCK_SQL)) {
-            statement.setString(1, MIGRATION_LOCK_NAME);
+            statement.setString(1, migrationLockName(connection));
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next() || resultSet.getInt(1) != 1 || resultSet.wasNull()) {
-                    throw new IllegalStateException("Could not release MySQL advisory lock " + MIGRATION_LOCK_NAME);
+                    throw new IllegalStateException("Could not release MySQL advisory lock "
+                            + migrationLockName(connection));
                 }
             }
         }

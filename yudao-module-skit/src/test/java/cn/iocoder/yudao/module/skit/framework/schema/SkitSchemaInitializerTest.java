@@ -56,6 +56,7 @@ class SkitSchemaInitializerTest {
         releaseLockStatement = mock(PreparedStatement.class);
         acquireLockResult = mock(ResultSet.class);
         releaseLockResult = mock(ResultSet.class);
+        when(lockConnection.getCatalog()).thenReturn("skit_test_catalog");
         when(lockConnection.prepareStatement("SELECT GET_LOCK(?, ?)")).thenReturn(acquireLockStatement);
         when(lockConnection.prepareStatement("SELECT RELEASE_LOCK(?)")).thenReturn(releaseLockStatement);
         when(acquireLockStatement.executeQuery()).thenReturn(acquireLockResult);
@@ -425,9 +426,11 @@ class SkitSchemaInitializerTest {
         new SkitSchemaInitializer(jdbcTemplate, Collections.singletonList(migration)).run(null);
 
         assertEquals(Arrays.asList("acquire", "apply", "release"), events);
-        verify(acquireLockStatement).setString(1, "skit_schema_migration");
+        String expectedLockName = "skit_schema_migration_"
+                + Integer.toHexString("skit_test_catalog".hashCode());
+        verify(acquireLockStatement).setString(1, expectedLockName);
         verify(acquireLockStatement).setInt(2, 10);
-        verify(releaseLockStatement).setString(1, "skit_schema_migration");
+        verify(releaseLockStatement).setString(1, expectedLockName);
     }
 
     @Test
