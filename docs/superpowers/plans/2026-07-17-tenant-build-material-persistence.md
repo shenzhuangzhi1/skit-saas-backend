@@ -102,7 +102,7 @@
 
   Expected: PASS, with no changes to the existing ad schema signature or reward-secret compatibility tests.
 
-- [ ] **Step 7: Commit the schema/crypto unit.**
+- [x] **Step 7: Commit the schema/crypto unit.** Included in the consolidated backend commit `8c2f74c`.
 
   ```bash
   git add yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/framework/crypto \
@@ -147,7 +147,7 @@
 
   Expected: PASS with tenant isolation, versioning, preservation, and redaction assertions.
 
-- [ ] **Step 7: Commit the service unit.**
+- [x] **Step 7: Commit the service unit.** Included in the consolidated backend commit `8c2f74c`.
 
   ```bash
   git add yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/service/app \
@@ -186,7 +186,7 @@
 
   Expected: PASS, with existing hot-update behavior unchanged.
 
-- [ ] **Step 6: Commit the API unit.**
+- [x] **Step 6: Commit the API unit.** Included in the consolidated backend commit `8c2f74c`.
 
   ```bash
   git add yudao-module-skit/src/main/java/cn/iocoder/yudao/module/skit/controller/admin/tenant \
@@ -227,7 +227,7 @@
 
   Expected: PASS with no TypeScript errors.
 
-- [ ] **Step 7: Commit the frontend unit.**
+- [x] **Step 7: Commit the frontend unit.** Committed as frontend commit `9d5b331`.
 
   ```bash
   git add src/api/skit/tenant/index.ts src/views/skit/tenant/index.vue \
@@ -260,7 +260,7 @@
 
 - [x] **Step 5: Review the diff for secret leakage.** The controller audit canonical and response view exclude secret values/ciphertext; the frontend only sends newly entered write-only fields and clears them after save.
 
-- [ ] **Step 6: Commit the verification/runbook unit.**
+- [x] **Step 6: Commit the verification/runbook unit.** Verification coverage and plan updates are included in backend commit `8c2f74c`; no separate MySQL integration/runbook was added because this checkout has no configured integration profile.
 
   ```bash
   git add yudao-module-skit/src/test/java/cn/iocoder/yudao/module/skit/integration \
