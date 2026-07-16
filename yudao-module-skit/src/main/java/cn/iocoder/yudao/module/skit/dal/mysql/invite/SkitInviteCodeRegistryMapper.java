@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.invite;
 
 import cn.iocoder.yudao.module.skit.dal.dataobject.invite.SkitInviteCodeRegistryDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
@@ -13,9 +14,10 @@ import java.time.LocalDateTime;
 @Mapper
 public interface SkitInviteCodeRegistryMapper {
 
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; this mapper is intentionally not a BaseMapper
     @Insert("INSERT INTO `skit_invite_code_registry` "
-            + "(`code`,`owner_type`,`agent_id`,`member_id`,`status`,`rotated_at`,`creator`,`updater`) VALUES "
-            + "(#{code},#{ownerType},#{agentId},#{memberId},#{status},#{rotatedAt},"
+            + "(`tenant_id`,`code`,`owner_type`,`agent_id`,`member_id`,`status`,`rotated_at`,`creator`,`updater`) VALUES "
+            + "(#{tenantId},#{code},#{ownerType},#{agentId},#{memberId},#{status},#{rotatedAt},"
             + "'invite-code-registry','invite-code-registry')")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(SkitInviteCodeRegistryDO row);
