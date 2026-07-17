@@ -14,9 +14,9 @@ import java.time.LocalDateTime;
 public interface SkitAdRewardSecretVersionMapper {
 
     @Insert("INSERT INTO `skit_ad_reward_secret_version` "
-            + "(`ad_account_id`,`secret_version`,`ciphertext`,`nonce`,`encryption_key_id`,"
+            + "(tenant_id,`ad_account_id`,`secret_version`,`ciphertext`,`nonce`,`encryption_key_id`,"
             + "`envelope_version`,`accept_until`,`revoked_at`) VALUES "
-            + "(#{adAccountId},#{secretVersion},#{ciphertext},#{nonce},#{encryptionKeyId},"
+            + "(#{tenantId},#{adAccountId},#{secretVersion},#{ciphertext},#{nonce},#{encryptionKeyId},"
             + "#{envelopeVersion},#{acceptUntil},#{revokedAt})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(SkitAdRewardSecretVersionDO row);

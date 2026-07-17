@@ -14,8 +14,8 @@ import java.time.LocalDateTime;
 public interface SkitAdCallbackKeyMapper {
 
     @Insert("INSERT INTO `skit_ad_callback_key` "
-            + "(`ad_account_id`,`key_version`,`callback_key_hash`,`accept_until`,`revoked_at`) VALUES "
-            + "(#{adAccountId},#{keyVersion},#{callbackKeyHash},#{acceptUntil},#{revokedAt})")
+            + "(tenant_id,`ad_account_id`,`key_version`,`callback_key_hash`,`accept_until`,`revoked_at`) VALUES "
+            + "(#{tenantId},#{adAccountId},#{keyVersion},#{callbackKeyHash},#{acceptUntil},#{revokedAt})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(SkitAdCallbackKeyDO row);
 
