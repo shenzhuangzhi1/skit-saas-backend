@@ -20,8 +20,33 @@ export SKIT_AD_CREDENTIAL_KEY
 export SKIT_AD_SESSION_TOKEN_KEY
 
 cd "${repo_root}"
-spring_boot_version="${SPRING_BOOT_VERSION:-2.7.18}"
-exec mvn -pl yudao-server -am \
-  "org.springframework.boot:spring-boot-maven-plugin:${spring_boot_version}:run" \
-  -Dspring-boot.run.profiles=local \
-  -Dspring-boot.run.jvmArguments="-Dfile.encoding=UTF-8"
+mvn -B -pl yudao-server -am -DskipTests compile
+
+dependency_plugin_version="${MAVEN_DEPENDENCY_PLUGIN_VERSION:-3.7.0}"
+runtime_classpath_file="$(mktemp "${TMPDIR:-/tmp}/skit-runtime-classpath.XXXXXX")"
+cleanup() {
+  rm -f "${runtime_classpath_file}"
+}
+trap cleanup EXIT INT TERM
+
+if ! mvn -B -o -pl yudao-server -DincludeScope=runtime \
+    -Dmdep.outputFile="${runtime_classpath_file}" \
+    "org.apache.maven.plugins:maven-dependency-plugin:${dependency_plugin_version}:build-classpath" \
+    >/dev/null 2>&1; then
+  mvn -B -pl yudao-server -DincludeScope=runtime \
+    -Dmdep.outputFile="${runtime_classpath_file}" \
+    "org.apache.maven.plugins:maven-dependency-plugin:${dependency_plugin_version}:build-classpath"
+fi
+
+runtime_classpath_dirs="$(find yudao-framework yudao-module-system yudao-module-infra yudao-module-skit yudao-server \
+  -type d -path '*/target/classes' -print | sort | paste -sd: -)"
+while IFS= read -r classes_dir; do
+  # A few interrupted local Maven copies leave duplicate class files such as Foo 2.class.
+  # They are ignored by compilation but make Spring's classpath scanner needlessly slow.
+  find "${classes_dir}" -type f -name '* [0-9].class' -delete
+done < <(find yudao-framework yudao-module-system yudao-module-infra yudao-module-skit yudao-server \
+  -type d -path '*/target/classes' -print | sort)
+
+runtime_classpath="${runtime_classpath_dirs}:$(cat "${runtime_classpath_file}")"
+java -Dfile.encoding=UTF-8 -cp "${runtime_classpath}" \
+  cn.iocoder.yudao.server.YudaoServerApplication --spring.profiles.active=local
