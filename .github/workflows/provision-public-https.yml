@@ -87,6 +87,7 @@ jobs:
             printf 'LETSENCRYPT_EMAIL=%q\n' "${LETSENCRYPT_EMAIL}"
             printf 'SUDO_PASSWORD=%q\n' "${SERVER_SUDO_PASSWORD:-${SERVER_PASSWORD:-}}"
             printf 'SKIT_DEPLOY_PATH=%q\n' "${deploy_path}"
+            printf 'SKIT_DEPLOY_USER=%q\n' "${SERVER_USER}"
             printf 'SKIT_FRONTEND_UPSTREAM=%q\n' "${FRONTEND_UPSTREAM}"
           } > .https.env
           "${scp_command[@]}" .https.env "${target}:${remote_dir}/https.env"

@@ -4,6 +4,7 @@ set -euo pipefail
 domain="${1:-}"
 email="${LETSENCRYPT_EMAIL:-}"
 deploy_path="${SKIT_DEPLOY_PATH:-skit-saas}"
+deploy_user="${SKIT_DEPLOY_USER:-}"
 upstream="${SKIT_FRONTEND_UPSTREAM:-127.0.0.1:48081}"
 frontend_port="48081"
 proxy_name="skit-public-https"
@@ -37,6 +38,11 @@ if [ ! -d "${deploy_path}" ] || [ -L "${deploy_path}" ]; then
   echo "SKIT_DEPLOY_PATH does not identify a regular deployment directory." >&2
   exit 1
 fi
+if [[ ! "${deploy_user}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+  || ! id "${deploy_user}" >/dev/null 2>&1; then
+  echo "SKIT_DEPLOY_USER must identify the deployment SSH user." >&2
+  exit 1
+fi
 if ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
   echo "Docker must be available to configure public HTTPS." >&2
   exit 1
@@ -65,6 +71,7 @@ upsert_env() {
   printf '%s=%q\n' "${key}" "${value}" >> "${staged_file}"
   chmod 600 "${staged_file}"
   mv "${staged_file}" "${environment_file}"
+  chown "${deploy_user}" "${environment_file}"
 }
 
 acquire_deploy_lock() {
