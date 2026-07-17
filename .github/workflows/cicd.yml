@@ -157,11 +157,11 @@ jobs:
           if [ -n "${trace_id}" ]; then
             run_docker logs --since 2h --tail 10000 skit-saas-backend 2>&1 \
               | grep -F -A 140 -B 20 -- "${trace_id}" \
-              | grep -E 'SQLException|Exception|Caused by|skit_ad_callback_key|constraint|Column|Duplicate|cn\\.iocoder|org\\.mybatis' \
+              | grep -E 'rotateCallbackKey|sqlState|errorCode|SQLException|Exception|Caused by|skit_ad_callback_key|constraint|Column|Duplicate|cn\\.iocoder|org\\.mybatis' \
               | tail -n 240 || true
           fi
           run_docker logs --since 2h --tail 20000 skit-saas-backend 2>&1 \
-            | grep -E 'DataIntegrityViolationException|SQLException|SQLIntegrity|Error updating database|skit_ad_callback_key|constraint|Column|Duplicate' \
+            | grep -E 'rotateCallbackKey|sqlState|errorCode|DataIntegrityViolationException|SQLException|SQLIntegrity|Error updating database|skit_ad_callback_key|constraint|Column|Duplicate' \
             | tail -n 240 || true
           performance_sql="SELECT EVENT_ID,CURRENT_SCHEMA,MYSQL_ERRNO,RETURNED_SQLSTATE,MESSAGE_TEXT,LEFT(SQL_TEXT,1000) AS SQL_TEXT,LEFT(DIGEST_TEXT,1000) AS DIGEST_TEXT FROM performance_schema.events_statements_history_long WHERE MYSQL_ERRNO<>0 ORDER BY EVENT_ID DESC LIMIT 100"
           run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
