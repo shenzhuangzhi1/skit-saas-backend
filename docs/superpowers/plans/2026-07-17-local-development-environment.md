@@ -73,7 +73,7 @@ Run bash scripts/test-local-stack-contract.sh and docker compose -f deploy/docke
 
 - [ ] **Step 1: Add CI-equivalent backend verifier**
 
-The script checks docker, mvn and java, then runs the five existing deployment contract scripts, the bounded Skit build-material/tenant/security Maven suite already used for local feature verification, and the exact MySQL 8 Failsafe migration command from backend CI. The broader backend lifecycle matrix remains in GitHub Actions. It may honor SKIP_INTEGRATION=1 for manual quick iteration, but pre-push never sets it.
+The script checks docker, mvn and java, then runs the five existing deployment contract scripts, the bounded Skit build-material/tenant/security Maven suite already used for local feature verification, and four exact MySQL 8 Failsafe tests covering bootstrap schema, cross-tenant isolation, commission policy persistence, and ad credential persistence. The broader backend lifecycle matrix remains in GitHub Actions. It may honor SKIP_INTEGRATION=1 for manual quick iteration, but pre-push never sets it.
 
 - [ ] **Step 2: Add ref-aware hook**
 

@@ -28,7 +28,7 @@ mvn -B -pl yudao-module-skit -am \
 if [[ "${SKIP_INTEGRATION:-0}" != "1" ]]; then
   TESTCONTAINERS_RYUK_DISABLED=true mvn -B -pl yudao-module-skit -am \
     -Dtest=__NoSurefireTests__ \
-    -Dit.test='Skit*MySqlIT' \
+    -Dit.test='SkitAdBootstrapSchemaMySqlIT,SkitAdSchemaCrossTenantPreflightMySqlIT,SkitCommissionPolicySnapshotMySqlIT,SkitAdCredentialVersionMySqlIT' \
     -Dsurefire.failIfNoSpecifiedTests=false \
     -Dfailsafe.failIfNoSpecifiedTests=false \
     test-compile failsafe:integration-test failsafe:verify
