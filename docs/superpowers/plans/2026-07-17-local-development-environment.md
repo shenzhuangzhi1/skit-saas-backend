@@ -51,7 +51,7 @@ local-stack.sh creates deploy/local.env from the example when absent, verifies D
 run-local.sh calls local-stack.sh up, sources deploy/local.env, exports the local MySQL and encryption variables, then executes:
 
 ~~~bash
-mvn -pl yudao-server -am spring-boot:run -Dspring-boot.run.profiles=local -Dspring-boot.run.jvmArguments="-Dfile.encoding=UTF-8"
+mvn -pl yudao-server -am org.springframework.boot:spring-boot-maven-plugin:2.7.18:run -Dspring-boot.run.profiles=local -Dspring-boot.run.jvmArguments="-Dfile.encoding=UTF-8"
 ~~~
 
 - [ ] **Step 5: Verify and commit**

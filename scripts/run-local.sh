@@ -20,6 +20,8 @@ export SKIT_AD_CREDENTIAL_KEY
 export SKIT_AD_SESSION_TOKEN_KEY
 
 cd "${repo_root}"
-exec mvn -pl yudao-server -am spring-boot:run \
+spring_boot_version="${SPRING_BOOT_VERSION:-2.7.18}"
+exec mvn -pl yudao-server -am \
+  "org.springframework.boot:spring-boot-maven-plugin:${spring_boot_version}:run" \
   -Dspring-boot.run.profiles=local \
   -Dspring-boot.run.jvmArguments="-Dfile.encoding=UTF-8"
