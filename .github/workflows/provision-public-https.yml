@@ -1,0 +1,112 @@
+name: Provision public HTTPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: DNS name to serve
+        required: true
+        default: www.yunque8.top
+        type: string
+      frontend_upstream:
+        description: Loopback frontend upstream
+        required: true
+        default: 127.0.0.1:80
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_PORT: ${{ secrets.SERVER_PORT }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+      SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+      DOMAIN: ${{ inputs.domain }}
+      FRONTEND_UPSTREAM: ${{ inputs.frontend_upstream }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision certificate and Nginx virtual host
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SERVER_HOST:?Set SERVER_HOST secret}"
+          : "${SERVER_USER:?Set SERVER_USER secret}"
+          : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL secret}"
+          server_port="${SERVER_PORT:-22}"
+          if [ "${server_port}" != "22" ]; then
+            echo "Only the pinned SSH host key on port 22 is supported." >&2
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          install -m 600 deploy/known_hosts ~/.ssh/known_hosts
+          ssh-keygen -F "${SERVER_HOST}" -f ~/.ssh/known_hosts >/dev/null \
+            || { echo "SERVER_HOST is absent from deploy/known_hosts." >&2; exit 1; }
+
+          auth_value="${SERVER_SSH_KEY:-${SERVER_PASSWORD:-}}"
+          : "${auth_value:?Set SERVER_SSH_KEY or SERVER_PASSWORD secret}"
+          ssh_options=(-o ServerAliveInterval=30 -o ServerAliveCountMax=60 -o TCPKeepAlive=yes -o ConnectTimeout=30 -p "${server_port}")
+          scp_options=(-o ServerAliveInterval=30 -o ServerAliveCountMax=60 -o TCPKeepAlive=yes -o ConnectTimeout=30 -P "${server_port}")
+          key_file="$HOME/.ssh/skit_https_key"
+          if printf '%s' "${auth_value}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s' "${auth_value}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${key_file}"
+            chmod 600 "${key_file}"
+            ssh-keygen -y -P '' -f "${key_file}" >/dev/null
+            ssh_command=(ssh "${ssh_options[@]}" -i "${key_file}")
+            scp_command=(scp "${scp_options[@]}" -i "${key_file}")
+          elif printf '%s' "${auth_value}" | tr -d '\r\n ' | base64 -d > "${key_file}" 2>/dev/null \
+            && chmod 600 "${key_file}" \
+            && ssh-keygen -y -P '' -f "${key_file}" >/dev/null 2>&1; then
+            ssh_command=(ssh "${ssh_options[@]}" -i "${key_file}")
+            scp_command=(scp "${scp_options[@]}" -i "${key_file}")
+          else
+            sudo apt-get update
+            sudo apt-get install -y sshpass
+            ssh_command=(sshpass -e ssh -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "${ssh_options[@]}")
+            scp_command=(sshpass -e scp -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "${scp_options[@]}")
+            export SSHPASS="${auth_value}"
+          fi
+
+          deploy_path="${DEPLOY_PATH:-skit-saas}"
+          remote_dir="${deploy_path}/releases/https-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          target="${SERVER_USER}@${SERVER_HOST}"
+          "${ssh_command[@]}" "${target}" "mkdir -p '${remote_dir}'"
+          "${scp_command[@]}" deploy/configure-public-https.sh "${target}:${remote_dir}/"
+          trap 'rm -f .https.env' EXIT
+          install -m 600 /dev/null .https.env
+          {
+            printf 'LETSENCRYPT_EMAIL=%q\n' "${LETSENCRYPT_EMAIL}"
+            printf 'SUDO_PASSWORD=%q\n' "${SERVER_SUDO_PASSWORD:-${SERVER_PASSWORD:-}}"
+            printf 'SKIT_FRONTEND_UPSTREAM=%q\n' "${FRONTEND_UPSTREAM}"
+          } > .https.env
+          "${scp_command[@]}" .https.env "${target}:${remote_dir}/https.env"
+          "${ssh_command[@]}" "${target}" "REMOTE_DIR='${remote_dir}' DOMAIN='${DOMAIN}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          env_file="${REMOTE_DIR}/https.env"
+          script_file="${REMOTE_DIR}/configure-public-https.sh"
+          chmod 600 "${env_file}"
+          set -a
+          . "${env_file}"
+          set +a
+          run_as_root() {
+            if [ "$(id -u)" -eq 0 ]; then
+              bash -c 'set -a; . "$1"; set +a; exec "$2" "$3"' _ "${env_file}" "${script_file}" "${DOMAIN}"
+            elif [ -n "${SUDO_PASSWORD:-}" ]; then
+              printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' bash -c 'set -a; . "$1"; set +a; exec "$2" "$3"' _ "${env_file}" "${script_file}" "${DOMAIN}"
+            else
+              sudo -n bash -c 'set -a; . "$1"; set +a; exec "$2" "$3"' _ "${env_file}" "${script_file}" "${DOMAIN}"
+            fi
+          }
+          trap 'rm -rf -- "${REMOTE_DIR}"' EXIT
+          chmod 700 "${script_file}"
+          run_as_root
+          REMOTE

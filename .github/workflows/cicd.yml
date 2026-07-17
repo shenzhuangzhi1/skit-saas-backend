@@ -292,6 +292,7 @@ jobs:
           BACKEND_HEALTH_PATH: ${{ secrets.BACKEND_HEALTH_PATH }}
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
           SKIT_AD_CALLBACK_PUBLIC_BASE_URL: ${{ vars.SKIT_AD_CALLBACK_PUBLIC_BASE_URL }}
+          SKIT_PUBLIC_HTTPS_DOMAIN: ${{ vars.SKIT_PUBLIC_HTTPS_DOMAIN }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
@@ -316,7 +317,13 @@ jobs:
             printf 'BACKEND_HEALTH_PATH=%q\n' "${BACKEND_HEALTH_PATH:-/actuator/health}"
             printf 'FRONTEND_PORT=%q\n' "${FRONTEND_PORT:-80}"
             if [ -z "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}" ]; then
-              if [ "${FRONTEND_PORT:-80}" = "80" ]; then
+              if [ -n "${SKIT_PUBLIC_HTTPS_DOMAIN}" ]; then
+                if [[ ! "${SKIT_PUBLIC_HTTPS_DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
+                  echo "SKIT_PUBLIC_HTTPS_DOMAIN must be a single DNS hostname." >&2
+                  exit 1
+                fi
+                SKIT_AD_CALLBACK_PUBLIC_BASE_URL="https://${SKIT_PUBLIC_HTTPS_DOMAIN}/app-api"
+              elif [ "${FRONTEND_PORT:-80}" = "80" ]; then
                 SKIT_AD_CALLBACK_PUBLIC_BASE_URL="http://${SERVER_HOST}/app-api"
               else
                 SKIT_AD_CALLBACK_PUBLIC_BASE_URL="http://${SERVER_HOST}:${FRONTEND_PORT}/app-api"

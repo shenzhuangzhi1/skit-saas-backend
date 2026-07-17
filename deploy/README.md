@@ -104,7 +104,11 @@ only in that agent profile's protected App release environment. Rotating one age
 therefore cannot affect another tenant, and routine backend releases require no global App key.
 
 Set repository variable `SKIT_AD_CALLBACK_PUBLIC_BASE_URL` to the public backend origin ending in
-`/app-api`, for example `https://api.example.com/app-api`. Provider callback templates are built
+`/app-api`, for example `https://api.example.com/app-api`. Alternatively set
+`SKIT_PUBLIC_HTTPS_DOMAIN` after the `Provision public HTTPS` workflow completes; deployments then
+derive the same HTTPS callback origin. The workflow requires the `LETSENCRYPT_EMAIL` repository
+secret and configures the host Nginx proxy, certificate renewal reload hook, and HTTPS health check.
+Provider callback templates are built
 only from this value and never from `Host` or `X-Forwarded-*` request headers. If the variable is
 omitted, CI derives an HTTP URL from `SERVER_HOST` for initial OFF/SHADOW testing; ENFORCED remains
 blocked until the configured public URL uses HTTPS. Activation validates and persists the value,

@@ -28,8 +28,6 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_I
 public class SkitContentScopeServiceImpl implements SkitContentScopeService {
 
     private static final String DRAMA_PAGE_KEY = "drama";
-    private static final int DEFAULT_FREE_EPISODES = 8;
-    private static final int DEFAULT_UNLOCK_SIZE = 5;
     private static final int MAX_UNLOCK_SIZE = 100;
     private static final int MAX_TOTAL_EPISODES = 100_000;
 
@@ -60,13 +58,13 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 "pangleDramaId", "dramaId", "drama_id", "contentId", "nativeId", "id");
         int totalEpisodes = firstPositiveInt(data, "episodes", "totalEpisodes",
                 "episodeCount", "total", "count");
-        int freeEpisodes = firstNonNegativeInt(data, DEFAULT_FREE_EPISODES,
+        int freeEpisodes = firstNonNegativeInt(data,
                 "freeEpisodes", "freeSet", "free_set");
-        int unlockSize = firstPositiveInt(data, DEFAULT_UNLOCK_SIZE,
+        int unlockSize = firstPositiveInt(data,
                 "unlockSize", "lockSet", "lock_set");
         if (authoritativeDramaId != dramaId || totalEpisodes > MAX_TOTAL_EPISODES
                 || freeEpisodes > totalEpisodes || unlockSize > MAX_UNLOCK_SIZE
-                || !isPublished(data.path("status"))) {
+                || !isPublished(publishStatus(data))) {
             throw exception(AD_SESSION_INVALID);
         }
         return new AccessibleDrama(tenantId, row.getId(), dramaId, totalEpisodes,
@@ -177,6 +175,12 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 episodeFrom, episodeTo, canonical, alreadyEntitled);
     }
 
+    private JsonNode publishStatus(JsonNode data) {
+        JsonNode explicitStatus = data.path("publishStatus");
+        return explicitStatus.isMissingNode() || explicitStatus.isNull()
+                ? data.path("status") : explicitStatus;
+    }
+
     private boolean isPublished(JsonNode status) {
         if (status == null || status.isMissingNode() || status.isNull()) {
             return false;
@@ -218,17 +222,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
         return (int) value;
     }
 
-    private int firstPositiveInt(JsonNode data, int defaultValue, String... names) {
-        for (String name : names) {
-            if (!data.path(name).isMissingNode() && !data.path(name).isNull()
-                    && !data.path(name).asText("").trim().isEmpty()) {
-                return firstPositiveInt(data, name);
-            }
-        }
-        return defaultValue;
-    }
-
-    private int firstNonNegativeInt(JsonNode data, int defaultValue, String... names) {
+    private int firstNonNegativeInt(JsonNode data, String... names) {
         for (String name : names) {
             JsonNode value = data.path(name);
             if (value.isMissingNode() || value.isNull() || value.asText("").trim().isEmpty()) {
@@ -240,7 +234,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
             }
             return Integer.parseInt(lexical);
         }
-        return defaultValue;
+        throw exception(AD_SESSION_INVALID);
     }
 
     private void requirePositive(Number value) {

@@ -196,6 +196,23 @@ class SkitContentScopeServiceImplTest {
         assertEquals("drama:61:episodes:9-11", scope.getCanonicalScope());
     }
 
+    @Test
+    void sdkCatalogMustContainItsFreeAndUnlockFieldsAndRequiresExplicitPublication() {
+        SkitAdminRecordDO missingUnlockScope = catalog(TENANT_ID, false, 0, "已上架", 20, 2, 3);
+        missingUnlockScope.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
+                + "freeEpisodes\":2,\"publishStatus\":\"已上架\"}");
+        SkitAdminRecordDO sourceStatusOnly = catalog(TENANT_ID, false, 0, "连载中", 20, 2, 3);
+        sourceStatusOnly.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
+                + "freeEpisodes\":2,\"unlockSize\":3,\"status\":\"连载中\","
+                + "publishStatus\":\"下架\"}");
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(missingUnlockScope))
+                .thenReturn(Collections.singletonList(sourceStatusOnly));
+
+        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
+    }
+
     private void assertInvalid(org.junit.jupiter.api.function.Executable executable) {
         ServiceException failure = assertThrows(ServiceException.class, executable);
         assertEquals(AD_SESSION_INVALID.getCode(), failure.getCode());
