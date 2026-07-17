@@ -333,7 +333,7 @@ class SkitTenantAdCapabilityServiceImplTest {
         evidence.setAccountBelongsToTenant(true);
         evidence.setShadowMembersBelongToTenant(false);
         assertServiceException(() -> service.configure(configuration(3)), AD_ROLLOUT_NOT_READY,
-                "CROSS_TENANT_CONFIGURATION");
+                "SHADOW_MEMBER_TENANT_MISMATCH");
         verify(capabilityMapper, never()).updateConfigurationCas(any(), any(), any(), any(), any(), any(),
                 any(), any(), any(), any(), any(), any());
     }

@@ -108,9 +108,11 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 .setMinNativeVersion(command.getMinNativeVersion().trim())
                 .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION);
         SkitTenantAdReadinessEvidence evidence = evidenceReader.read(tenantId, prospective);
-        if (evidence == null || !evidence.isAccountBelongsToTenant()
-                || !evidence.isShadowMembersBelongToTenant()) {
+        if (evidence == null || !evidence.isAccountBelongsToTenant()) {
             throw exception(AD_ROLLOUT_NOT_READY, "CROSS_TENANT_CONFIGURATION");
+        }
+        if (!evidence.isShadowMembersBelongToTenant()) {
+            throw exception(AD_ROLLOUT_NOT_READY, "SHADOW_MEMBER_TENANT_MISMATCH");
         }
 
         int updated = capabilityMapper.updateConfigurationCas(tenantId, locked.getId(),
