@@ -60,6 +60,10 @@ if grep -Eq '^    depends_on:' <<<"${frontend_service}"; then
   echo "FAIL: frontend must not depend on backend lifecycle" >&2
   exit 1
 fi
+if ! grep -Fq '127.0.0.1:${FRONTEND_PORT:-48081}:80' <<<"${frontend_service}"; then
+  echo "FAIL: frontend host port must bind loopback so public traffic enters through the TLS proxy" >&2
+  exit 1
+fi
 
 backend_service="$(sed -n '/^  backend:/,/^  frontend:/p' "${compose_file}")"
 if ! grep -Fq '127.0.0.1:${BACKEND_PORT:-48080}:48080' <<<"${backend_service}"; then

@@ -538,7 +538,7 @@ upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"
 upsert_env BACKEND_PORT "${BACKEND_PORT:-48080}"
 upsert_env BACKEND_HEALTH_PATH "${BACKEND_HEALTH_PATH:-/actuator/health}"
-upsert_env FRONTEND_PORT "${FRONTEND_PORT:-80}"
+upsert_env FRONTEND_PORT "${FRONTEND_PORT:-48081}"
 upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 

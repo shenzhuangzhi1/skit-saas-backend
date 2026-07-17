@@ -3,9 +3,13 @@ set -euo pipefail
 
 domain="${1:-}"
 email="${LETSENCRYPT_EMAIL:-}"
-upstream="${SKIT_FRONTEND_UPSTREAM:-127.0.0.1:80}"
-nginx_root="/etc/nginx"
-webroot="/var/lib/letsencrypt"
+deploy_path="${SKIT_DEPLOY_PATH:-skit-saas}"
+upstream="${SKIT_FRONTEND_UPSTREAM:-127.0.0.1:48081}"
+frontend_port="48081"
+proxy_name="skit-public-https"
+proxy_root="/opt/${proxy_name}"
+webroot="${proxy_root}/webroot"
+proxy_config="${proxy_root}/server.conf"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run this script as root through the controlled deployment workflow." >&2
@@ -20,43 +24,73 @@ if [[ ! "${email}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
   echo "LETSENCRYPT_EMAIL must be a valid certificate contact address." >&2
   exit 1
 fi
-if [[ ! "${upstream}" =~ ^(127\.0\.0\.1|localhost):[0-9]{1,5}$ ]]; then
-  echo "SKIT_FRONTEND_UPSTREAM must be a loopback host and port." >&2
+if [ "${upstream}" != "127.0.0.1:${frontend_port}" ]; then
+  echo "SKIT_FRONTEND_UPSTREAM must be 127.0.0.1:${frontend_port}." >&2
   exit 1
 fi
-if ! command -v nginx >/dev/null 2>&1; then
-  echo "Nginx must be installed on the host before HTTPS can be configured." >&2
+if [[ ! "${deploy_path}" =~ ^/?[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$ ]] \
+  || [[ "${deploy_path}" == *".."* ]]; then
+  echo "SKIT_DEPLOY_PATH must be a safe deployment directory." >&2
   exit 1
 fi
-
-if [ -d "${nginx_root}/conf.d" ]; then
-  config_path="${nginx_root}/conf.d/skit-public-${domain}.conf"
-elif [ -d "${nginx_root}/sites-available" ] && [ -d "${nginx_root}/sites-enabled" ]; then
-  config_path="${nginx_root}/sites-available/skit-public-${domain}"
-  enabled_path="${nginx_root}/sites-enabled/skit-public-${domain}"
-else
-  echo "Unsupported Nginx layout. Expected conf.d or sites-available/sites-enabled." >&2
+if [ ! -d "${deploy_path}" ] || [ -L "${deploy_path}" ]; then
+  echo "SKIT_DEPLOY_PATH does not identify a regular deployment directory." >&2
   exit 1
 fi
-
-if grep -R --exclude="$(basename "${config_path}")" -E \
-  "^[[:space:]]*server_name[[:space:]].*([[:space:]]|^)${domain}([[:space:];]|$)" \
-  "${nginx_root}" >/dev/null 2>&1; then
-  echo "Another Nginx server block already owns ${domain}; refusing to overwrite it." >&2
+if ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
+  echo "Docker must be available to configure public HTTPS." >&2
   exit 1
 fi
 
-install -d -m 0755 "${webroot}/.well-known/acme-challenge"
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+  else
+    echo "Docker Compose is required to move the frontend behind the TLS proxy." >&2
+    exit 1
+  fi
+}
+
+upsert_env() {
+  local key="$1"
+  local value="$2"
+  local environment_file="${deploy_path}/.env"
+  local staged_file
+  staged_file="$(mktemp "${deploy_path}/.env.XXXXXX")"
+  if [ -f "${environment_file}" ]; then
+    grep -v "^${key}=" "${environment_file}" > "${staged_file}" || true
+  fi
+  printf '%s=%q\n' "${key}" "${value}" >> "${staged_file}"
+  chmod 600 "${staged_file}"
+  mv "${staged_file}" "${environment_file}"
+}
+
+acquire_deploy_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"${deploy_path}/.deploy.lock"
+    if ! flock -w 900 9; then
+      echo "Another activation holds ${deploy_path}/.deploy.lock." >&2
+      exit 1
+    fi
+  fi
+}
 
 write_http_config() {
-  cat > "${config_path}" <<EOF
+  cat > "${proxy_config}" <<EOF
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
 server {
     listen 80;
     listen [::]:80;
     server_name ${domain};
 
     location ^~ /.well-known/acme-challenge/ {
-        root ${webroot};
+        root /var/www/certbot;
         default_type text/plain;
         try_files \$uri =404;
     }
@@ -66,22 +100,30 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
     }
 }
 EOF
 }
 
 write_https_config() {
-  cat > "${config_path}" <<EOF
+  cat > "${proxy_config}" <<EOF
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
 server {
     listen 80;
     listen [::]:80;
     server_name ${domain};
 
     location ^~ /.well-known/acme-challenge/ {
-        root ${webroot};
+        root /var/www/certbot;
         default_type text/plain;
         try_files \$uri =404;
     }
@@ -100,53 +142,94 @@ server {
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
     add_header Strict-Transport-Security "max-age=15552000" always;
+
+    location ^~ /app-api/skit/ad-callback/taku/ {
+        access_log off;
+        proxy_pass http://${upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
 
     location / {
         proxy_pass http://${upstream};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
     }
 }
 EOF
 }
 
-reload_nginx() {
-  nginx -t
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl reload nginx
-  elif command -v service >/dev/null 2>&1; then
-    service nginx reload
-  else
-    nginx -s reload
+start_proxy() {
+  if docker inspect "${proxy_name}" >/dev/null 2>&1; then
+    owner="$(docker inspect --format '{{ index .Config.Labels "app" }}' "${proxy_name}")"
+    if [ "${owner}" != "${proxy_name}" ]; then
+      echo "Refusing to replace an unrelated ${proxy_name} container." >&2
+      exit 1
+    fi
+    docker rm -f "${proxy_name}" >/dev/null
   fi
+  docker run -d --name "${proxy_name}" --network host --restart unless-stopped \
+    --label "app=${proxy_name}" \
+    -v "${proxy_config}:/etc/nginx/conf.d/default.conf:ro" \
+    -v "${webroot}:/var/www/certbot:ro" \
+    -v /etc/letsencrypt:/etc/letsencrypt:ro \
+    nginx:1.27-alpine >/dev/null
+  docker exec "${proxy_name}" nginx -t >/dev/null
 }
 
-if ! command -v certbot >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y certbot
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y certbot
-  else
-    echo "Install certbot on the host, then rerun this workflow." >&2
-    exit 1
+acquire_deploy_lock
+compose_file="${deploy_path}/docker-compose.prod.yml"
+if [ ! -f "${compose_file}" ] || [ -L "${compose_file}" ]; then
+  echo "The deployed Docker Compose file is missing or unsafe." >&2
+  exit 1
+fi
+if grep -Fq '      - "${FRONTEND_PORT:-80}:80"' "${compose_file}"; then
+  sed -i 's|      - "${FRONTEND_PORT:-80}:80"|      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"|' "${compose_file}"
+elif ! grep -Fq '      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"' "${compose_file}"; then
+  echo "The deployed frontend port mapping is not recognized." >&2
+  exit 1
+fi
+upsert_env FRONTEND_PORT "${frontend_port}"
+
+(
+  cd "${deploy_path}"
+  compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --force-recreate frontend
+)
+frontend_ready=0
+for _ in $(seq 1 60); do
+  if curl --fail --silent --show-error "http://${upstream}/" >/dev/null; then
+    frontend_ready=1
+    break
   fi
+  sleep 2
+done
+if [ "${frontend_ready}" != "1" ]; then
+  echo "The loopback frontend did not become ready after the port migration." >&2
+  exit 1
 fi
 
+install -d -m 0755 "${webroot}/.well-known/acme-challenge"
 write_http_config
-if [ -n "${enabled_path:-}" ]; then
-  ln -sfn "${config_path}" "${enabled_path}"
-fi
-reload_nginx
+start_proxy
 
-certbot certonly --webroot --webroot-path "${webroot}" --domain "${domain}" \
-  --email "${email}" --agree-tos --non-interactive --keep-until-expiring
+docker run --rm \
+  -v "${webroot}:/var/www/certbot" \
+  -v /etc/letsencrypt:/etc/letsencrypt \
+  certbot/certbot:latest certonly --webroot --webroot-path /var/www/certbot \
+  --domain "${domain}" --email "${email}" --agree-tos --non-interactive --keep-until-expiring
 
 if [ ! -s "/etc/letsencrypt/live/${domain}/fullchain.pem" ] \
   || [ ! -s "/etc/letsencrypt/live/${domain}/privkey.pem" ]; then
@@ -155,15 +238,15 @@ if [ ! -s "/etc/letsencrypt/live/${domain}/fullchain.pem" ] \
 fi
 
 write_https_config
-reload_nginx
+docker exec "${proxy_name}" nginx -t >/dev/null
+docker exec "${proxy_name}" nginx -s reload >/dev/null
 
-install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
-cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-nginx -t && systemctl reload nginx
+cat > /etc/cron.d/skit-public-https-renew <<EOF
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+17 3 * * * root docker run --rm -v ${webroot}:/var/www/certbot -v /etc/letsencrypt:/etc/letsencrypt certbot/certbot:latest renew --quiet && docker exec ${proxy_name} nginx -s reload >> /var/log/${proxy_name}-renew.log 2>&1
 EOF
-chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx
+chmod 644 /etc/cron.d/skit-public-https-renew
 
 health_code="$(curl --noproxy '*' --resolve "${domain}:443:127.0.0.1" \
   --connect-timeout 10 --silent --show-error --output /dev/null --write-out '%{http_code}' \
