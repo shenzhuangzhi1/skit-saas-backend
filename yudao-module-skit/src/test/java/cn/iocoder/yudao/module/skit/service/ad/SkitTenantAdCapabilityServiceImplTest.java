@@ -363,6 +363,25 @@ class SkitTenantAdCapabilityServiceImplTest {
                 SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
     }
 
+    @Test
+    void offGateAllowsOnlyRuntimeApprovedPlayerGrant() {
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID)).thenReturn(offCapability());
+        SkitTenantAdCapabilityService.ClientRuntime accepted =
+                new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
+
+        service.checkClientAccess(101L, accepted, SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+        assertServiceException(() -> service.checkClientAccess(101L, accepted,
+                        SkitTenantAdCapabilityService.AccessOperation.AD_SESSION), AD_ROLLOUT_NOT_READY,
+                "ROLLOUT_OFF");
+        assertServiceException(() -> service.checkClientAccess(101L, accepted,
+                        SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT), AD_ROLLOUT_NOT_READY,
+                "ROLLOUT_OFF");
+        assertServiceException(() -> service.checkClientAccess(101L,
+                        new SkitTenantAdCapabilityService.ClientRuntime("2.3.9", 1),
+                        SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT), AD_ROLLOUT_NOT_READY,
+                "CLIENT_VERSION_REVOKED");
+    }
+
     private SkitTenantAdCapabilityService.ConfigurationCommand configuration(int expectedVersion) {
         SkitTenantAdCapabilityService.ConfigurationCommand command =
                 new SkitTenantAdCapabilityService.ConfigurationCommand();

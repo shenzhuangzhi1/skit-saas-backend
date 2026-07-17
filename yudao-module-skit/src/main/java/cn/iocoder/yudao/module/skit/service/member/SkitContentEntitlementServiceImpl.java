@@ -213,7 +213,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         AtomicReference<List<Integer>> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
             requireClientAccess(reference.getMemberId(), runtime,
-                    SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT);
+                    SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
             PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
             result.set(listGrantedEpisodesInsideTenant(scope.getMemberId(), scope.getDramaId()));
         });

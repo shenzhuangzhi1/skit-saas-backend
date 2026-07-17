@@ -309,6 +309,8 @@ class SkitContentEntitlementServiceImplTest {
         assertEquals(Collections.singletonList(3),
                 service.listGrantedEpisodesForPlayerGrant(token, RUNTIME));
         assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
+        verify(capabilityService).checkClientAccess(MEMBER_ID, RUNTIME,
+                SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
     }
 
     private SkitAgentDO enabledAgent() {

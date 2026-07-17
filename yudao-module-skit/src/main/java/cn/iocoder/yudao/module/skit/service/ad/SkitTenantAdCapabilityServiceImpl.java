@@ -197,12 +197,18 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         }
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         SkitTenantAdCapabilityDO capability = capabilityMapper.selectByTenantForShare(tenantId);
-        if (capability == null || OFF.equals(capability.getRolloutState())) {
+        if (capability == null) {
             throw exception(AD_ROLLOUT_NOT_READY, "ROLLOUT_OFF");
         }
         requireEnvelope(capability, tenantId);
         if (!clientRuntimeAccepted(capability, runtime)) {
             throw exception(AD_ROLLOUT_NOT_READY, "CLIENT_VERSION_REVOKED");
+        }
+        if (OFF.equals(capability.getRolloutState())) {
+            if (operation == AccessOperation.PLAYER_GRANT) {
+                return;
+            }
+            throw exception(AD_ROLLOUT_NOT_READY, "ROLLOUT_OFF");
         }
         if (SHADOW.equals(capability.getRolloutState())) {
             if (!parseLongSet(capability.getShadowTestMemberIdsJson()).contains(memberId)) {
