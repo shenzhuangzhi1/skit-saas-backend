@@ -73,8 +73,9 @@ removes volumes. Reset is deliberately explicit and destructive:
 SKIT_CONFIRM_RESET=1 ./scripts/local-stack.sh reset
 ```
 
-The pre-push hook runs the same focused tests and MySQL 8 migration checks as CI for
-source/config/SQL changes. Documentation-only pushes do not start the test suite.
+The pre-push hook runs the bounded Skit build-material/tenant/security suite and MySQL 8
+migration checks for source/config/SQL changes. The broader backend lifecycle matrix still
+runs in GitHub Actions. Documentation-only pushes do not start the local test suite.
 
 ## Required GitHub Secrets
 

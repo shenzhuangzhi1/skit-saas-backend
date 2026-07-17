@@ -73,7 +73,7 @@ Run bash scripts/test-local-stack-contract.sh and docker compose -f deploy/docke
 
 - [ ] **Step 1: Add CI-equivalent backend verifier**
 
-The script checks docker, mvn and java, then runs the five existing deployment contract scripts, the exact focused Maven command from backend CI, and the exact MySQL 8 Failsafe command from backend CI. It may honor SKIP_INTEGRATION=1 for manual quick iteration, but pre-push never sets it.
+The script checks docker, mvn and java, then runs the five existing deployment contract scripts, the bounded Skit build-material/tenant/security Maven suite already used for local feature verification, and the exact MySQL 8 Failsafe migration command from backend CI. The broader backend lifecycle matrix remains in GitHub Actions. It may honor SKIP_INTEGRATION=1 for manual quick iteration, but pre-push never sets it.
 
 - [ ] **Step 2: Add ref-aware hook**
 
@@ -152,4 +152,3 @@ Run reset without SKIT_CONFIRM_RESET=1 and verify refusal. Run down and verify l
 - [ ] **Step 5: Final hygiene and push**
 
 Run git status --short --branch and git diff --check in all three repos. Confirm only new tracked files are committed and known untracked files remain untouched. Push each repository only after its local verifier exits 0.
-

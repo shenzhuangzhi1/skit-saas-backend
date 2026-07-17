@@ -21,8 +21,8 @@ export JAVA_HOME="${java_home}"
 ./deploy/test-activation-health.sh
 ./deploy/test-release-security.sh
 
-mvn -B -pl yudao-module-skit,yudao-module-system,yudao-module-infra -am \
-  -Dtest='Skit*Test,Taku*Test,*SecurityTest,SystemPlatformAdminGuardTest,TenantVisitContextInterceptorTest,AdminAuthServiceImplTest,OAuth2TokenServiceImplTest,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest,SpringUtilsTest,AdminServerConfigurationTest,ApiAccessLogInterceptorTest,*SecretRedactionTest' \
+mvn -B -pl yudao-module-skit -am \
+  -Dtest='cn.iocoder.yudao.module.skit.service.app.SkitAppBuildMaterialServiceImplTest,cn.iocoder.yudao.module.skit.controller.admin.tenant.SkitTenantBusinessControllerTest,cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoServiceTest,cn.iocoder.yudao.module.skit.framework.schema.SkitTenantBuildMaterialSchemaContractTest' \
   -Dsurefire.failIfNoSpecifiedTests=false test
 
 if [[ "${SKIP_INTEGRATION:-0}" != "1" ]]; then
