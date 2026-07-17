@@ -74,6 +74,48 @@ upsert_env() {
   chown "${deploy_user}" "${environment_file}"
 }
 
+container_env_value() {
+  local container="$1"
+  local key="$2"
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${container}" \
+    | sed -n "s/^${key}=//p" | head -n 1
+}
+
+require_container_env() {
+  local container="$1"
+  local key="$2"
+  local value
+  value="$(container_env_value "${container}" "${key}")"
+  if [ -z "${value}" ]; then
+    echo "The running ${container} container does not expose required ${key}." >&2
+    exit 1
+  fi
+  upsert_env "${key}" "${value}"
+}
+
+restore_compose_environment() {
+  local frontend_image
+  local frontend_repository
+  local frontend_tag
+  frontend_image="$(docker inspect --format '{{.Config.Image}}' skit-saas-frontend)"
+  if [[ ! "${frontend_image}" =~ ^ghcr\.io/[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+$ ]]; then
+    echo "The running frontend image is not a pinned GHCR image." >&2
+    exit 1
+  fi
+  frontend_repository="${frontend_image%:*}"
+  frontend_tag="${frontend_image##*:}"
+  upsert_env FRONTEND_IMAGE "${frontend_repository}"
+  upsert_env FRONTEND_IMAGE_TAG "${frontend_tag}"
+  require_container_env skit-saas-mysql MYSQL_ROOT_PASSWORD
+  require_container_env skit-saas-mysql MYSQL_DATABASE
+  require_container_env skit-saas-backend SKIT_AD_ENCRYPTION_KEY
+  require_container_env skit-saas-backend SKIT_AD_CREDENTIAL_KEY
+  require_container_env skit-saas-backend SKIT_AD_CREDENTIAL_KEY_ID
+  require_container_env skit-saas-backend SKIT_AD_SESSION_TOKEN_KEY
+  require_container_env skit-saas-backend SKIT_AD_SESSION_TOKEN_KEY_VERSION
+  require_container_env skit-saas-backend SKIT_AD_CALLBACK_PUBLIC_BASE_URL
+}
+
 acquire_deploy_lock() {
   if command -v flock >/dev/null 2>&1; then
     exec 9>"${deploy_path}/.deploy.lock"
@@ -209,6 +251,7 @@ elif ! grep -Fq '      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"' "${compose_file
   echo "The deployed frontend port mapping is not recognized." >&2
   exit 1
 fi
+restore_compose_environment
 upsert_env FRONTEND_PORT "${frontend_port}"
 
 (
