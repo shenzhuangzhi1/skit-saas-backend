@@ -43,6 +43,39 @@ advertising keys and the optional retained-key file.
 - SSH user that can run Docker commands.
 - Empty deployment directory, default: `skit-saas` under the SSH user's home directory.
 
+## Local development
+
+The local workflow is isolated from production. It starts only MySQL 8 and Redis 6.2
+with loopback-only ports, and the Spring Boot process continues to use the existing
+`local` profile.
+
+```bash
+cp deploy/local.env.example deploy/local.env
+./scripts/local-stack.sh up
+./scripts/run-local.sh
+```
+
+In another terminal, run the frontend from `skit-saas-frontend` with `pnpm run dev`;
+its `.env.local` points to `http://localhost:48080`. The App repository has its own
+verification command and only creates a local debug APK.
+
+Install the repository-local push gate once:
+
+```bash
+./scripts/install-local-hooks.sh
+./scripts/verify-local.sh
+```
+
+`./scripts/local-stack.sh down` stops the services and preserves local data. It never
+removes volumes. Reset is deliberately explicit and destructive:
+
+```bash
+SKIT_CONFIRM_RESET=1 ./scripts/local-stack.sh reset
+```
+
+The pre-push hook runs the same focused tests and MySQL 8 migration checks as CI for
+source/config/SQL changes. Documentation-only pushes do not start the test suite.
+
 ## Required GitHub Secrets
 
 Set these secrets in each repository that deploys to the server:

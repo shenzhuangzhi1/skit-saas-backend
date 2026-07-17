@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+verify_required=0
+
+is_docs_only_path() {
+  case "$1" in
+    *.md|docs/*|.github/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -n "${local_sha:-}" ]] || continue
+  [[ "${local_sha}" == 0000000000000000000000000000000000000000 ]] && continue
+
+  if [[ "${remote_sha}" == 0000000000000000000000000000000000000000 ]]; then
+    base="$(git rev-list --max-parents=0 "${local_sha}" | tail -n 1)"
+  else
+    base="${remote_sha}"
+  fi
+
+  while IFS= read -r changed_path; do
+    if ! is_docs_only_path "${changed_path}"; then
+      verify_required=1
+      break
+    fi
+  done < <(git diff --name-only "${base}" "${local_sha}")
+done
+
+if (( verify_required == 1 )); then
+  exec "${repo_root}/scripts/verify-local.sh"
+fi
+
+echo "Backend pre-push: documentation-only or deleted ref; local verification skipped."

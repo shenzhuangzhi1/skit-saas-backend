@@ -49,6 +49,7 @@ nbdist/
 rebel.xml
 
 application-my.yaml
+deploy/local.env
 
 /yudao-ui-app/unpackage/
 .DS_Store
