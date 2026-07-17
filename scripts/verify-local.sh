@@ -8,6 +8,10 @@ command -v docker >/dev/null 2>&1 || { echo "Install Docker Desktop before backe
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required." >&2; exit 1; }
 command -v mvn >/dev/null 2>&1 || { echo "Install Maven 3.9+ before backend verification." >&2; exit 1; }
 command -v java >/dev/null 2>&1 || { echo "Install Java 8+ before backend verification." >&2; exit 1; }
+java_home="$(/usr/libexec/java_home -v 17 2>/dev/null || true)"
+[[ -n "${java_home}" ]] || java_home="$(/usr/libexec/java_home 2>/dev/null || true)"
+[[ -n "${java_home}" ]] || { echo "Set JAVA_HOME to a supported JDK before backend verification." >&2; exit 1; }
+export JAVA_HOME="${java_home}"
 
 ./deploy/test-compose-topology.sh
 ./deploy/test-encryption-key.sh
