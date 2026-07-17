@@ -19,8 +19,6 @@ public class SkitTenantAdCapabilityConfigReqVO {
     @NotNull
     @Positive
     private Long adAccountId;
-    @NotBlank
-    @Pattern(regexp = "[A-Za-z0-9._:-]{1,128}")
     private String dedicatedUnlockPlacementId;
     @NotNull
     private Boolean dedicatedPlacementVerified;
@@ -28,8 +26,7 @@ public class SkitTenantAdCapabilityConfigReqVO {
     private Boolean rewardCallbackTemplateVerified;
     @NotNull
     private Boolean impressionCallbackTemplateVerified;
-    @NotNull
-    @Size(min = 1, max = 16)
+    @Size(max = 16)
     private Set<@Positive Integer> unlockNetworkFirmIds = new LinkedHashSet<>();
     @NotNull
     @Size(max = 100)
@@ -37,8 +34,6 @@ public class SkitTenantAdCapabilityConfigReqVO {
     @NotBlank
     @Pattern(regexp = "[0-9]{1,9}(\\.[0-9]{1,9}){1,3}")
     private String minNativeVersion;
-    @NotNull
-    @Positive
     private Integer minProtocolVersion;
     @NotNull
     @PositiveOrZero

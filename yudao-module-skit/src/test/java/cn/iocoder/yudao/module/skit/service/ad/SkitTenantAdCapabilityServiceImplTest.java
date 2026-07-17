@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.app.SkitAppReleaseProfileMapper;
@@ -36,6 +37,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -46,6 +48,8 @@ class SkitTenantAdCapabilityServiceImplTest {
 
     @Mock
     private SkitTenantAdCapabilityMapper capabilityMapper;
+    @Mock
+    private SkitAdAccountMapper adAccountMapper;
     @Mock
     private SkitTenantAdReadinessEvidenceReader evidenceReader;
     @Mock
@@ -62,8 +66,10 @@ class SkitTenantAdCapabilityServiceImplTest {
     @BeforeEach
     void setUp() {
         TenantContextHolder.setTenantId(TENANT_ID);
+        lenient().when(adAccountMapper.selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID))
+                .thenReturn("unlock-placement-42");
         service = new SkitTenantAdCapabilityServiceImpl(
-                capabilityMapper, evidenceReader, releaseProfileMapper,
+                capabilityMapper, adAccountMapper, evidenceReader, releaseProfileMapper,
                 nativePlayerGrantMapper, adSessionMapper, manifestVerifier);
     }
 
@@ -76,7 +82,8 @@ class SkitTenantAdCapabilityServiceImplTest {
     void readinessEnumeratesEveryProductionPrerequisiteWithoutReturningSecrets() {
         SkitTenantAdCapabilityDO capability = shadowCapability();
         when(capabilityMapper.selectByTenantForShare(TENANT_ID)).thenReturn(capability);
-        when(evidenceReader.read(TENANT_ID, capability)).thenReturn(readyEvidence());
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(readyEvidence());
 
         SkitTenantAdCapabilityService.ReadinessView view = service.getReadiness();
 
@@ -285,6 +292,31 @@ class SkitTenantAdCapabilityServiceImplTest {
 
         verify(releaseProfileMapper, never()).updateMinNativeVersionForRollout(any(), any(), any());
         verify(nativePlayerGrantMapper, never()).revokeActiveForTenantRollout(any());
+    }
+
+    @Test
+    void configurationUsesServerDerivedPlacementNetworksAndProtocol() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(readyEvidence());
+        when(capabilityMapper.updateConfigurationCas(TENANT_ID, capability.getId(), 3,
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[35,66,67]",
+                "[101,102]", "2.4.0", 1)).thenReturn(1);
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(shadowCapability().setReadinessVersion(4));
+
+        SkitTenantAdCapabilityService.ConfigurationCommand command = configuration(3);
+        command.setDedicatedUnlockPlacementId("user-supplied-spoofed-placement");
+        command.setUnlockNetworkFirmIds(Collections.emptySet());
+        command.setMinProtocolVersion(null);
+
+        service.configure(command);
+
+        verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
+        verify(capabilityMapper).updateConfigurationCas(TENANT_ID, capability.getId(), 3,
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[35,66,67]",
+                "[101,102]", "2.4.0", 1);
     }
 
     @Test

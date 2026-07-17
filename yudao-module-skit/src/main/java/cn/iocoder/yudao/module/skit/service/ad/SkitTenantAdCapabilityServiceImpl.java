@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.app.SkitAppReleaseProfileMapper;
@@ -47,6 +48,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(35, 66, 67)));
 
     private final SkitTenantAdCapabilityMapper capabilityMapper;
+    private final SkitAdAccountMapper adAccountMapper;
     private final SkitTenantAdReadinessEvidenceReader evidenceReader;
     private final SkitAppReleaseProfileMapper releaseProfileMapper;
     private final SkitNativePlayerGrantMapper nativePlayerGrantMapper;
@@ -54,12 +56,14 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     private final SkitRuntimeUpdateManifestVerifier manifestVerifier;
 
     public SkitTenantAdCapabilityServiceImpl(SkitTenantAdCapabilityMapper capabilityMapper,
+                                             SkitAdAccountMapper adAccountMapper,
                                              SkitTenantAdReadinessEvidenceReader evidenceReader,
                                              SkitAppReleaseProfileMapper releaseProfileMapper,
                                              SkitNativePlayerGrantMapper nativePlayerGrantMapper,
                                              SkitAdSessionMapper adSessionMapper,
                                              SkitRuntimeUpdateManifestVerifier manifestVerifier) {
         this.capabilityMapper = Objects.requireNonNull(capabilityMapper, "capabilityMapper");
+        this.adAccountMapper = Objects.requireNonNull(adAccountMapper, "adAccountMapper");
         this.evidenceReader = Objects.requireNonNull(evidenceReader, "evidenceReader");
         this.releaseProfileMapper = Objects.requireNonNull(releaseProfileMapper, "releaseProfileMapper");
         this.nativePlayerGrantMapper = Objects.requireNonNull(nativePlayerGrantMapper,
@@ -83,8 +87,9 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public CapabilityView configure(ConfigurationCommand command) {
-        validateConfiguration(command);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
+        String dedicatedPlacementId = resolveDedicatedPlacementId(tenantId, command);
+        validateConfiguration(command, dedicatedPlacementId);
         SkitTenantAdCapabilityDO locked = lockOrCreate(tenantId);
         requireEnvelope(locked, tenantId);
         requireExpectedVersion(locked, command.getExpectedReadinessVersion());
@@ -94,14 +99,14 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
 
         SkitTenantAdCapabilityDO prospective = copy(locked)
                 .setAdAccountId(command.getAdAccountId())
-                .setDedicatedUnlockPlacementId(command.getDedicatedUnlockPlacementId().trim())
+                .setDedicatedUnlockPlacementId(dedicatedPlacementId)
                 .setDedicatedPlacementVerifiedAt(marker(command.getDedicatedPlacementVerified()))
                 .setRewardCallbackTemplateVerifiedAt(marker(command.getRewardCallbackTemplateVerified()))
                 .setImpressionCallbackTemplateVerifiedAt(marker(command.getImpressionCallbackTemplateVerified()))
-                .setUnlockNetworkFirmIdsJson(integerJson(command.getUnlockNetworkFirmIds()))
+                .setUnlockNetworkFirmIdsJson(integerJson(PHASE_ONE_AUTHORITATIVE_NETWORKS))
                 .setShadowTestMemberIdsJson(longJson(command.getShadowTestMemberIds()))
                 .setMinNativeVersion(command.getMinNativeVersion().trim())
-                .setMinProtocolVersion(command.getMinProtocolVersion());
+                .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION);
         SkitTenantAdReadinessEvidence evidence = evidenceReader.read(tenantId, prospective);
         if (evidence == null || !evidence.isAccountBelongsToTenant()
                 || !evidence.isShadowMembersBelongToTenant()) {
@@ -314,24 +319,26 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         return view;
     }
 
-    private void validateConfiguration(ConfigurationCommand command) {
+    private void validateConfiguration(ConfigurationCommand command, String dedicatedPlacementId) {
         if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0
-                || StrUtil.isBlank(command.getDedicatedUnlockPlacementId())
-                || !PLACEMENT.matcher(command.getDedicatedUnlockPlacementId().trim()).matches()
+                || StrUtil.isBlank(dedicatedPlacementId)
+                || !PLACEMENT.matcher(dedicatedPlacementId).matches()
                 || command.getExpectedReadinessVersion() == null || command.getExpectedReadinessVersion() < 0
-                || command.getMinProtocolVersion() == null
-                || command.getMinProtocolVersion() != CURRENT_PROTOCOL_VERSION
                 || !stableVersion(command.getMinNativeVersion())
                 || command.getDedicatedPlacementVerified() == null
                 || command.getRewardCallbackTemplateVerified() == null
                 || command.getImpressionCallbackTemplateVerified() == null) {
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "REQUIRED_FIELD_INVALID");
         }
-        Set<Integer> networks = positiveIntegerSet(command.getUnlockNetworkFirmIds(), 16, "UNLOCK_NETWORKS");
-        if (networks.isEmpty() || !PHASE_ONE_AUTHORITATIVE_NETWORKS.containsAll(networks)) {
-            throw exception(AD_ROLLOUT_CONFIG_INVALID, "PHASE_ONE_UNLOCK_NETWORK_NOT_AUTHORITATIVE");
-        }
         positiveLongSet(command.getShadowTestMemberIds(), 100, "SHADOW_MEMBERS");
+    }
+
+    private String resolveDedicatedPlacementId(Long tenantId, ConfigurationCommand command) {
+        if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0) {
+            return "";
+        }
+        String placementId = adAccountMapper.selectEnabledTakuPlacementId(tenantId, command.getAdAccountId());
+        return StrUtil.isBlank(placementId) ? "" : placementId.trim();
     }
 
     private void validateTransition(TransitionCommand command) {
@@ -465,7 +472,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         SkitTenantAdCapabilityDO result = new SkitTenantAdCapabilityDO();
         result.setTenantId(tenantId);
         return result.setRolloutState(OFF)
-                .setDedicatedUnlockPlacementId("").setUnlockNetworkFirmIdsJson("[]")
+                .setDedicatedUnlockPlacementId("")
+                .setUnlockNetworkFirmIdsJson(integerJson(PHASE_ONE_AUTHORITATIVE_NETWORKS))
                 .setShadowTestMemberIdsJson("[]").setMinNativeVersion("")
                 .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION).setReadinessVersion(0);
     }

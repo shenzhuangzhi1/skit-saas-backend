@@ -178,6 +178,14 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
     SkitAdAccountDO selectReportAccountForUpdate(@Param("tenantId") long tenantId,
                                                   @Param("id") long id);
 
+    @Select("SELECT CASE WHEN JSON_VALID(`config_data`) THEN "
+            + "JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.placementId')) ELSE '' END "
+            + "FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} AND `id`=#{adAccountId} "
+            + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true")
+    String selectEnabledTakuPlacementId(@Param("tenantId") long tenantId,
+                                        @Param("adAccountId") long adAccountId);
+
     @Update("UPDATE `skit_ad_account` SET `report_pull_lease_owner`=NULL,"
             + "`report_pull_lease_until`=NULL,`report_last_success_at`=CURRENT_TIMESTAMP,"
             + "`report_next_allowed_at`=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL #{delaySeconds} SECOND),"
