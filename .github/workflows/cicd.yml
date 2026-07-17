@@ -20,6 +20,166 @@ env:
   RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  runtime-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/callback-rotation-diagnostic'
+    name: Read callback rotation diagnostics
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_HOST:?Set SERVER_HOST secret}"
+          AUTH_VALUE="${SERVER_SSH_KEY:-${SERVER_PASSWORD:-}}"
+          : "${AUTH_VALUE:?Set SERVER_SSH_KEY or SERVER_PASSWORD secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          install -m 700 -d ~/.ssh
+          KEY_FILE="$HOME/.ssh/skit_diagnostic_key"
+          if printf '%s' "${AUTH_VALUE}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s' "${AUTH_VALUE}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${KEY_FILE}"
+            chmod 600 "${KEY_FILE}"
+            printf 'SKIT_AUTH_MODE=key\n' > /tmp/skit-diagnostic-auth.env
+          else
+            sudo apt-get update >/dev/null
+            sudo apt-get install -y sshpass >/dev/null
+            {
+              printf 'SKIT_AUTH_MODE=password\n'
+              printf 'SKIT_SSH_PASSWORD=%q\n' "${AUTH_VALUE}"
+            } > /tmp/skit-diagnostic-auth.env
+          fi
+          chmod 600 /tmp/skit-diagnostic-auth.env
+          install -m 600 deploy/known_hosts ~/.ssh/known_hosts
+          ssh-keygen -F "${SERVER_HOST}" -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Query callback rotation failure
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/skit-diagnostic-auth.env
+          SERVER_PORT="${SERVER_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-skit-saas}"
+          SUDO_PASSWORD="${SERVER_SUDO_PASSWORD:-${SERVER_PASSWORD:-}}"
+          SSH_OPTIONS=(-o StrictHostKeyChecking=yes -o ConnectTimeout=30 -p "${SERVER_PORT}")
+          if [ "${SKIT_AUTH_MODE}" = "password" ]; then
+            SSH=(env SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e ssh "${SSH_OPTIONS[@]}" -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no)
+            SCP=(env SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e scp -o StrictHostKeyChecking=yes -P "${SERVER_PORT}" -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no)
+          else
+            SSH=(ssh "${SSH_OPTIONS[@]}" -i "$HOME/.ssh/skit_diagnostic_key")
+            SCP=(scp -o StrictHostKeyChecking=yes -P "${SERVER_PORT}" -i "$HOME/.ssh/skit_diagnostic_key")
+          fi
+          printf -v DEPLOY_PATH_Q '%q' "${DEPLOY_PATH}"
+          diagnostic_env="/tmp/skit-callback-diagnostic-${GITHUB_RUN_ID}.env"
+          remote_env_name=".callback-diagnostic-${GITHUB_RUN_ID}.env"
+          trap 'rm -f "${diagnostic_env}"' EXIT
+          printf 'SUDO_PASSWORD=%q\n' "${SUDO_PASSWORD}" > "${diagnostic_env}"
+          chmod 600 "${diagnostic_env}"
+          "${SSH[@]}" "${SERVER_USER}@${SERVER_HOST}" \
+            "find '${DEPLOY_PATH}' -maxdepth 1 -type f -name '.callback-diagnostic-*.env' -delete; umask 077; touch '${DEPLOY_PATH}/${remote_env_name}'; chmod 600 '${DEPLOY_PATH}/${remote_env_name}'"
+          "${SCP[@]}" "${diagnostic_env}" \
+            "${SERVER_USER}@${SERVER_HOST}:${DEPLOY_PATH}/${remote_env_name}"
+          "${SSH[@]}" "${SERVER_USER}@${SERVER_HOST}" \
+            "DEPLOY_PATH=${DEPLOY_PATH_Q} DIAGNOSTIC_ENV_NAME=${remote_env_name} bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "${DEPLOY_PATH}"
+          diagnostic_env="${DIAGNOSTIC_ENV_NAME}"
+          cleanup() {
+            if [ "${history_long_restore:-}" = "YES" ] && declare -F run_docker >/dev/null 2>&1; then
+              run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+                mysql --batch --raw -uroot -e \
+                "UPDATE performance_schema.setup_consumers SET ENABLED='NO' WHERE NAME='events_statements_history_long'" \
+                >/dev/null 2>&1 || true
+            fi
+            rm -f -- "${diagnostic_env}"
+          }
+          trap cleanup EXIT HUP INT TERM
+          if [ -L "${diagnostic_env}" ] || [ ! -f "${diagnostic_env}" ]; then
+            echo "Runtime diagnostic environment file is missing or unsafe."
+            exit 1
+          fi
+          # shellcheck disable=SC1090
+          . "${diagnostic_env}"
+          rm -f -- "${diagnostic_env}"
+          set -a
+          # shellcheck disable=SC1091
+          . ./.env
+          set +a
+          docker_cmd=(docker)
+          if ! docker version >/dev/null 2>&1; then
+            if sudo -n docker version >/dev/null 2>&1; then
+              docker_cmd=(sudo -n docker)
+            else
+              docker_cmd=(sudo -S -p '' docker)
+            fi
+          fi
+          run_docker() {
+            if [ "${docker_cmd[0]}" = "sudo" ] && [ "${docker_cmd[1]}" = "-S" ]; then
+              printf '%s\n' "${SUDO_PASSWORD}" | "${docker_cmd[@]}" "$@"
+            else
+              "${docker_cmd[@]}" "$@"
+            fi
+          }
+          database="${MYSQL_DATABASE:-skit_saas}"
+          history_long_original="$(run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw --skip-column-names -uroot -e \
+            "SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME='events_statements_history_long'")"
+          if [ "${history_long_original}" != "YES" ]; then
+            run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+              mysql --batch --raw -uroot -e \
+              "UPDATE performance_schema.setup_consumers SET ENABLED='YES' WHERE NAME='events_statements_history_long'"
+            history_long_restore="YES"
+          fi
+          echo "Statement capture window is open"
+          sleep 30
+          sql="SELECT id, exception_time, exception_name, exception_message, exception_root_cause_message, exception_class_name, exception_method_name, exception_line_number FROM infra_api_error_log WHERE request_url LIKE '%/skit/tenant/ad-readiness/callback-key/rotate%' ORDER BY id DESC LIMIT 5"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot "${database}" -e "${sql}"
+          stack_sql="SELECT id, LEFT(exception_stack_trace,12000) AS exception_stack_trace FROM infra_api_error_log WHERE request_url LIKE '%/skit/tenant/ad-readiness/callback-key/rotate%' ORDER BY id DESC LIMIT 1"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot "${database}" -e "${stack_sql}"
+          trace_id="$(run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw --skip-column-names -uroot "${database}" -e \
+            "SELECT trace_id FROM infra_api_error_log WHERE request_url LIKE '%/skit/tenant/ad-readiness/callback-key/rotate%' ORDER BY id DESC LIMIT 1")"
+          if [ -n "${trace_id}" ]; then
+            run_docker logs --since 2h --tail 10000 skit-saas-backend 2>&1 \
+              | grep -F -A 140 -B 20 -- "${trace_id}" \
+              | grep -E 'SQLException|Exception|Caused by|skit_ad_callback_key|constraint|Column|Duplicate|cn\\.iocoder|org\\.mybatis' \
+              | tail -n 240 || true
+          fi
+          run_docker logs --since 2h --tail 20000 skit-saas-backend 2>&1 \
+            | grep -E 'DataIntegrityViolationException|SQLException|SQLIntegrity|Error updating database|skit_ad_callback_key|constraint|Column|Duplicate' \
+            | tail -n 240 || true
+          performance_sql="SELECT EVENT_ID,CURRENT_SCHEMA,MYSQL_ERRNO,RETURNED_SQLSTATE,MESSAGE_TEXT,LEFT(SQL_TEXT,1000) AS SQL_TEXT,LEFT(DIGEST_TEXT,1000) AS DIGEST_TEXT FROM performance_schema.events_statements_history_long WHERE MYSQL_ERRNO<>0 ORDER BY EVENT_ID DESC LIMIT 100"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot -e "${performance_sql}"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot -e \
+            "SELECT NAME,ENABLED FROM performance_schema.setup_consumers WHERE NAME LIKE 'events_statements_history%'"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot "${database}" -e \
+            "SHOW CREATE TABLE skit_ad_callback_key; SHOW CREATE TABLE skit_management_command_audit; SHOW TRIGGERS LIKE 'skit_ad_callback_key'; SHOW TRIGGERS LIKE 'skit_management_command_audit'"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot -e \
+            "SELECT TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='${database}' AND TABLE_NAME IN ('skit_ad_callback_key','skit_management_command_audit') ORDER BY TABLE_NAME,ORDINAL_POSITION"
+          run_docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" skit-saas-mysql \
+            mysql --batch --raw -uroot "${database}" -e \
+            "SELECT id,tenant_id,ad_account_id,key_version,active,accept_until,revoked_at FROM skit_ad_callback_key WHERE tenant_id=162 ORDER BY id"
+          REMOTE
+
   unit-tests:
     if: github.ref == 'refs/heads/master'
     name: Backend unit and security checks
