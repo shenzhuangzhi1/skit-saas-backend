@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import cn.iocoder.yudao.module.skit.service.management.SkitManagementCommandExecutor;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -37,6 +38,7 @@ import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -48,6 +50,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @RequestMapping("/skit/tenant/ad-readiness")
 @Validated
 @PreAuthorize("@ss.hasAnyRoles('tenant_admin','super_admin')")
+@Slf4j
 public class SkitTenantAdCapabilityController {
 
     private final SkitTenantAdCapabilityService capabilityService;
@@ -125,10 +128,20 @@ public class SkitTenantAdCapabilityController {
     @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<CommonResult<SkitAdCallbackKeyRotateRespVO>> rotateCallbackKey(
             @Valid @RequestBody SkitAdCallbackKeyRotateReqVO request) {
-        SkitAdCallbackKeyRotateRespVO response = tenantScopeGuard.writeTenant(
-                request.getTenantId(), SkitManagementCommandType.AD_CREDENTIAL_ROTATE_NORMAL,
-                request.getReason(), scope -> rotateCallbackKey(scope, request));
-        return noStore(success(response));
+        try {
+            SkitAdCallbackKeyRotateRespVO response = tenantScopeGuard.writeTenant(
+                    request.getTenantId(), SkitManagementCommandType.AD_CREDENTIAL_ROTATE_NORMAL,
+                    request.getReason(), scope -> rotateCallbackKey(scope, request));
+            return noStore(success(response));
+        } catch (RuntimeException failure) {
+            SQLException sqlFailure = findSqlFailure(failure);
+            if (sqlFailure != null) {
+                log.error("[rotateCallbackKey][tenantId({}) adAccountId({}) sqlState({}) errorCode({})]",
+                        request.getTenantId(), request.getAdAccountId(), sqlFailure.getSQLState(),
+                        sqlFailure.getErrorCode());
+            }
+            throw failure;
+        }
     }
 
     @PostMapping("/reward-secret/rotate")
@@ -238,6 +251,17 @@ public class SkitTenantAdCapabilityController {
         command.setMinProtocolVersion(request.getMinProtocolVersion());
         command.setExpectedReadinessVersion(request.getExpectedReadinessVersion());
         return command;
+    }
+
+    private static SQLException findSqlFailure(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof SQLException) {
+                return (SQLException) current;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     private static <T> ResponseEntity<CommonResult<T>> noStore(CommonResult<T> body) {
