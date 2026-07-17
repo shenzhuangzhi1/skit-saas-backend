@@ -64,6 +64,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.sql.Statement;
@@ -100,6 +101,7 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
     private SkitMemberClosureMapper closureMapper;
     private SkitAgentServiceImpl agentService;
     private SkitMemberServiceImpl memberService;
+    private TransactionTemplate mapperTransactionTemplate;
 
     @BeforeAll
     void startRealMyBatisBoundary() {
@@ -118,6 +120,7 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         memberService = context.getBean(SkitMemberServiceImpl.class);
         assertTrue(AopUtils.isAopProxy(memberService),
                 "member service must run through the production @Transactional proxy");
+        mapperTransactionTemplate = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
     }
 
     @AfterEach
@@ -239,7 +242,7 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         long registrationFirstAgent = 12302L;
         String registrationFirstCode = "ORDER-REGISTER-FIRST";
         insertAgent(registrationFirstTenant, registrationFirstAgent, registrationFirstCode);
-        inTransaction(() -> registryService.claimAgent(
+        inMapperTransaction(() -> registryService.claimAgent(
                 registrationFirstTenant, registrationFirstAgent, registrationFirstCode));
 
         CountDownLatch registrationLockHeld = new CountDownLatch(1);
@@ -247,7 +250,7 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         ExecutorService registrationFirstExecutor = Executors.newFixedThreadPool(2);
         try {
             Future<SkitMemberService.AuthResult> registration = registrationFirstExecutor.submit(() ->
-                    inTransaction(() -> {
+                    inMapperTransaction(() -> {
                         assertNotNull(agentMapper.selectByTenantIdForUpdate(registrationFirstTenant));
                         registrationLockHeld.countDown();
                         await(rotationReady, "registration-first rotation readiness");
@@ -257,7 +260,7 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
             Future<String> rotation = registrationFirstExecutor.submit(() -> {
                 await(registrationLockHeld, "registration-first owner lock");
                 rotationReady.countDown();
-                return inTransaction(() -> agentService.rotateRootInviteCode(registrationFirstTenant));
+                return inMapperTransaction(() -> agentService.rotateRootInviteCode(registrationFirstTenant));
             });
 
             assertNotNull(registration.get(30, TimeUnit.SECONDS));
@@ -275,13 +278,13 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         long rotationFirstAgent = 12312L;
         String rotationFirstCode = "ORDER-ROTATE-FIRST";
         insertAgent(rotationFirstTenant, rotationFirstAgent, rotationFirstCode);
-        inTransaction(() -> registryService.claimAgent(rotationFirstTenant, rotationFirstAgent, rotationFirstCode));
+        inMapperTransaction(() -> registryService.claimAgent(rotationFirstTenant, rotationFirstAgent, rotationFirstCode));
 
         CountDownLatch rotationLockHeld = new CountDownLatch(1);
         CountDownLatch registrationReady = new CountDownLatch(1);
         ExecutorService rotationFirstExecutor = Executors.newFixedThreadPool(2);
         try {
-            Future<String> rotation = rotationFirstExecutor.submit(() -> inTransaction(() -> {
+            Future<String> rotation = rotationFirstExecutor.submit(() -> inMapperTransaction(() -> {
                 assertNotNull(agentMapper.selectByTenantIdForUpdate(rotationFirstTenant));
                 rotationLockHeld.countDown();
                 await(registrationReady, "rotation-first registration readiness");
@@ -291,7 +294,7 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
                 await(rotationLockHeld, "rotation-first owner lock");
                 registrationReady.countDown();
                 try {
-                    inTransaction(() -> memberService.register(registerCommand(
+                    inMapperTransaction(() -> memberService.register(registerCommand(
                             rotationFirstTenant, "13912300011", rotationFirstCode)));
                     return true;
                 } catch (ServiceException invalid) {
@@ -524,6 +527,14 @@ class SkitInviteCodeRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         command.setInviteCode(inviteCode);
         command.setRegisterIp("127.0.0.1");
         return command;
+    }
+
+    private <T> T inMapperTransaction(java.util.function.Supplier<T> work) {
+        return mapperTransactionTemplate.execute(status -> work.get());
+    }
+
+    private void inMapperTransaction(Runnable work) {
+        mapperTransactionTemplate.executeWithoutResult(status -> work.run());
     }
 
     private void assertInviteCollision(Runnable claim) {
