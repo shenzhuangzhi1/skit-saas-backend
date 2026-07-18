@@ -14,6 +14,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.function.Function;
@@ -82,6 +83,40 @@ class SkitAdminRecordControllerTest {
                 eq(SkitManagementCommandType.ADMIN_RECORD_WRITE),
                 eq("同步穿山甲 SDK 真实剧单"), any());
         verify(recordService).createRecord(request);
+    }
+
+    @Test
+    void targetedDeleteRequiresGuardedAuditedWriteScope() {
+        when(tenantScopeGuard.writeTenant(eq(162L),
+                eq(SkitManagementCommandType.ADMIN_RECORD_WRITE),
+                eq("删除目标租户短剧目录记录"), any()))
+                .thenAnswer(invocation -> apply(invocation.getArgument(3)));
+
+        Boolean result = controller.deleteRecord(
+                901L, 162L, "删除目标租户短剧目录记录").getData();
+
+        assertEquals(true, result);
+        verify(tenantScopeGuard).writeTenant(eq(162L),
+                eq(SkitManagementCommandType.ADMIN_RECORD_WRITE),
+                eq("删除目标租户短剧目录记录"), any());
+        verify(recordService).deleteRecord(901L);
+    }
+
+    @Test
+    void targetedBatchDeleteRequiresGuardedAuditedWriteScope() {
+        when(tenantScopeGuard.writeTenant(eq(162L),
+                eq(SkitManagementCommandType.ADMIN_RECORD_WRITE),
+                eq("删除目标租户短剧目录记录"), any()))
+                .thenAnswer(invocation -> apply(invocation.getArgument(3)));
+
+        Boolean result = controller.deleteRecordList(
+                Arrays.asList(901L, 902L), 162L, "删除目标租户短剧目录记录").getData();
+
+        assertEquals(true, result);
+        verify(tenantScopeGuard).writeTenant(eq(162L),
+                eq(SkitManagementCommandType.ADMIN_RECORD_WRITE),
+                eq("删除目标租户短剧目录记录"), any());
+        verify(recordService).deleteRecordList(Arrays.asList(901L, 902L));
     }
 
     @SuppressWarnings("unchecked")

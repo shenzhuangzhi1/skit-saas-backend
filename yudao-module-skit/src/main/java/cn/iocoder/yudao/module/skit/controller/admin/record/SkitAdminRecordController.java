@@ -17,6 +17,8 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.validation.Valid;
+import javax.validation.constraints.Positive;
+import javax.validation.constraints.Size;
 import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
@@ -62,7 +64,18 @@ public class SkitAdminRecordController {
     @DeleteMapping("/delete")
     @Operation(summary = "删除短剧后台记录")
     @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
-    public CommonResult<Boolean> deleteRecord(@RequestParam("id") Long id) {
+    public CommonResult<Boolean> deleteRecord(@RequestParam("id") Long id,
+                                               @RequestParam(value = "tenantId", required = false)
+                                               @Positive Long tenantId,
+                                               @RequestParam(value = "reason", required = false)
+                                               @Size(min = 10, max = 200) String reason) {
+        if (tenantId != null) {
+            return success(adminTenantScopeGuard.writeTenant(tenantId,
+                    SkitManagementCommandType.ADMIN_RECORD_WRITE, reason, scope -> {
+                        skitAdminRecordService.deleteRecord(id);
+                        return true;
+                    }));
+        }
         skitAdminRecordService.deleteRecord(id);
         return success(true);
     }
@@ -70,7 +83,18 @@ public class SkitAdminRecordController {
     @DeleteMapping("/delete-list")
     @Operation(summary = "批量删除短剧后台记录")
     @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
-    public CommonResult<Boolean> deleteRecordList(@RequestParam("ids") List<Long> ids) {
+    public CommonResult<Boolean> deleteRecordList(@RequestParam("ids") List<Long> ids,
+                                                   @RequestParam(value = "tenantId", required = false)
+                                                   @Positive Long tenantId,
+                                                   @RequestParam(value = "reason", required = false)
+                                                   @Size(min = 10, max = 200) String reason) {
+        if (tenantId != null) {
+            return success(adminTenantScopeGuard.writeTenant(tenantId,
+                    SkitManagementCommandType.ADMIN_RECORD_WRITE, reason, scope -> {
+                        skitAdminRecordService.deleteRecordList(ids);
+                        return true;
+                    }));
+        }
         skitAdminRecordService.deleteRecordList(ids);
         return success(true);
     }
