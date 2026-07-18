@@ -6,6 +6,8 @@ import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordPa
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitAdminRecordSaveReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.record.vo.SkitDashboardSummaryRespVO;
+import cn.iocoder.yudao.module.skit.framework.security.SkitAdminTenantScopeGuard;
+import cn.iocoder.yudao.module.skit.framework.security.SkitManagementCommandType;
 import cn.iocoder.yudao.module.skit.service.record.SkitAdminRecordService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,11 +29,18 @@ public class SkitAdminRecordController {
 
     @Resource
     private SkitAdminRecordService skitAdminRecordService;
+    @Resource
+    private SkitAdminTenantScopeGuard adminTenantScopeGuard;
 
     @PostMapping("/create")
     @Operation(summary = "创建短剧后台记录")
     @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
     public CommonResult<Long> createRecord(@Valid @RequestBody SkitAdminRecordSaveReqVO createReqVO) {
+        if (createReqVO.getTenantId() != null) {
+            return success(adminTenantScopeGuard.writeTenant(createReqVO.getTenantId(),
+                    SkitManagementCommandType.ADMIN_RECORD_WRITE, createReqVO.getReason(),
+                    scope -> skitAdminRecordService.createRecord(createReqVO)));
+        }
         return success(skitAdminRecordService.createRecord(createReqVO));
     }
 
@@ -39,6 +48,13 @@ public class SkitAdminRecordController {
     @Operation(summary = "更新短剧后台记录")
     @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
     public CommonResult<Boolean> updateRecord(@Valid @RequestBody SkitAdminRecordSaveReqVO updateReqVO) {
+        if (updateReqVO.getTenantId() != null) {
+            return success(adminTenantScopeGuard.writeTenant(updateReqVO.getTenantId(),
+                    SkitManagementCommandType.ADMIN_RECORD_WRITE, updateReqVO.getReason(), scope -> {
+                        skitAdminRecordService.updateRecord(updateReqVO);
+                        return true;
+                    }));
+        }
         skitAdminRecordService.updateRecord(updateReqVO);
         return success(true);
     }
@@ -70,6 +86,10 @@ public class SkitAdminRecordController {
     @Operation(summary = "获得短剧后台记录分页")
     @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
     public CommonResult<PageResult<SkitAdminRecordRespVO>> getRecordPage(SkitAdminRecordPageReqVO pageReqVO) {
+        if (pageReqVO.getTenantId() != null) {
+            return success(adminTenantScopeGuard.readTenant(pageReqVO.getTenantId(), false,
+                    scope -> skitAdminRecordService.getRecordPage(pageReqVO)));
+        }
         return success(skitAdminRecordService.getRecordPage(pageReqVO));
     }
 

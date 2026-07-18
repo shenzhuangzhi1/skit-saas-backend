@@ -13,6 +13,7 @@ public enum SkitManagementCommandType {
     AD_ROLLOUT_TRANSITION(true),
     APP_RELEASE_UPDATE(false),
     APP_BUILD_MATERIAL_UPDATE(false),
+    ADMIN_RECORD_WRITE(true),
     COMMISSION_PLAN_PUBLISH(true),
     MEMBER_STATUS_CHANGE(true),
     MEMBER_PASSWORD_RESET(true),

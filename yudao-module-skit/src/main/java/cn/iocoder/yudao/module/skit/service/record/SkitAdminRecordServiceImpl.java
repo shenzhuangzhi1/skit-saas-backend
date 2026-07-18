@@ -85,21 +85,29 @@ public class SkitAdminRecordServiceImpl implements SkitAdminRecordService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PageResult<SkitAdminRecordRespVO> getRecordPage(SkitAdminRecordPageReqVO pageReqVO) {
+        boolean authoritativeDramaCatalog = "drama".equals(pageReqVO.getPageKey());
         try {
             PageSeedSpec spec = getSpec(pageReqVO.getPageKey());
             pageReqVO.setPageKey(spec.key);
-            ensureSeeded(spec.key);
+            if (!authoritativeDramaCatalog) {
+                ensureSeeded(spec.key);
+            }
             PageResult<SkitAdminRecordDO> pageResult = skitAdminRecordMapper.selectPage(pageReqVO);
             List<SkitAdminRecordRespVO> list = new ArrayList<>(pageResult.getList().size());
             for (SkitAdminRecordDO record : pageResult.getList()) {
                 list.add(convert(record));
             }
-            long total = Math.max(pageResult.getTotal(), (long) spec.totalRows);
-            if (list.isEmpty() && shouldBuildVirtualSeedPage(spec, pageReqVO)) {
+            long total = authoritativeDramaCatalog
+                    ? pageResult.getTotal() : Math.max(pageResult.getTotal(), (long) spec.totalRows);
+            if (!authoritativeDramaCatalog && list.isEmpty()
+                    && shouldBuildVirtualSeedPage(spec, pageReqVO)) {
                 return buildVirtualSeedPage(spec, pageReqVO);
             }
             return new PageResult<>(list, total);
         } catch (Exception e) {
+            if (authoritativeDramaCatalog) {
+                throw new IllegalStateException("真实短剧目录读取失败", e);
+            }
             log.warn("[getRecordPage][pageKey({}) 读取失败，返回短剧兜底分页]", pageReqVO.getPageKey(), e);
             return buildFallbackPage(pageReqVO);
         }

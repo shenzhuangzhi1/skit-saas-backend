@@ -63,4 +63,21 @@ class SkitAdminRecordServiceImplTest {
         verify(recordMapper, never()).insertSeedBatchIfAbsent(anyLong(), anyList());
     }
 
+    @Test
+    void dramaCatalogReadNeverInventsDemoRows() {
+        SkitAdminRecordPageReqVO request = new SkitAdminRecordPageReqVO();
+        request.setPageKey("drama");
+        request.setPageNo(1);
+        request.setPageSize(10);
+        when(recordMapper.selectPage(request))
+                .thenReturn(new PageResult<>(Collections.<SkitAdminRecordDO>emptyList(), 0L));
+
+        PageResult<?> result = service.getRecordPage(request);
+
+        assertEquals(0L, result.getTotal());
+        assertTrue(result.getList().isEmpty());
+        verify(recordMapper, never()).selectCountByPageKey("drama");
+        verify(recordMapper, never()).insertSeedBatchIfAbsent(anyLong(), anyList());
+    }
+
 }
