@@ -6,6 +6,7 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.app.SkitAppReleaseProfileMapper;
@@ -44,11 +45,12 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     private static final Pattern RUNTIME_VERSION = Pattern.compile(
             "[0-9]{1,9}(\\.[0-9]{1,9}){1,3}([-.][A-Za-z0-9._-]{1,32})?");
     private static final Pattern PLACEMENT = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
-    private static final Set<Integer> PHASE_ONE_AUTHORITATIVE_NETWORKS =
-            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(35, 66, 67)));
+    private static final Set<Integer> TAKU_ADX_AUTHORITATIVE_NETWORKS =
+            Collections.singleton(66);
 
     private final SkitTenantAdCapabilityMapper capabilityMapper;
     private final SkitAdAccountMapper adAccountMapper;
+    private final SkitAdNetworkCapabilityMapper networkCapabilityMapper;
     private final SkitTenantAdReadinessEvidenceReader evidenceReader;
     private final SkitAppReleaseProfileMapper releaseProfileMapper;
     private final SkitNativePlayerGrantMapper nativePlayerGrantMapper;
@@ -57,6 +59,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
 
     public SkitTenantAdCapabilityServiceImpl(SkitTenantAdCapabilityMapper capabilityMapper,
                                              SkitAdAccountMapper adAccountMapper,
+                                             SkitAdNetworkCapabilityMapper networkCapabilityMapper,
                                              SkitTenantAdReadinessEvidenceReader evidenceReader,
                                              SkitAppReleaseProfileMapper releaseProfileMapper,
                                              SkitNativePlayerGrantMapper nativePlayerGrantMapper,
@@ -64,6 +67,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                                              SkitRuntimeUpdateManifestVerifier manifestVerifier) {
         this.capabilityMapper = Objects.requireNonNull(capabilityMapper, "capabilityMapper");
         this.adAccountMapper = Objects.requireNonNull(adAccountMapper, "adAccountMapper");
+        this.networkCapabilityMapper = Objects.requireNonNull(networkCapabilityMapper,
+                "networkCapabilityMapper");
         this.evidenceReader = Objects.requireNonNull(evidenceReader, "evidenceReader");
         this.releaseProfileMapper = Objects.requireNonNull(releaseProfileMapper, "releaseProfileMapper");
         this.nativePlayerGrantMapper = Objects.requireNonNull(nativePlayerGrantMapper,
@@ -103,10 +108,11 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 .setDedicatedPlacementVerifiedAt(marker(command.getDedicatedPlacementVerified()))
                 .setRewardCallbackTemplateVerifiedAt(marker(command.getRewardCallbackTemplateVerified()))
                 .setImpressionCallbackTemplateVerifiedAt(marker(command.getImpressionCallbackTemplateVerified()))
-                .setUnlockNetworkFirmIdsJson(integerJson(PHASE_ONE_AUTHORITATIVE_NETWORKS))
+                .setUnlockNetworkFirmIdsJson(integerJson(TAKU_ADX_AUTHORITATIVE_NETWORKS))
                 .setShadowTestMemberIdsJson(longJson(command.getShadowTestMemberIds()))
                 .setMinNativeVersion(command.getMinNativeVersion().trim())
                 .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION);
+        networkCapabilityMapper.upsertTakuAdxAuthority(tenantId, command.getAdAccountId());
         SkitTenantAdReadinessEvidence evidence = evidenceReader.read(tenantId, prospective);
         if (evidence == null || !evidence.isAccountBelongsToTenant()) {
             throw exception(AD_ROLLOUT_NOT_READY, "CROSS_TENANT_CONFIGURATION");
@@ -262,20 +268,20 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         require(shadowBlockers, evidence.isDedicatedUnlockPlacement(), "UNLOCK_PLACEMENT_NOT_DEDICATED");
         require(shadowBlockers, evidence.isRewardCallbackTemplateVerified(),
                 "REWARD_CALLBACK_TEMPLATE_UNVERIFIED");
-        require(shadowBlockers, evidence.isImpressionCallbackTemplateVerified(),
-                "IMPRESSION_CALLBACK_TEMPLATE_UNVERIFIED");
         require(shadowBlockers, evidence.isUnlockNetworksAuthoritative(),
                 "UNLOCK_NETWORK_WITHOUT_AUTHORITATIVE_S2S");
-        require(shadowBlockers, evidence.isReportingCredentialConfigured(),
-                "REPORTING_CREDENTIAL_MISSING");
-        require(shadowBlockers, evidence.isReportingPermissionVerified(),
-                "REPORTING_PERMISSION_UNVERIFIED");
         require(shadowBlockers, evidence.isNativeReleaseReady(), "NATIVE_RELEASE_NOT_READY");
         require(shadowBlockers, evidence.isProtocolReady(), "NATIVE_PROTOCOL_NOT_READY");
         require(shadowBlockers, evidence.isShadowMembersBelongToTenant(), "SHADOW_MEMBER_TENANT_MISMATCH");
         require(shadowBlockers, evidence.isShadowMembersValid(), "SHADOW_TEST_MEMBERS_MISSING");
 
         List<String> productionBlockers = new ArrayList<>(shadowBlockers);
+        require(productionBlockers, evidence.isImpressionCallbackTemplateVerified(),
+                "IMPRESSION_CALLBACK_TEMPLATE_UNVERIFIED");
+        require(productionBlockers, evidence.isReportingCredentialConfigured(),
+                "REPORTING_CREDENTIAL_MISSING");
+        require(productionBlockers, evidence.isReportingPermissionVerified(),
+                "REPORTING_PERMISSION_UNVERIFIED");
         require(productionBlockers, evidence.isReportFresh(), "OFFICIAL_REPORT_STALE");
         require(productionBlockers, evidence.isSignedRewardCallbackObserved(),
                 "REAL_SIGNED_REWARD_CALLBACK_MISSING");
@@ -481,7 +487,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         result.setTenantId(tenantId);
         return result.setRolloutState(OFF)
                 .setDedicatedUnlockPlacementId("")
-                .setUnlockNetworkFirmIdsJson(integerJson(PHASE_ONE_AUTHORITATIVE_NETWORKS))
+                .setUnlockNetworkFirmIdsJson(integerJson(TAKU_ADX_AUTHORITATIVE_NETWORKS))
                 .setShadowTestMemberIdsJson("[]").setMinNativeVersion("")
                 .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION).setReadinessVersion(0);
     }

@@ -63,6 +63,8 @@ class TakuReportingHttpClientTest {
         assertEquals(0, firstBody.get("start").asInt());
         assertEquals(1, secondBody.get("start").asInt());
         assertEquals(1000, firstBody.get("limit").asInt());
+        assertTrue(firstBody.get("startdate").isIntegralNumber());
+        assertTrue(firstBody.get("enddate").isIntegralNumber());
         assertEquals("20260713", firstBody.get("startdate").asText());
         assertEquals("20260713", firstBody.get("enddate").asText());
         assertEquals(1, firstBody.get("app_id_list").size());

@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.app.SkitAppReleaseProfileMapper;
@@ -51,6 +52,8 @@ class SkitTenantAdCapabilityServiceImplTest {
     @Mock
     private SkitAdAccountMapper adAccountMapper;
     @Mock
+    private SkitAdNetworkCapabilityMapper networkCapabilityMapper;
+    @Mock
     private SkitTenantAdReadinessEvidenceReader evidenceReader;
     @Mock
     private SkitAppReleaseProfileMapper releaseProfileMapper;
@@ -69,7 +72,7 @@ class SkitTenantAdCapabilityServiceImplTest {
         lenient().when(adAccountMapper.selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID))
                 .thenReturn("unlock-placement-42");
         service = new SkitTenantAdCapabilityServiceImpl(
-                capabilityMapper, adAccountMapper, evidenceReader, releaseProfileMapper,
+                capabilityMapper, adAccountMapper, networkCapabilityMapper, evidenceReader, releaseProfileMapper,
                 nativePlayerGrantMapper, adSessionMapper, manifestVerifier);
     }
 
@@ -96,7 +99,7 @@ class SkitTenantAdCapabilityServiceImplTest {
         assertEquals(ACCOUNT_ID, view.getAdAccountId());
         assertEquals("unlock-placement-42", view.getDedicatedUnlockPlacementId());
         assertTrue(view.getDedicatedPlacementVerified());
-        assertEquals(new LinkedHashSet<>(Arrays.asList(35, 66, 67)), view.getUnlockNetworkFirmIds());
+        assertEquals(Collections.singleton(66), view.getUnlockNetworkFirmIds());
         assertEquals(new LinkedHashSet<>(Arrays.asList(101L, 102L)), view.getShadowTestMemberIds());
         assertEquals("2.4.0", view.getMinNativeVersion());
         assertEquals(1, view.getMinProtocolVersion());
@@ -168,6 +171,25 @@ class SkitTenantAdCapabilityServiceImplTest {
         assertTrue(view.isShadowReady());
         assertFalse(view.isProductionReady());
         assertTrue(view.getBlockers().contains("CALLBACK_PUBLIC_URL_HTTPS_REQUIRED"));
+    }
+
+    @Test
+    void accountingEvidenceBlocksProductionButDoesNotBlockControlledShadowTesting() {
+        SkitTenantAdCapabilityDO capability = shadowCapability();
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID)).thenReturn(capability);
+        SkitTenantAdReadinessEvidence evidence = readyEvidence()
+                .setImpressionCallbackTemplateVerified(false)
+                .setReportingCredentialConfigured(false)
+                .setReportingPermissionVerified(false);
+        when(evidenceReader.read(TENANT_ID, capability)).thenReturn(evidence);
+
+        SkitTenantAdCapabilityService.ReadinessView view = service.getReadiness();
+
+        assertTrue(view.isShadowReady());
+        assertFalse(view.isProductionReady());
+        assertTrue(view.getBlockers().contains("IMPRESSION_CALLBACK_TEMPLATE_UNVERIFIED"));
+        assertTrue(view.getBlockers().contains("REPORTING_CREDENTIAL_MISSING"));
+        assertTrue(view.getBlockers().contains("REPORTING_PERMISSION_UNVERIFIED"));
     }
 
     @Test
@@ -301,7 +323,7 @@ class SkitTenantAdCapabilityServiceImplTest {
         when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
                 .thenReturn(readyEvidence());
         when(capabilityMapper.updateConfigurationCas(TENANT_ID, capability.getId(), 3,
-                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[35,66,67]",
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[66]",
                 "[101,102]", "2.4.0", 1)).thenReturn(1);
         when(capabilityMapper.selectByTenantForShare(TENANT_ID))
                 .thenReturn(shadowCapability().setReadinessVersion(4));
@@ -314,8 +336,9 @@ class SkitTenantAdCapabilityServiceImplTest {
         service.configure(command);
 
         verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
+        verify(networkCapabilityMapper).upsertTakuAdxAuthority(TENANT_ID, ACCOUNT_ID);
         verify(capabilityMapper).updateConfigurationCas(TENANT_ID, capability.getId(), 3,
-                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[35,66,67]",
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[66]",
                 "[101,102]", "2.4.0", 1);
     }
 
@@ -438,7 +461,7 @@ class SkitTenantAdCapabilityServiceImplTest {
                 .setDedicatedPlacementVerifiedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 0))
                 .setRewardCallbackTemplateVerifiedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 1))
                 .setImpressionCallbackTemplateVerifiedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 2))
-                .setUnlockNetworkFirmIdsJson("[35,66,67]")
+                .setUnlockNetworkFirmIdsJson("[66]")
                 .setShadowTestMemberIdsJson("[101,102]")
                 .setMinNativeVersion("2.4.0").setMinProtocolVersion(1)
                 .setReadinessVersion(version);

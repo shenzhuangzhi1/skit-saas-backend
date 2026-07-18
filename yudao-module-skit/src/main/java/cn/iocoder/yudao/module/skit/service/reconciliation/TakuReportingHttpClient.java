@@ -105,8 +105,8 @@ public class TakuReportingHttpClient implements TakuReportingClient {
 
     private byte[] body(ReportRequest request, int start) {
         ObjectNode root = objectMapper.createObjectNode();
-        root.put("startdate", DATE.format(request.getStartDate()));
-        root.put("enddate", DATE.format(request.getEndDate()));
+        root.put("startdate", Integer.parseInt(DATE.format(request.getStartDate())));
+        root.put("enddate", Integer.parseInt(DATE.format(request.getEndDate())));
         root.putArray("app_id_list").add(request.getAppId());
         root.putArray("placement_id_list").add(request.getPlacementId());
         root.put("time_zone", request.getReportTimezone());
