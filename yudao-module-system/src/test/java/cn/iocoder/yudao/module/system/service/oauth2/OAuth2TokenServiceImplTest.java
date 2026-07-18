@@ -248,6 +248,7 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
         oauth2RefreshTokenMapper.insert(refreshTokenDO);
         OAuth2AccessTokenDO accessTokenDO = randomPojo(OAuth2AccessTokenDO.class, o -> o
                 .setRefreshToken(refreshToken).setUserId(1L)
+                .setExpiresTime(LocalDateTime.now().plusMinutes(5))
                 .setUserType(UserTypeEnum.MEMBER.getValue()).setTenantId(42L));
         oauth2AccessTokenMapper.insert(accessTokenDO);
         oauth2AccessTokenRedisDAO.set(accessTokenDO);
