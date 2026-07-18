@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.app;
 
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppBuildMaterialDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
@@ -9,6 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
+@InterceptorIgnore(tenantLine = "true") // Every statement binds tenant_id explicitly, including locking reads.
 public interface SkitAppBuildMaterialMapper {
 
     @Select("SELECT * FROM `skit_app_build_material` WHERE `tenant_id`=#{tenantId} "
