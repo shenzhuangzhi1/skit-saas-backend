@@ -5,8 +5,10 @@ domain="${1:-}"
 email="${LETSENCRYPT_EMAIL:-}"
 deploy_path="${SKIT_DEPLOY_PATH:-skit-saas}"
 deploy_user="${SKIT_DEPLOY_USER:-}"
-upstream="${SKIT_FRONTEND_UPSTREAM:-127.0.0.1:48081}"
+frontend_upstream="${SKIT_FRONTEND_UPSTREAM:-127.0.0.1:48081}"
+callback_upstream="${SKIT_BACKEND_UPSTREAM:-127.0.0.1:48080}"
 frontend_port="48081"
+backend_port="48080"
 proxy_name="skit-public-https"
 proxy_root="/opt/${proxy_name}"
 webroot="${proxy_root}/webroot"
@@ -25,8 +27,12 @@ if [[ ! "${email}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
   echo "LETSENCRYPT_EMAIL must be a valid certificate contact address." >&2
   exit 1
 fi
-if [ "${upstream}" != "127.0.0.1:${frontend_port}" ]; then
+if [ "${frontend_upstream}" != "127.0.0.1:${frontend_port}" ]; then
   echo "SKIT_FRONTEND_UPSTREAM must be 127.0.0.1:${frontend_port}." >&2
+  exit 1
+fi
+if [ "${callback_upstream}" != "127.0.0.1:${backend_port}" ]; then
+  echo "SKIT_BACKEND_UPSTREAM must be 127.0.0.1:${backend_port}." >&2
   exit 1
 fi
 if [[ ! "${deploy_path}" =~ ^/?[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$ ]] \
@@ -145,7 +151,7 @@ server {
     }
 
     location / {
-        proxy_pass http://${upstream};
+        proxy_pass http://${frontend_upstream};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -197,7 +203,7 @@ server {
 
     location ^~ /app-api/skit/ad-callback/taku/ {
         access_log off;
-        proxy_pass http://${upstream};
+        proxy_pass http://${callback_upstream};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -207,7 +213,7 @@ server {
     }
 
     location / {
-        proxy_pass http://${upstream};
+        proxy_pass http://${frontend_upstream};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -260,7 +266,7 @@ upsert_env FRONTEND_PORT "${frontend_port}"
 )
 frontend_ready=0
 for _ in $(seq 1 60); do
-  if curl --fail --silent --show-error "http://${upstream}/" >/dev/null; then
+  if curl --fail --silent --show-error "http://${frontend_upstream}/" >/dev/null; then
     frontend_ready=1
     break
   fi
