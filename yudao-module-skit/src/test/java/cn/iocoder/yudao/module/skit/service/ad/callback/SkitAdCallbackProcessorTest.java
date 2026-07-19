@@ -73,6 +73,7 @@ class SkitAdCallbackProcessorTest {
     private static final String PLACEMENT = "reward-placement";
     private static final String TRANSACTION = "reward-transaction-789";
     private static final String SIGNED_SHOW = "signed-show-456";
+    private static final String SESSION_PUBLIC_ID = "0123456789abcdefghijkl";
     private static final String ADSOURCE = "56789";
     private static final String PSEUDONYMOUS_USER = "m_member_42";
     private static final byte[] REWARD_SECRET = "taku-reward-secret-32-bytes-value"
@@ -359,6 +360,23 @@ class SkitAdCallbackProcessorTest {
         assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
         verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
                 INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, null, 66, ADSOURCE,
+                PROCESSING_AT);
+    }
+
+    @Test
+    void signedShowCustomExtAllowsAStoredCachedCustomDataPayloadToGrantItsOwnSession() {
+        String cachedCustomData = tokenService.issue("cached-session-from-prior-ad").consumeCustomData();
+        session.setSessionId(SESSION_PUBLIC_ID);
+        String query = signedRewardQuery(cachedCustomData, TRANSACTION, SIGNED_SHOW, SESSION_PUBLIC_ID);
+        decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(query).setExtraDataHash(tokenService.hashCustomData(cachedCustomData));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
                 PROCESSING_AT);
     }
 
@@ -950,9 +968,16 @@ class SkitAdCallbackProcessorTest {
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId) {
+        return signedRewardQuery(extraData, transactionId, signedShowId, null);
+    }
+
+    private String signedRewardQuery(String extraData, String transactionId, String signedShowId,
+                                     String signedShowCustomExt) {
         String ilrd = "{\"network_firm_id\":66,\"adsource_id\":\"" + ADSOURCE + "\""
                 + (signedShowId == null ? "" : ",\"id\":\"" + signedShowId + "\"")
-                + ",\"adunit_id\":\"" + PLACEMENT + "\"}";
+                + ",\"adunit_id\":\"" + PLACEMENT + "\""
+                + (signedShowCustomExt == null ? "" : ",\"show_custom_ext\":\""
+                + signedShowCustomExt + "\"") + "}";
         String signing = "trans_id=" + transactionId + "&placement_id=" + PLACEMENT
                 + "&adsource_id=" + ADSOURCE + "&reward_amount=1&reward_name=coin&sec_key="
                 + new String(REWARD_SECRET, StandardCharsets.US_ASCII) + "&ilrd=" + ilrd;

@@ -58,6 +58,7 @@ class SkitCallbackIngressServiceImplTest {
     private static final String CALLBACK_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     private static final String PLACEMENT_ID = "reward-placement";
     private static final String SHOW_ID = "show-123";
+    private static final String SESSION_PUBLIC_ID = "0123456789abcdefghijkl";
     private static final String PSEUDONYMOUS_USER = "m_member_42";
     private static final byte[] REWARD_SECRET = "taku-reward-secret-32-bytes-value"
             .getBytes(StandardCharsets.US_ASCII);
@@ -176,6 +177,33 @@ class SkitCallbackIngressServiceImplTest {
         assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
         assertEquals(transactionId, insertedInbox.get().getProviderTransactionId());
         assertEquals(signedShowId, insertedInbox.get().getProviderShowId());
+        verify(sessionMapper).markRewardCallbackReceivedCas(
+                TENANT_ID, SESSION_ROW_ID, ACCOUNT_ID, INBOX_ID, RECEIVED_AT);
+    }
+
+    @Test
+    void signedShowCustomExtRecoversCurrentSessionWhenSdkReplaysOlderValidCustomData() {
+        String cachedCustomData = tokenService.issue("cached-session-from-prior-ad").consumeCustomData();
+        SkitAdSessionDO staleSession = session().setId(SESSION_ROW_ID + 1L)
+                .setSessionId("zyxwvutsrqponmlkjihgfe")
+                .setSessionTokenHash(tokenService.hashCustomData(cachedCustomData));
+        when(sessionMapper.selectByTokenHashForUpdate(eq(TENANT_ID), eq(ACCOUNT_ID), any(byte[].class)))
+                .thenReturn(staleSession);
+        when(sessionMapper.selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, SESSION_PUBLIC_ID)).thenReturn(session);
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY,
+                signedRewardQuery(cachedCustomData, REWARD_SECRET, SHOW_ID, SHOW_ID,
+                        SESSION_PUBLIC_ID),
+                "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
+        assertEquals(SESSION_ROW_ID, insertedInbox.get().getAdSessionId());
+        verify(sessionMapper).selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, SESSION_PUBLIC_ID);
+        verify(sessionMapper, never()).selectByTokenHashForUpdate(
+                eq(TENANT_ID), eq(ACCOUNT_ID), any(byte[].class));
         verify(sessionMapper).markRewardCallbackReceivedCas(
                 TENANT_ID, SESSION_ROW_ID, ACCOUNT_ID, INBOX_ID, RECEIVED_AT);
     }
@@ -431,7 +459,7 @@ class SkitCallbackIngressServiceImplTest {
 
     private SkitAdSessionDO session() {
         SkitAdSessionDO row = new SkitAdSessionDO()
-                .setId(SESSION_ROW_ID).setSessionId("session-for-callback")
+                .setId(SESSION_ROW_ID).setSessionId(SESSION_PUBLIC_ID)
                 .setSessionTokenHash(tokenService.hashCustomData(customData))
                 .setSessionTokenKeyVersion(1).setProtocolVersion(1).setMemberId(42L)
                 .setAdAccountId(ACCOUNT_ID).setPolicySnapshotId(88L)
@@ -465,13 +493,21 @@ class SkitCallbackIngressServiceImplTest {
     }
 
     private static String signedRewardQuery(String extraData, byte[] signingSecret) {
-        return signedRewardQuery(extraData, signingSecret, SHOW_ID, SHOW_ID);
+        return signedRewardQuery(extraData, signingSecret, SHOW_ID, SHOW_ID, null);
     }
 
     private static String signedRewardQuery(String extraData, byte[] signingSecret,
                                             String transactionId, String signedShowId) {
+        return signedRewardQuery(extraData, signingSecret, transactionId, signedShowId, null);
+    }
+
+    private static String signedRewardQuery(String extraData, byte[] signingSecret,
+                                            String transactionId, String signedShowId,
+                                            String signedShowCustomExt) {
         String ilrd = "{\"network_firm_id\":66,\"adsource_id\":\"7\","
-                + "\"id\":\"" + signedShowId + "\",\"adunit_id\":\"" + PLACEMENT_ID + "\"}";
+                + "\"id\":\"" + signedShowId + "\",\"adunit_id\":\"" + PLACEMENT_ID + "\""
+                + (signedShowCustomExt == null ? "" : ",\"show_custom_ext\":\""
+                + signedShowCustomExt + "\"") + "}";
         String preimage = "trans_id=" + transactionId + "&placement_id=" + PLACEMENT_ID
                 + "&adsource_id=7&reward_amount=1&reward_name=coin&sec_key="
                 + new String(signingSecret, StandardCharsets.US_ASCII) + "&ilrd=" + ilrd;

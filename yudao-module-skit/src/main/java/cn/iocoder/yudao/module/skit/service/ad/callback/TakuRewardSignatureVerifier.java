@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /** Verifies Taku's documented reward MD5 and derives narrowly scoped signed authority. */
 @Component
@@ -23,6 +24,7 @@ public class TakuRewardSignatureVerifier {
     private static final int MAX_ILRD_DEPTH = 16;
     private static final int MAX_ILRD_NODES = 512;
     private static final int MAX_ILRD_IDENTIFIER_LENGTH = 512;
+    private static final Pattern SESSION_ID = Pattern.compile("[A-Za-z0-9_-]{22}");
 
     private final ObjectMapper strictObjectMapper;
 
@@ -74,6 +76,22 @@ public class TakuRewardSignatureVerifier {
         return new VerificationResult(Status.SIGNED_REWARD, true, authority);
     }
 
+    /**
+     * Returns a bounded, unverified ILRD lookup hint only. It must never authorize a reward;
+     * callers must verify the callback with the candidate session's pinned secret and require
+     * the resulting signed evidence to bind to that same session.
+     */
+    String extractUnverifiedShowCustomExtHint(TakuRewardCallback callback) {
+        if (callback == null || callback.isHealthTestProbe() || callback.getExactIlrd() == null) {
+            return null;
+        }
+        try {
+            return parseSignedIlrd(callback.getExactIlrd()).getShowCustomExt();
+        } catch (InvalidIlrdException ignored) {
+            return null;
+        }
+    }
+
     private static byte[] calculateDigest(TakuRewardCallback callback, byte[] rewardSecret) {
         try {
             MessageDigest digest = MessageDigest.getInstance("MD5"); // Required by Taku's protocol.
@@ -121,7 +139,9 @@ public class TakuRewardSignatureVerifier {
         String adsourceId = optionalStrictIdentifier(root.get("adsource_id"));
         String showId = optionalStrictIdentifier(root.get("id"));
         String adUnitId = optionalStrictIdentifier(root.get("adunit_id"));
-        return new SignedIlrdEvidence(networkNode.intValue(), adsourceId, showId, adUnitId);
+        String showCustomExt = optionalSessionId(root.get("show_custom_ext"));
+        return new SignedIlrdEvidence(networkNode.intValue(), adsourceId, showId, adUnitId,
+                showCustomExt);
     }
 
     private static void validateTreeBounds(JsonNode root) {
@@ -173,6 +193,17 @@ public class TakuRewardSignatureVerifier {
 
     private static String optionalStrictIdentifier(JsonNode node) {
         return node == null ? null : strictIdentifier(node);
+    }
+
+    private static String optionalSessionId(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        String value = strictIdentifier(node);
+        if (!SESSION_ID.matcher(value).matches()) {
+            throw new InvalidIlrdException();
+        }
+        return value;
     }
 
     private static boolean matchesCallback(SignedIlrdEvidence evidence, TakuRewardCallback callback) {
@@ -313,13 +344,15 @@ public class TakuRewardSignatureVerifier {
         private final String adsourceId;
         private final String showId;
         private final String adUnitId;
+        private final String showCustomExt;
 
         private SignedIlrdEvidence(int networkFirmId, String adsourceId,
-                                   String showId, String adUnitId) {
+                                   String showId, String adUnitId, String showCustomExt) {
             this.networkFirmId = networkFirmId;
             this.adsourceId = adsourceId;
             this.showId = showId;
             this.adUnitId = adUnitId;
+            this.showCustomExt = showCustomExt;
         }
 
         public int getNetworkFirmId() {
@@ -336,6 +369,10 @@ public class TakuRewardSignatureVerifier {
 
         public String getAdUnitId() {
             return adUnitId;
+        }
+
+        public String getShowCustomExt() {
+            return showCustomExt;
         }
     }
 
