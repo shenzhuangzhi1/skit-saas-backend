@@ -40,7 +40,7 @@ class SkitAdSessionStateMachineTest {
     }
 
     @Test
-    void closeAndFailureRemainTelemetryOnlyAndNeverReleaseActiveScope() {
+    void lifecycleOnlyOverloadNeverReleasesActiveScope() {
         LocalDateTime deadline = LocalDateTime.of(2026, 7, 14, 12, 20);
 
         assertEquals(SkitAdSessionStateMachine.ClientLifecycle.CLOSED,
@@ -55,6 +55,24 @@ class SkitAdSessionStateMachineTest {
         assertFalse(machine.shouldReleaseActiveScope(
                 SkitAdSessionStateMachine.RewardVerification.SIGNED_VERIFIED,
                 SkitAdSessionStateMachine.Entitlement.NONE, deadline, deadline.plusHours(1)));
+    }
+
+    @Test
+    void preShowFailureRemainsTelemetryOnlyInSessionFacts() {
+        SkitAdSessionStateMachine.SessionFacts before = new SkitAdSessionStateMachine.SessionFacts(
+                SkitAdSessionStateMachine.ClientLifecycle.LOADING,
+                SkitAdSessionStateMachine.RewardVerification.PENDING,
+                SkitAdSessionStateMachine.Entitlement.NONE,
+                SkitAdSessionStateMachine.Revenue.NONE);
+
+        SkitAdSessionStateMachine.SessionFacts after = machine.applyClientEvent(
+                before, SkitAdSessionStateMachine.ClientEvent.FAILED);
+
+        assertEquals(SkitAdSessionStateMachine.ClientLifecycle.FAILED, after.getClientLifecycle());
+        assertEquals(SkitAdSessionStateMachine.RewardVerification.PENDING,
+                after.getRewardVerification());
+        assertEquals(SkitAdSessionStateMachine.Entitlement.NONE, after.getEntitlement());
+        assertEquals(SkitAdSessionStateMachine.Revenue.NONE, after.getRevenue());
     }
 
     @Test

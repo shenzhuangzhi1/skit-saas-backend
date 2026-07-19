@@ -477,6 +477,83 @@ class SkitAdSessionServiceImplTest {
     }
 
     @Test
+    void preShowFailureRejectsRewardAndReleasesScopeWithoutGrantOrRevenue() {
+        SkitAdSessionDO session = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("LOADING").setLastCallbackSequence(0).setVersion(3);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        when(clientEventMapper.selectByClientEventId(TENANT_ID, 92L, "event-1")).thenReturn(null);
+        when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 1)).thenReturn(null);
+        when(clientEventMapper.insertCanonical(any(SkitAdClientEventDO.class))).thenReturn(1);
+        when(sessionMapper.markPreShowClientFailureAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 3, "LOADING", 0, 1,
+                "request-1", now())).thenReturn(1);
+        SkitAdSessionService.ClientEventCommand failed = baseEvent(1, "FAILED", "ERROR");
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(failed), RUNTIME);
+
+        assertEquals("FAILED", result.getClientLifecycleStatus());
+        assertEquals("REJECTED", result.getRewardVerificationStatus());
+        assertEquals("NONE", result.getEntitlementStatus());
+        assertEquals("NONE", result.getRevenueStatus());
+        assertNull(session.getActiveScopeHash());
+        assertEquals(now(), session.getActiveScopeReleasedAt());
+        assertEquals("REWARD_REJECTED", session.getActiveScopeReleaseReason());
+        assertEquals("CLIENT_PRE_SHOW_FAILED", session.getFailureReason());
+        verify(sessionMapper, never()).updateClientLifecycleCas(anyLong(), anyLong(), anyLong(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void acceptedRewardCallbackWinsOverLaterPreShowClientFailure() {
+        SkitAdSessionDO session = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("LOADING").setLastCallbackSequence(0).setVersion(3)
+                .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusSeconds(1));
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        when(clientEventMapper.selectByClientEventId(TENANT_ID, 92L, "event-1")).thenReturn(null);
+        when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 1)).thenReturn(null);
+        when(clientEventMapper.insertCanonical(any(SkitAdClientEventDO.class))).thenReturn(1);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 3, "LOADING", 0,
+                1, "FAILED", "FAILED", "request-1", null, null, null)).thenReturn(1);
+        SkitAdSessionService.ClientEventCommand failed = baseEvent(1, "FAILED", "ERROR");
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(failed), RUNTIME);
+
+        assertEquals("FAILED", result.getClientLifecycleStatus());
+        assertEquals("PENDING", result.getRewardVerificationStatus());
+        assertNotNull(session.getActiveScopeHash());
+        assertNull(session.getActiveScopeReleasedAt());
+        assertNull(session.getActiveScopeReleaseReason());
+        verify(sessionMapper, never()).markPreShowClientFailureAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), any(), any(), any(), any(),
+                any(), any());
+    }
+
+    @Test
+    void failedEventWithShowIdentityIsInvalidAndCannotReleaseScope() {
+        SkitAdSessionDO session = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("LOADING").setLastCallbackSequence(0).setVersion(3);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        SkitAdSessionService.ClientEventCommand failed = baseEvent(1, "FAILED", "ERROR");
+        failed.setProviderShowId("show-1");
+
+        ServiceException rejected = assertThrows(ServiceException.class,
+                () -> service.recordClientEvents(
+                        MEMBER_ID, SESSION_ID, Collections.singletonList(failed), RUNTIME));
+
+        assertEquals(AD_SESSION_INVALID.getCode(), rejected.getCode());
+        assertEquals("PENDING", session.getRewardVerificationStatus());
+        assertNotNull(session.getActiveScopeHash());
+        verify(clientEventMapper, never()).insertCanonical(any());
+        verify(sessionMapper, never()).markPreShowClientFailureAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void serverMarksCreatedSessionLoadExpiredAndDoesNotAcceptLateLoadStart() {
         SkitAdSessionDO session = activeSession(TENANT_ID, MEMBER_ID)
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);

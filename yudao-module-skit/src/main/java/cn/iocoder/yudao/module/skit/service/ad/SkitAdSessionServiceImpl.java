@@ -487,6 +487,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         } catch (IllegalStateException ex) {
             throw exception(AD_SESSION_STATE_CONFLICT);
         }
+        boolean terminalPreShowFailure = isTerminalPreShowFailure(session, event, current, clientEvent);
+        LocalDateTime occurredAt = now();
         SkitAdClientEventDO evidence = new SkitAdClientEventDO()
                 .setAdSessionId(session.getId()).setProtocolVersion(event.getProtocolVersion())
                 .setClientEventId(event.getClientEventId()).setCallbackSequence(event.getCallbackSequence())
@@ -494,20 +496,37 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 .setSdkRequestId(event.getSdkRequestId()).setProviderShowId(event.getProviderShowId())
                 .setNetworkFirmId(event.getNetworkFirmId()).setAdsourceId(event.getAdsourceId())
                 .setClientRewardObserved(Boolean.TRUE.equals(event.getClientRewardObserved()))
-                .setClosed(Boolean.TRUE.equals(event.getClosed())).setPayloadHash(payloadHash).setOccurredAt(now());
+                .setClosed(Boolean.TRUE.equals(event.getClosed())).setPayloadHash(payloadHash)
+                .setOccurredAt(occurredAt);
         evidence.setTenantId(tenantId);
         if (clientEventMapper.insertCanonical(evidence) != 1) {
             throw new IllegalStateException("Client event evidence was not appended exactly once");
         }
-        int updated = sessionMapper.updateClientLifecycleCas(tenantId, session.getId(), memberId,
-                session.getVersion(), session.getClientLifecycleStatus(), session.getLastCallbackSequence(),
-                event.getCallbackSequence(), next.name(), event.getEventType(), event.getSdkRequestId(),
-                event.getProviderShowId(), event.getNetworkFirmId(), event.getAdsourceId());
+        int updated;
+        if (terminalPreShowFailure) {
+            updated = sessionMapper.markPreShowClientFailureAndReleaseScopeCas(
+                    tenantId, session.getId(), memberId, session.getVersion(),
+                    session.getClientLifecycleStatus(), session.getLastCallbackSequence(),
+                    event.getCallbackSequence(), event.getSdkRequestId(), occurredAt);
+        } else {
+            updated = sessionMapper.updateClientLifecycleCas(tenantId, session.getId(), memberId,
+                    session.getVersion(), session.getClientLifecycleStatus(), session.getLastCallbackSequence(),
+                    event.getCallbackSequence(), next.name(), event.getEventType(),
+                    event.getSdkRequestId(), event.getProviderShowId(), event.getNetworkFirmId(),
+                    event.getAdsourceId());
+        }
         if (updated != 1) {
             throw exception(AD_SESSION_STATE_CONFLICT);
         }
-        session.setClientLifecycleStatus(next.name()).setLastCallbackSequence(event.getCallbackSequence())
+        session.setClientLifecycleStatus(next.name())
+                .setLastCallbackSequence(event.getCallbackSequence())
                 .setLastClientEvent(event.getEventType()).setVersion(session.getVersion() + 1);
+        if (terminalPreShowFailure) {
+            session.setRewardVerificationStatus(SkitAdSessionStateMachine.RewardVerification.REJECTED.name())
+                    .setActiveScopeHash(null).setActiveScopeReleasedAt(occurredAt)
+                    .setActiveScopeReleaseReason("REWARD_REJECTED")
+                    .setFailureReason("CLIENT_PRE_SHOW_FAILED");
+        }
         if (session.getSdkRequestId() == null) {
             session.setSdkRequestId(event.getSdkRequestId());
         }
@@ -520,6 +539,23 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         if (session.getAdsourceId() == null) {
             session.setAdsourceId(event.getAdsourceId());
         }
+    }
+
+    private boolean isTerminalPreShowFailure(SkitAdSessionDO session,
+                                             ClientEventCommand event,
+                                             SkitAdSessionStateMachine.ClientLifecycle current,
+                                             SkitAdSessionStateMachine.ClientEvent clientEvent) {
+        return clientEvent == SkitAdSessionStateMachine.ClientEvent.FAILED
+                && (current == SkitAdSessionStateMachine.ClientLifecycle.CREATED
+                || current == SkitAdSessionStateMachine.ClientLifecycle.LOADING)
+                && SkitAdSessionStateMachine.RewardVerification.PENDING.name()
+                .equals(session.getRewardVerificationStatus())
+                && SkitAdSessionStateMachine.Entitlement.NONE.name().equals(session.getEntitlementStatus())
+                && SkitAdSessionStateMachine.Revenue.NONE.name().equals(session.getRevenueStatus())
+                && session.getRewardCallbackInboxId() == null
+                && session.getRewardCallbackReceivedAt() == null
+                && session.getProviderShowId() == null
+                && event.getProviderShowId() == null;
     }
 
     private void validateClientEvent(SkitAdSessionDO session, ClientEventCommand event, String sessionId) {

@@ -262,6 +262,25 @@ class SkitCallbackIngressServiceImplTest {
     }
 
     @Test
+    void signedRewardAfterTerminalPreShowFailureIsRejectedBeforeVerificationOrInbox() {
+        session.setClientLifecycleStatus("FAILED").setRewardVerificationStatus("REJECTED");
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY, signedRewardQuery(customData, REWARD_SECRET), "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(credentialService, never()).resolveRewardSecret(anyLong(), anyLong(),
+                org.mockito.ArgumentMatchers.anyInt(), any(), any());
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+        ArgumentCaptor<SkitAdCallbackEdgeAttemptDO> edge =
+                ArgumentCaptor.forClass(SkitAdCallbackEdgeAttemptDO.class);
+        verify(edgeAttemptMapper).insert(edge.capture());
+        assertEquals("SESSION_MISMATCH", edge.getValue().getResultCode());
+    }
+
+    @Test
     void sameIdempotencyKeyWithDifferentPayloadIsFrozenAsConflictAndReturns602() {
         SkitAdCallbackInboxDO canonical = new SkitAdCallbackInboxDO()
                 .setId(INBOX_ID).setAdAccountId(ACCOUNT_ID).setAdSessionId(SESSION_ROW_ID)

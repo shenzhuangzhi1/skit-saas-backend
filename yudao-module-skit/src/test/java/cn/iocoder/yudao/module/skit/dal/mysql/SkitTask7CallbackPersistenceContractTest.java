@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackEdgeAttemptMapper
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.apache.ibatis.annotations.Insert;
@@ -76,10 +77,20 @@ class SkitTask7CallbackPersistenceContractTest {
         }
         assertNotNull(SkitAdCallbackEdgeAttemptMapper.class
                 .getMethod("insert", SkitAdCallbackEdgeAttemptDO.class).getAnnotation(Insert.class));
-        assertNotNull(SkitAdCallbackInboxMapper.class
-                .getMethod("insertOrGetCanonical", SkitAdCallbackInboxDO.class).getAnnotation(Insert.class));
-        assertNotNull(SkitAdCallbackAttemptMapper.class
-                .getMethod("insert", SkitAdCallbackAttemptDO.class).getAnnotation(Insert.class));
+        Method canonicalInboxInsert = SkitAdCallbackInboxMapper.class
+                .getMethod("insertOrGetCanonical", SkitAdCallbackInboxDO.class);
+        assertNotNull(canonicalInboxInsert.getAnnotation(Insert.class));
+        InterceptorIgnore tenantRewriteIgnore = canonicalInboxInsert.getAnnotation(InterceptorIgnore.class);
+        assertNotNull(tenantRewriteIgnore,
+                "explicit callback tenant SQL must opt out of tenant-line rewriting");
+        assertTrue("true".equalsIgnoreCase(tenantRewriteIgnore.tenantLine()));
+        Method callbackAttemptInsert = SkitAdCallbackAttemptMapper.class
+                .getMethod("insert", SkitAdCallbackAttemptDO.class);
+        assertNotNull(callbackAttemptInsert.getAnnotation(Insert.class));
+        InterceptorIgnore attemptTenantRewriteIgnore = callbackAttemptInsert.getAnnotation(InterceptorIgnore.class);
+        assertNotNull(attemptTenantRewriteIgnore,
+                "explicit callback-attempt tenant SQL must opt out of tenant-line rewriting");
+        assertTrue("true".equalsIgnoreCase(attemptTenantRewriteIgnore.tenantLine()));
 
         String inboxLock = sql(SkitAdCallbackInboxMapper.class.getMethod(
                 "selectByTenantAccountAndIdForUpdate", Long.class, Long.class, Long.class), Select.class);

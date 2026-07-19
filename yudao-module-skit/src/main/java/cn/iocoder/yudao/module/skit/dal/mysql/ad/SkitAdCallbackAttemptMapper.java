@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.dal.mysql.ad;
 
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackAttemptDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdRetentionClaimDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -25,6 +26,7 @@ public interface SkitAdCallbackAttemptMapper {
             + "`payload_hash`,`result_code`,`received_at`,`creator`,`updater`) VALUES "
             + "(#{tenantId},#{callbackInboxId},#{adAccountId},#{adSessionId},#{attemptNo},"
             + "#{payloadHash},#{resultCode},#{receivedAt},'callback-delivery','callback-delivery')")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicitly bound and constrained to the inbox scope
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(SkitAdCallbackAttemptDO row);
 

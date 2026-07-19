@@ -130,6 +130,37 @@ public interface SkitAdSessionMapper {
                                  @Param("networkFirmId") Integer networkFirmId,
                                  @Param("adsourceId") String adsourceId);
 
+    @Update("UPDATE `skit_ad_session` SET `client_lifecycle_status`='FAILED',"
+            + "`reward_verification_status`='REJECTED',"
+            + "`last_callback_sequence`=#{callbackSequence},`last_client_event`='FAILED',"
+            + "`sdk_request_id`=COALESCE(`sdk_request_id`,#{sdkRequestId}),"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{failedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='CLIENT_PRE_SHOW_FAILED',`version`=`version`+1,"
+            + "`updater`='ad-client-event',`update_time`=#{failedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`=#{expectedStatus} "
+            + "AND `client_lifecycle_status` IN ('CREATED','LOADING') "
+            + "AND `last_callback_sequence`=#{expectedLastCallbackSequence} "
+            + "AND #{callbackSequence} > `last_callback_sequence` "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status`='NONE' AND `reward_callback_inbox_id` IS NULL "
+            + "AND `reward_callback_received_at` IS NULL AND `provider_show_id` IS NULL "
+            + "AND `active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
+            + "AND `active_scope_release_reason` IS NULL "
+            + "AND (#{sdkRequestId} IS NULL OR `sdk_request_id` IS NULL OR `sdk_request_id`=#{sdkRequestId}) "
+            + "AND `deleted`=b'0'")
+    int markPreShowClientFailureAndReleaseScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedLastCallbackSequence") Integer expectedLastCallbackSequence,
+            @Param("callbackSequence") Integer callbackSequence,
+            @Param("sdkRequestId") String sdkRequestId,
+            @Param("failedAt") LocalDateTime failedAt);
+
     @Update("UPDATE `skit_ad_session` SET `client_lifecycle_status`='LOAD_EXPIRED',"
             + "`failure_reason`='LOAD_WINDOW_EXPIRED',`version`=`version`+1,"
             + "`updater`='ad-load-expiry',`update_time`=#{authoritativeNow} "

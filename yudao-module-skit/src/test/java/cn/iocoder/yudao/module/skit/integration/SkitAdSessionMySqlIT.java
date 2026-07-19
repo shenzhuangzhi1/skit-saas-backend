@@ -5,6 +5,10 @@ import cn.iocoder.yudao.framework.tenant.config.TenantProperties;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.db.TenantDatabaseInterceptor;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackAttemptDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackEdgeAttemptDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitAdPolicySnapshotDO;
@@ -15,7 +19,11 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackAttemptMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackEdgeAttemptMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdClientEventMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.commission.SkitAdPolicySnapshotMapper;
@@ -26,6 +34,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.record.SkitAdminRecordMapper;
+import cn.iocoder.yudao.module.skit.framework.crypto.SkitCallbackPayloadCryptoService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionCreateTransactionExecutor;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
@@ -33,6 +42,12 @@ import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionServiceImpl;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionTokenService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitHmacAdSessionTokenService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackIngressService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackIngressServiceImpl;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRateLimiter;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRoutingService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.TakuCallbackCanonicalizer;
+import cn.iocoder.yudao.module.skit.service.ad.callback.TakuRewardSignatureVerifier;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotServiceImpl;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
@@ -75,6 +90,7 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -93,11 +109,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
@@ -112,11 +131,16 @@ import static org.mockito.Mockito.when;
  */
 class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
 
+    private static final byte[] CALLBACK_REWARD_SECRET =
+            "taku-reward-secret-32-bytes-value".getBytes(StandardCharsets.US_ASCII);
+
     private AnnotationConfigApplicationContext context;
     private SkitAdSessionService sessionService;
+    private SkitCallbackIngressService callbackIngressService;
     private SkitAdSessionMapper sessionMapper;
     private SkitNativePlayerGrantMapper nativeGrantMapper;
     private SourceMemberLockGate sourceMemberLockGate;
+    private SessionRowLockRaceProbe sessionRowLockRaceProbe;
     private TimeZone previousJvmTimeZone;
     private String previousGlobalTimeZone;
 
@@ -132,17 +156,22 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         context.register(RealSessionConfiguration.class);
         context.refresh();
         sessionService = context.getBean(SkitAdSessionService.class);
+        callbackIngressService = context.getBean(SkitCallbackIngressService.class);
         sessionMapper = context.getBean(SkitAdSessionMapper.class);
         nativeGrantMapper = context.getBean(SkitNativePlayerGrantMapper.class);
         sourceMemberLockGate = context.getBean(SourceMemberLockGate.class);
+        sessionRowLockRaceProbe = context.getBean(SessionRowLockRaceProbe.class);
         assertTrue(AopUtils.isAopProxy(sessionService),
                 "the session service must execute through Spring's transaction proxy");
+        assertTrue(AopUtils.isAopProxy(callbackIngressService),
+                "the callback ingress must execute through Spring's transaction proxy");
     }
 
     @AfterEach
     void clearTenantContext() {
         TenantContextHolder.clear();
         sourceMemberLockGate.disarm();
+        sessionRowLockRaceProbe.disarm();
     }
 
     @AfterAll
@@ -345,6 +374,151 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 fixture.tenantId, first.getSessionId()));
     }
 
+    @Test
+    void preShowClientFailureReleasesScopeAndAllowsImmediateReplacement() {
+        SessionFixture fixture = insertSessionFixture(953101L, 953102L, 953103L, 953104L, 953105L);
+        long dramaId = 953106L;
+        int episodeNo = 12;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        assertEquals("CREATED", first.getOutcome());
+        SkitAdSessionService.ClientEventCommand failed = new SkitAdSessionService.ClientEventCommand();
+        failed.setProtocolVersion(1);
+        failed.setClientEventId("pre-show-failure-1");
+        failed.setCallbackSequence(0);
+        failed.setSessionId(first.getSessionId());
+        failed.setProvider("TAKU");
+        failed.setPlacementId("placement-" + fixture.tenantId);
+        failed.setEventType("FAILED");
+        failed.setNativeState("ERROR");
+        failed.setSdkRequestId("request-pre-show-failure-1");
+        failed.setClientRewardObserved(false);
+        failed.setClosed(false);
+
+        SkitAdSessionService.SessionView terminal = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, first.getSessionId(),
+                        Collections.singletonList(failed),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult second = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("FAILED", terminal.getClientLifecycleStatus());
+        assertEquals("REJECTED", terminal.getRewardVerificationStatus());
+        assertEquals("NONE", terminal.getEntitlementStatus());
+        assertEquals("NONE", terminal.getRevenueStatus());
+        assertEquals("CREATED", second.getOutcome());
+        assertNotEquals(first.getSessionId(), second.getSessionId());
+        assertEquals(2, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals("REWARD_REJECTED", jdbc().queryForObject(
+                "SELECT active_scope_release_reason FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?", String.class,
+                fixture.tenantId, first.getSessionId()));
+        assertEquals("CLIENT_PRE_SHOW_FAILED", jdbc().queryForObject(
+                "SELECT failure_reason FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                String.class, fixture.tenantId, first.getSessionId()));
+    }
+
+    @Test
+    void signedRewardIngressAndPreShowFailureRaceHasExactlyOneAuthoritativeOutcome() throws Exception {
+        SessionFixture fixture = insertSessionFixture(953201L, 953202L, 953203L, 953204L, 953205L);
+        long dramaId = 953206L;
+        int episodeNo = 13;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        jdbc().update("INSERT INTO skit_ad_network_capability "
+                        + "(tenant_id,ad_account_id,network_firm_id,reward_authority,supports_user_id,"
+                        + "supports_custom_data,supports_stable_transaction,supports_impression_revenue,"
+                        + "supports_reporting,enabled,verified_at) "
+                        + "VALUES (?,?,66,'SIGNED_REWARD',b'1',b'1',b'1',b'1',b'1',b'1',NOW())",
+                fixture.tenantId, fixture.accountId);
+
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command(dramaId, episodeNo)));
+        assertEquals("CREATED", created.getOutcome());
+        String sdkRequestId = "request-reward-failure-race";
+        SkitAdSessionService.SessionView loading = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Collections.singletonList(clientEvent(created, "race-loading", 0,
+                                "LOAD_STARTED", "LOADING", sdkRequestId)),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        assertEquals("LOADING", loading.getClientLifecycleStatus());
+
+        String showId = "signed-race-show";
+        String rawQuery = signedRewardQuery(created, showId);
+        SkitAdSessionService.ClientEventCommand failed = clientEvent(created,
+                "race-pre-show-failed", 1, "FAILED", "ERROR", sdkRequestId);
+        sessionRowLockRaceProbe.arm(fixture.tenantId,
+                "SkitAdSessionMapper.selectByTokenHashForUpdate");
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        SkitCallbackIngressService.IngressResponse callbackResult;
+        SkitAdSessionService.SessionView failedResult;
+        try {
+            Future<SkitCallbackIngressService.IngressResponse> callback = workers.submit(() -> {
+                awaitRaceStart(ready, start);
+                return callbackIngressService.receiveReward(callbackKey(fixture), rawQuery,
+                        "203.0.113.29");
+            });
+            Future<SkitAdSessionService.SessionView> clientFailure = workers.submit(() -> {
+                awaitRaceStart(ready, start);
+                return inTenant(fixture.tenantId,
+                        () -> sessionService.recordClientEvents(fixture.memberId,
+                                created.getSessionId(), Collections.singletonList(failed),
+                                new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+            });
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "race workers did not become ready");
+            start.countDown();
+            callbackResult = callback.get(30, TimeUnit.SECONDS);
+            failedResult = clientFailure.get(30, TimeUnit.SECONDS);
+        } finally {
+            start.countDown();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(10, TimeUnit.SECONDS));
+        }
+        sessionRowLockRaceProbe.assertConcurrentTransactionBoundary();
+
+        Map<String, Object> session = jdbc().queryForMap("SELECT client_lifecycle_status,"
+                        + "reward_verification_status,entitlement_status,revenue_status,"
+                        + "reward_callback_inbox_id,reward_callback_received_at,active_scope_hash,"
+                        + "active_scope_released_at,active_scope_release_reason,failure_reason,version "
+                        + "FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, created.getSessionId());
+        boolean callbackReceiptAuthoritative = session.get("reward_callback_inbox_id") != null
+                && session.get("reward_callback_received_at") != null;
+        boolean clientFailureAuthoritative = "REJECTED".equals(
+                session.get("reward_verification_status"));
+        assertEquals(1, (callbackReceiptAuthoritative ? 1 : 0)
+                        + (clientFailureAuthoritative ? 1 : 0),
+                "a signed receipt and a pre-show rejection cannot both become authoritative");
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK, callbackResult,
+                "the signed callback that locks the session first must remain authoritative");
+        assertEquals("FAILED", failedResult.getClientLifecycleStatus());
+        assertEquals("PENDING", failedResult.getRewardVerificationStatus());
+        assertEquals("FAILED", session.get("client_lifecycle_status"));
+        assertEquals("PENDING", session.get("reward_verification_status"));
+        assertEquals("NONE", session.get("entitlement_status"));
+        assertEquals("NONE", session.get("revenue_status"));
+        assertNotNull(session.get("reward_callback_inbox_id"));
+        assertNotNull(session.get("reward_callback_received_at"));
+        assertNotNull(session.get("active_scope_hash"));
+        assertNull(session.get("active_scope_released_at"));
+        assertNull(session.get("active_scope_release_reason"));
+        assertNull(session.get("failure_reason"));
+        assertEquals(3, ((Number) session.get("version")).intValue(),
+                "load, signed receipt and telemetry failure must commit as three serial changes");
+        assertEquals(2, jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_client_event "
+                        + "WHERE tenant_id=? AND ad_session_id=(SELECT id FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?)",
+                Integer.class, fixture.tenantId, fixture.tenantId, created.getSessionId()));
+        assertEquals(1, callbackInboxCount(fixture.tenantId));
+        assertEquals(1, callbackAttemptCount(fixture.tenantId));
+        assertEquals(0, callbackEdgeAttemptCount(fixture.tenantId));
+    }
+
     private List<SkitAdSessionService.CreateResult> concurrentCreates(
             int concurrency, long tenantId, long memberId, SkitAdSessionService.CreateCommand command)
             throws Exception {
@@ -377,6 +551,11 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         ready.countDown();
         assertTrue(start.await(10, TimeUnit.SECONDS), "start barrier was not released");
         return inTenant(tenantId, () -> sessionService.createForMember(memberId, command));
+    }
+
+    private static void awaitRaceStart(CountDownLatch ready, CountDownLatch start) throws Exception {
+        ready.countDown();
+        assertTrue(start.await(10, TimeUnit.SECONDS), "race start barrier was not released");
     }
 
     private SessionFixture insertSessionFixture(long tenantId, long memberId, long agentId,
@@ -415,7 +594,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                         + "envelope_version,active) VALUES (?,?,1,?,?,?,1,b'1')",
                 tenantId, accountId, sha256("reward-" + tenantId),
                 Arrays.copyOf(sha256("nonce-" + tenantId), 12), "mysql-it-key");
-        return new SessionFixture(tenantId, memberId);
+        return new SessionFixture(tenantId, memberId, accountId);
     }
 
     private void insertAdditionalMember(long tenantId, long memberId) {
@@ -459,11 +638,90 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 tenantId, memberId);
     }
 
+    private int callbackInboxCount(long tenantId) {
+        return jdbc().queryForObject(
+                "SELECT COUNT(*) FROM skit_ad_callback_inbox WHERE tenant_id=?",
+                Integer.class, tenantId);
+    }
+
+    private int callbackAttemptCount(long tenantId) {
+        return jdbc().queryForObject(
+                "SELECT COUNT(*) FROM skit_ad_callback_attempt WHERE tenant_id=?",
+                Integer.class, tenantId);
+    }
+
+    private int callbackEdgeAttemptCount(long tenantId) {
+        return jdbc().queryForObject(
+                "SELECT COUNT(*) FROM skit_ad_callback_edge_attempt WHERE tenant_id=?",
+                Integer.class, tenantId);
+    }
+
     private static SkitAdSessionService.CreateCommand command(long dramaId, int episodeNo) {
         SkitAdSessionService.CreateCommand command = new SkitAdSessionService.CreateCommand();
         command.setDramaId(dramaId);
         command.setEpisodeNo(episodeNo);
         return command;
+    }
+
+    private static SkitAdSessionService.ClientEventCommand clientEvent(
+            SkitAdSessionService.CreateResult session, String eventId, int callbackSequence,
+            String eventType, String nativeState, String sdkRequestId) {
+        SkitAdSessionService.ClientEventCommand event = new SkitAdSessionService.ClientEventCommand();
+        event.setProtocolVersion(1);
+        event.setClientEventId(eventId);
+        event.setCallbackSequence(callbackSequence);
+        event.setSessionId(session.getSessionId());
+        event.setProvider(session.getProvider());
+        event.setPlacementId(session.getPlacementId());
+        event.setEventType(eventType);
+        event.setNativeState(nativeState);
+        event.setSdkRequestId(sdkRequestId);
+        event.setClientRewardObserved(false);
+        event.setClosed(false);
+        return event;
+    }
+
+    private static String callbackKey(SessionFixture fixture) {
+        return "mysql_it_" + fixture.tenantId + '_' + fixture.accountId;
+    }
+
+    private static String signedRewardQuery(SkitAdSessionService.CreateResult session,
+                                            String showId) {
+        String adsourceId = "7";
+        String ilrd = "{\"network_firm_id\":66,\"adsource_id\":\"" + adsourceId
+                + "\",\"id\":\"" + showId + "\",\"adunit_id\":\""
+                + session.getPlacementId() + "\"}";
+        String preimage = "trans_id=" + showId + "&placement_id=" + session.getPlacementId()
+                + "&adsource_id=" + adsourceId + "&reward_amount=1&reward_name=coin&sec_key="
+                + new String(CALLBACK_REWARD_SECRET, StandardCharsets.US_ASCII) + "&ilrd=" + ilrd;
+        return "user_id=" + encode(session.getUserId()) + "&trans_id=" + showId
+                + "&reward_amount=1&reward_name=coin&placement_id="
+                + encode(session.getPlacementId()) + "&extra_data=" + encode(session.getCustomData())
+                + "&network_firm_id=66&adsource_id=" + adsourceId
+                + "&scenario_id=drama_unlock&sign=" + md5Hex(preimage)
+                + "&ilrd=" + encode(ilrd);
+    }
+
+    private static String md5Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("MD5")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("Taku-required MD5 is unavailable", exception);
+        }
+    }
+
+    private static String encode(String value) {
+        try {
+            return URLEncoder.encode(value, "UTF-8");
+        } catch (Exception exception) {
+            throw new IllegalStateException("UTF-8 URL encoding is unavailable", exception);
+        }
     }
 
     private static <T> T inTenant(long tenantId, TenantWork<T> work) {
@@ -504,10 +762,12 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     private static final class SessionFixture {
         private final long tenantId;
         private final long memberId;
+        private final long accountId;
 
-        private SessionFixture(long tenantId, long memberId) {
+        private SessionFixture(long tenantId, long memberId, long accountId) {
             this.tenantId = tenantId;
             this.memberId = memberId;
+            this.accountId = accountId;
         }
     }
 
@@ -597,6 +857,121 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
     }
 
+    @Intercepts(@Signature(type = Executor.class, method = "query", args = {
+            MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class}))
+    static final class SessionRowLockRaceProbe implements Interceptor {
+
+        private volatile RaceState state;
+
+        synchronized void arm(long tenantId, String firstLockStatement) {
+            state = new RaceState(tenantId, firstLockStatement);
+        }
+
+        synchronized void disarm() {
+            RaceState current = state;
+            if (current != null) {
+                while (current.arrived.getCount() > 0) {
+                    current.arrived.countDown();
+                }
+                current.firstLockAcquired.countDown();
+            }
+            state = null;
+        }
+
+        void assertConcurrentTransactionBoundary() {
+            RaceState current = state;
+            assertNotNull(current, "session row-lock race probe was not armed");
+            assertEquals(0L, current.arrived.getCount(),
+                    "both transaction paths must reach their production SELECT ... FOR UPDATE");
+            assertEquals(2, current.activeTransactionCount.get(),
+                    "both row-lock queries must execute inside active Spring transactions");
+            assertEquals(new HashSet<>(Arrays.asList(
+                            java.sql.Connection.TRANSACTION_READ_COMMITTED,
+                            java.sql.Connection.TRANSACTION_REPEATABLE_READ)),
+                    current.isolationLevels,
+                    "callback ingress and client telemetry must keep their production isolation levels");
+            assertEquals(new HashSet<>(Arrays.asList(
+                            "SkitAdSessionMapper.selectByTokenHashForUpdate",
+                            "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate")),
+                    current.lockStatements,
+                    "the race must contend through both production session row-lock paths");
+        }
+
+        @Override
+        public Object intercept(Invocation invocation) throws Throwable {
+            RaceState current = state;
+            if (current == null) {
+                return invocation.proceed();
+            }
+            MappedStatement statement = (MappedStatement) invocation.getArgs()[0];
+            String lockStatement;
+            if (statement.getId().endsWith("SkitAdSessionMapper.selectByTokenHashForUpdate")) {
+                lockStatement = "SkitAdSessionMapper.selectByTokenHashForUpdate";
+            } else if (statement.getId().endsWith(
+                    "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate")) {
+                lockStatement = "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate";
+            } else {
+                return invocation.proceed();
+            }
+            Object parameter = invocation.getArgs()[1];
+            if (!(parameter instanceof Map)) {
+                return invocation.proceed();
+            }
+            Object tenantValue = ((Map<?, ?>) parameter).get("tenantId");
+            if (!(tenantValue instanceof Number)
+                    || ((Number) tenantValue).longValue() != current.tenantId) {
+                return invocation.proceed();
+            }
+            if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+                throw new AssertionError("session row lock executed outside a Spring transaction");
+            }
+            Integer isolation = TransactionSynchronizationManager.getCurrentTransactionIsolationLevel();
+            if (isolation == null) {
+                throw new AssertionError("session row lock transaction isolation is unavailable");
+            }
+            current.activeTransactionCount.incrementAndGet();
+            current.isolationLevels.add(isolation);
+            current.lockStatements.add(lockStatement);
+            current.arrived.countDown();
+            if (!current.arrived.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("both race transactions did not reach the row lock together");
+            }
+            if (current.firstLockStatement.equals(lockStatement)) {
+                try {
+                    return invocation.proceed();
+                } finally {
+                    current.firstLockAcquired.countDown();
+                }
+            }
+            if (!current.firstLockAcquired.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("preferred race transaction did not acquire the row lock");
+            }
+            return invocation.proceed();
+        }
+
+        private static final class RaceState {
+            private final long tenantId;
+            private final String firstLockStatement;
+            private final CountDownLatch arrived = new CountDownLatch(2);
+            private final CountDownLatch firstLockAcquired = new CountDownLatch(1);
+            private final AtomicInteger activeTransactionCount = new AtomicInteger();
+            private final Set<Integer> isolationLevels =
+                    Collections.synchronizedSet(new HashSet<Integer>());
+            private final Set<String> lockStatements =
+                    Collections.synchronizedSet(new HashSet<String>());
+
+            private RaceState(long tenantId, String firstLockStatement) {
+                this.tenantId = tenantId;
+                if (!"SkitAdSessionMapper.selectByTokenHashForUpdate".equals(firstLockStatement)
+                        && !"SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate"
+                        .equals(firstLockStatement)) {
+                    throw new IllegalArgumentException("unsupported first row-lock path");
+                }
+                this.firstLockStatement = firstLockStatement;
+            }
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement(proxyTargetClass = true)
     static class RealSessionConfiguration {
@@ -617,7 +992,8 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         @Bean
         MybatisSqlSessionFactoryBean sqlSessionFactory(DataSource dataSource,
                                                        MybatisPlusInterceptor interceptor,
-                                                       SourceMemberLockGate sourceMemberLockGate) {
+                                                       SourceMemberLockGate sourceMemberLockGate,
+                                                       SessionRowLockRaceProbe sessionRowLockRaceProbe) {
             MybatisConfiguration configuration = new MybatisConfiguration();
             configuration.setMapUnderscoreToCamelCase(true);
             GlobalConfig globalConfig = GlobalConfigUtils.defaults();
@@ -626,6 +1002,10 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration,
                     "skit-ad-session-mysql-it");
             initializeTableInfo(assistant, SkitAdAccountDO.class);
+            initializeTableInfo(assistant, SkitAdCallbackAttemptDO.class);
+            initializeTableInfo(assistant, SkitAdCallbackEdgeAttemptDO.class);
+            initializeTableInfo(assistant, SkitAdCallbackInboxDO.class);
+            initializeTableInfo(assistant, SkitAdNetworkCapabilityDO.class);
             initializeTableInfo(assistant, SkitAgentDO.class);
             initializeTableInfo(assistant, SkitCommissionPlanDO.class);
             initializeTableInfo(assistant, SkitCommissionRuleDO.class);
@@ -640,7 +1020,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
             factory.setDataSource(dataSource);
             factory.setConfiguration(configuration);
-            factory.setPlugins(interceptor, sourceMemberLockGate);
+            factory.setPlugins(interceptor, sourceMemberLockGate, sessionRowLockRaceProbe);
             factory.setGlobalConfig(globalConfig);
             return factory;
         }
@@ -655,6 +1035,30 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         MapperFactoryBean<SkitAdClientEventMapper> adClientEventMapperFactory(
                 SqlSessionFactory sqlSessionFactory) {
             return mapperFactory(SkitAdClientEventMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitAdCallbackInboxMapper> adCallbackInboxMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitAdCallbackInboxMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitAdCallbackAttemptMapper> adCallbackAttemptMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitAdCallbackAttemptMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitAdCallbackEdgeAttemptMapper> adCallbackEdgeAttemptMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitAdCallbackEdgeAttemptMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitAdNetworkCapabilityMapper> adNetworkCapabilityMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitAdNetworkCapabilityMapper.class, sqlSessionFactory);
         }
 
         @Bean
@@ -743,6 +1147,11 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        SessionRowLockRaceProbe sessionRowLockRaceProbe() {
+            return new SessionRowLockRaceProbe();
+        }
+
+        @Bean
         TenantService tenantService(TenantMapper tenantMapper) {
             TenantService service = mock(TenantService.class);
             when(service.getTenantForUpdate(anyLong())).thenAnswer(
@@ -816,6 +1225,60 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        TakuCallbackCanonicalizer takuCallbackCanonicalizer() {
+            return new TakuCallbackCanonicalizer();
+        }
+
+        @Bean
+        TakuRewardSignatureVerifier takuRewardSignatureVerifier(ObjectMapper objectMapper) {
+            return new TakuRewardSignatureVerifier(objectMapper);
+        }
+
+        @Bean
+        SkitCallbackRoutingService callbackRoutingService(
+                SkitAdCredentialVersionService credentialService) {
+            return new SkitCallbackRoutingService(credentialService);
+        }
+
+        @Bean
+        SkitCallbackRateLimiter callbackRateLimiter() {
+            return mock(SkitCallbackRateLimiter.class);
+        }
+
+        @Bean
+        SkitCallbackPayloadCryptoService callbackPayloadCryptoService() {
+            SkitCallbackPayloadCryptoService service = mock(SkitCallbackPayloadCryptoService.class);
+            when(service.encrypt(any(SkitCallbackPayloadCryptoService.Context.class), any(byte[].class)))
+                    .thenAnswer(invocation -> {
+                        byte[] plaintext = invocation.getArgument(1);
+                        return new SkitCallbackPayloadCryptoService.PayloadEnvelope(
+                                sha256(new String(plaintext, StandardCharsets.US_ASCII)),
+                                new byte[12], "mysql-it-key", 1);
+                    });
+            return service;
+        }
+
+        @Bean
+        SkitCallbackIngressService callbackIngressService(
+                SkitCallbackRoutingService routingService,
+                TakuCallbackCanonicalizer canonicalizer,
+                TakuRewardSignatureVerifier signatureVerifier,
+                SkitAdCredentialVersionService credentialService,
+                SkitAdSessionTokenService tokenService,
+                SkitAdSessionMapper sessionMapper,
+                SkitAdCallbackInboxMapper inboxMapper,
+                SkitAdCallbackAttemptMapper attemptMapper,
+                SkitAdCallbackEdgeAttemptMapper edgeAttemptMapper,
+                SkitAdNetworkCapabilityMapper networkCapabilityMapper,
+                SkitCallbackPayloadCryptoService payloadCryptoService,
+                SkitCallbackRateLimiter rateLimiter) {
+            return new SkitCallbackIngressServiceImpl(routingService, canonicalizer,
+                    signatureVerifier, credentialService, tokenService, sessionMapper,
+                    inboxMapper, attemptMapper, edgeAttemptMapper, networkCapabilityMapper,
+                    payloadCryptoService, rateLimiter);
+        }
+
+        @Bean
         SkitAdSessionService adSessionService(
                 SkitAdSessionMapper sessionMapper,
                 SkitAdClientEventMapper clientEventMapper,
@@ -867,7 +1330,24 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         @Override
         public CallbackKeyResolution resolveCallbackKey(String callbackKey,
                                                         LocalDateTime authoritativeReceivedAt) {
-            throw unsupported();
+            if (callbackKey == null || authoritativeReceivedAt == null
+                    || !callbackKey.startsWith("mysql_it_")) {
+                throw new CredentialUnavailableException();
+            }
+            String[] identity = callbackKey.substring("mysql_it_".length()).split("_", -1);
+            if (identity.length != 2) {
+                throw new CredentialUnavailableException();
+            }
+            try {
+                long tenantId = Long.parseLong(identity[0]);
+                long accountId = Long.parseLong(identity[1]);
+                if (tenantId <= 0 || accountId <= 0) {
+                    throw new CredentialUnavailableException();
+                }
+                return new CallbackKeyResolution(tenantId, accountId, 1, true, null);
+            } catch (NumberFormatException invalid) {
+                throw new CredentialUnavailableException();
+            }
         }
 
         @Override
@@ -875,7 +1355,13 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                                                         int secretVersion,
                                                         LocalDateTime sessionRewardAcceptUntil,
                                                         LocalDateTime authoritativeReceivedAt) {
-            throw unsupported();
+            if (tenantId <= 0 || adAccountId <= 0 || secretVersion != 1
+                    || sessionRewardAcceptUntil == null || authoritativeReceivedAt == null
+                    || authoritativeReceivedAt.isAfter(sessionRewardAcceptUntil)) {
+                throw new CredentialUnavailableException();
+            }
+            return new ResolvedRewardSecret(tenantId, adAccountId, 1, true, null,
+                    CALLBACK_REWARD_SECRET);
         }
 
         private static CredentialMetadata active(long tenantId, long accountId) {

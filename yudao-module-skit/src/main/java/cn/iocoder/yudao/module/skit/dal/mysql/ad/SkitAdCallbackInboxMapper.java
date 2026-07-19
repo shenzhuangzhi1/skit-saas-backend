@@ -89,6 +89,7 @@ public interface SkitAdCallbackInboxMapper {
             + "#{payloadExpiresAt},#{processingAttemptCount},#{receivedAt},"
             + "#{ingressResponseCode},'callback-ingress','callback-ingress') "
             + "ON DUPLICATE KEY UPDATE `id`=LAST_INSERT_ID(`id`)")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicitly bound and guarded by database FKs
     @SelectKey(statement = "SELECT LAST_INSERT_ID()", keyProperty = "id",
             before = false, resultType = Long.class)
     int insertOrGetCanonical(SkitAdCallbackInboxDO row);
