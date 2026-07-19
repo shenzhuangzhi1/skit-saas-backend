@@ -16,6 +16,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitCommissionPlan
 import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitCommissionRuleDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberClosureDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
@@ -1013,6 +1014,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             initializeTableInfo(assistant, SkitMemberClosureDO.class);
             initializeTableInfo(assistant, SkitMemberDO.class);
             initializeTableInfo(assistant, SkitAdSessionDO.class);
+            initializeTableInfo(assistant, SkitEntitlementGrantDO.class);
             initializeTableInfo(assistant, SkitNativePlayerGrantDO.class);
             initializeTableInfo(assistant, SkitAdminRecordDO.class);
             initializeTableInfo(assistant, TenantDO.class);
@@ -1112,6 +1114,12 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         MapperFactoryBean<SkitContentEntitlementMapper> contentEntitlementMapperFactory(
                 SqlSessionFactory sqlSessionFactory) {
             return mapperFactory(SkitContentEntitlementMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitEntitlementGrantMapper> entitlementGrantMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitEntitlementGrantMapper.class, sqlSessionFactory);
         }
 
         @Bean
