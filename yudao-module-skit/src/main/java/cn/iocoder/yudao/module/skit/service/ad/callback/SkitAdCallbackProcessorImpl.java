@@ -356,9 +356,8 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             return "REWARD_SESSION_TOKEN_INVALID";
         }
         try {
-            if (!sameHash(callbackTokenHash, session.getSessionTokenHash())
-                    || !sameHash(callbackTokenHash, inbox.getExtraDataHash())) {
-                return "REWARD_SESSION_TOKEN_MISMATCH";
+            if (!sameHash(callbackTokenHash, inbox.getExtraDataHash())) {
+                return "REWARD_CALLBACK_TOKEN_INTEGRITY_MISMATCH";
             }
         } finally {
             Arrays.fill(callbackTokenHash, (byte) 0);
@@ -384,6 +383,16 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 || evidence == null || !Objects.equals(evidence.getNetworkFirmId(), inbox.getNetworkFirmId())
                 || !Objects.equals(evidence.getShowId(), inbox.getProviderShowId())) {
             return "SIGNED_REWARD_AUTHORITY_MISMATCH";
+        }
+        String signedSessionId = evidence.getShowCustomExt();
+        boolean tokenMatchesSession = sameHash(inbox.getExtraDataHash(), session.getSessionTokenHash());
+        boolean signedSessionMatches = signedSessionId != null
+                && signedSessionId.equals(session.getSessionId());
+        if (signedSessionId != null && !signedSessionMatches) {
+            return "SIGNED_SHOW_CUSTOM_EXT_MISMATCH";
+        }
+        if (!tokenMatchesSession && !signedSessionMatches) {
+            return "REWARD_SESSION_BINDING_MISMATCH";
         }
         if (evidence.getShowId() != null && session.getProviderShowId() != null
                 && !evidence.getShowId().equals(session.getProviderShowId())) {

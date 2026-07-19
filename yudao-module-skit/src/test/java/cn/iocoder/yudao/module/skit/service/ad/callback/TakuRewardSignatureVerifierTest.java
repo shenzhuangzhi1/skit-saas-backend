@@ -80,6 +80,20 @@ class TakuRewardSignatureVerifierTest {
     }
 
     @Test
+    void signedShowCustomExtIsOnlyAvailableWhenItIsCoveredByTheRewardDigest() throws Exception {
+        String sessionId = "0123456789abcdefghijkl";
+        String ilrd = strictIlrd().replace("}", ",\"show_custom_ext\":\"" + sessionId + "\"}");
+
+        TakuRewardSignatureVerifier.VerificationResult result = verifyStrictIlrd(ilrd);
+        TakuRewardSignatureVerifier.SignedIlrdEvidence evidence =
+                result.getAuthority().getSignedIlrdEvidence();
+
+        assertEquals(sessionId, evidence.getShowCustomExt());
+        assertInvalidSignature(strictSignedQuery(
+                ilrd.replace(sessionId, "zyxwvutsrqponmlkjihgfe"), md5(signingInput(ilrd))));
+    }
+
+    @Test
     void tamperingAnySignedCoreValueFailsTheDigest() {
         String original = strictSignedQuery(strictIlrd(), md5(signingInput(strictIlrd())));
 

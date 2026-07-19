@@ -175,9 +175,13 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             return IngressResponse.REJECTED;
         }
         SkitAdSessionDO session;
+        String showCustomExtHint = signatureVerifier.extractUnverifiedShowCustomExtHint(callback);
         try {
-            session = sessionMapper.selectByTokenHashForUpdate(route.getTenantId(),
-                    route.getAdAccountId(), tokenHash);
+            session = showCustomExtHint == null
+                    ? sessionMapper.selectByTokenHashForUpdate(route.getTenantId(),
+                    route.getAdAccountId(), tokenHash)
+                    : sessionMapper.selectByAccountAndSessionIdForUpdate(route.getTenantId(),
+                    route.getAdAccountId(), showCustomExtHint);
         } finally {
             Arrays.fill(tokenHash, (byte) 0);
         }
@@ -413,6 +417,10 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
         }
         int network = authority.getSignedIlrdEvidence().getNetworkFirmId();
         if (network != 35 && network != 66 && network != 67) {
+            return false;
+        }
+        String signedSessionId = authority.getSignedIlrdEvidence().getShowCustomExt();
+        if (signedSessionId != null && !signedSessionId.equals(session.getSessionId())) {
             return false;
         }
         String signedShowId = authority.getSignedIlrdEvidence().getShowId();
