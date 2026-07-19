@@ -292,6 +292,36 @@ class SkitTask5PersistenceContractTest {
     }
 
     @Test
+    void rewardProvenanceReadUsesOnlyOneExactSignedGrantChain() throws Exception {
+        Method evidence = SkitEntitlementGrantMapper.class.getMethod(
+                "selectVerifiedRewardProvenance",
+                Long.class, Long.class, Long.class, Integer.class);
+        String sql = selectSql(evidence);
+        assertContainsAll(sql,
+                "from skit_entitlement_grant g",
+                "inner join skit_content_entitlement e",
+                "inner join skit_ad_session s",
+                "inner join skit_ad_callback_inbox i",
+                "g.tenant_id=#{tenantid}", "g.member_id=#{memberid}",
+                "g.drama_id=#{dramaid}", "g.episode_no=#{episodeno}",
+                "g.grant_result='created'", "e.status='granted'",
+                "s.reward_verification_status='signed_verified'",
+                "s.entitlement_status='granted'",
+                "s.active_scope_release_reason='entitlement_granted'",
+                "i.callback_type='reward'", "i.evidence_provenance='signed_ilrd'",
+                "i.authentication_level='signed_reward'", "i.signature_status='valid'",
+                "i.delivery_integrity_status='canonical'", "i.processing_status='succeeded'",
+                "i.provider_show_id is not null",
+                "binary i.provider_show_id=binary s.provider_show_id",
+                "binary i.provider_transaction_id=binary s.provider_transaction_id",
+                "limit 2");
+        assertFalse(sql.contains("select *"),
+                "provenance reads must not expose arbitrary callback-inbox fields");
+        assertFalse(sql.contains("order by"),
+                "ambiguous reward grants must fail closed instead of selecting a latest row");
+    }
+
+    @Test
     void nativeGrantMapperResolvesHashThenLocksExactCompoundIdentityAndSerializesUse() throws Exception {
         String globalLookup = selectSql(SkitNativePlayerGrantMapper.class
                 .getMethod("selectByTokenHash", byte[].class));

@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
@@ -48,6 +49,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
 
     private final SkitNativePlayerGrantMapper nativeGrantMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
+    private final SkitEntitlementGrantMapper entitlementGrantMapper;
     private final SkitContentScopeService contentScopeService;
     private final SkitMemberMapper memberMapper;
     private final SkitAgentMapper agentMapper;
@@ -59,17 +61,20 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     @Autowired
     public SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
                                              SkitContentEntitlementMapper entitlementMapper,
+                                             SkitEntitlementGrantMapper entitlementGrantMapper,
                                              SkitContentScopeService contentScopeService,
                                              SkitMemberMapper memberMapper,
                                              SkitAgentMapper agentMapper,
                                              TenantService tenantService,
                                              SkitTenantAdCapabilityService capabilityService) {
-        this(nativeGrantMapper, entitlementMapper, contentScopeService, memberMapper, agentMapper,
-                tenantService, Clock.systemDefaultZone(), new SecureRandom(), capabilityService);
+        this(nativeGrantMapper, entitlementMapper, entitlementGrantMapper, contentScopeService,
+                memberMapper, agentMapper, tenantService, Clock.systemDefaultZone(),
+                new SecureRandom(), capabilityService);
     }
 
     SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
                                       SkitContentEntitlementMapper entitlementMapper,
+                                      SkitEntitlementGrantMapper entitlementGrantMapper,
                                       SkitContentScopeService contentScopeService,
                                       SkitMemberMapper memberMapper,
                                       SkitAgentMapper agentMapper,
@@ -79,6 +84,8 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                                       SkitTenantAdCapabilityService capabilityService) {
         this.nativeGrantMapper = Objects.requireNonNull(nativeGrantMapper, "nativeGrantMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
+        this.entitlementGrantMapper = Objects.requireNonNull(
+                entitlementGrantMapper, "entitlementGrantMapper");
         this.contentScopeService = Objects.requireNonNull(contentScopeService, "contentScopeService");
         this.memberMapper = Objects.requireNonNull(memberMapper, "memberMapper");
         this.agentMapper = Objects.requireNonNull(agentMapper, "agentMapper");
@@ -221,6 +228,30 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     }
 
     @Override
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public VerifiedRewardProvenance findVerifiedRewardProvenanceForPlayerGrant(
+            String grantToken, Integer episodeNo,
+            SkitTenantAdCapabilityService.ClientRuntime runtime) {
+        requirePositive(episodeNo, "episodeNo");
+        PlayerGrantReference reference = resolvePlayerGrant(grantToken);
+        AtomicReference<VerifiedRewardProvenance> result = new AtomicReference<>();
+        TenantUtils.execute(reference.getTenantId(), () -> {
+            requireClientAccess(reference.getMemberId(), runtime,
+                    SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+            PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
+            List<SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow> rows =
+                    entitlementGrantMapper.selectVerifiedRewardProvenance(
+                            scope.getTenantId(), scope.getMemberId(), scope.getDramaId(), episodeNo);
+            if (rows == null || rows.size() != 1) {
+                return;
+            }
+            result.set(validateVerifiedRewardProvenance(
+                    rows.get(0), scope, episodeNo));
+        });
+        return result.get();
+    }
+
+    @Override
     public boolean ownsEpisodeForUpdate(Long memberId, Long dramaId, Integer episodeNo) {
         requirePositive(memberId, "memberId");
         requirePositive(dramaId, "dramaId");
@@ -246,6 +277,24 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                 && reference.getDramaId().equals(row.getDramaId())
                 && row.getGrantTokenHash() != null
                 && MessageDigest.isEqual(reference.getGrantTokenHash(), row.getGrantTokenHash());
+    }
+
+    private VerifiedRewardProvenance validateVerifiedRewardProvenance(
+            SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow row,
+            PlayerGrantScope scope, Integer episodeNo) {
+        if (row == null || !scope.getTenantId().equals(row.getTenantId())
+                || !scope.getMemberId().equals(row.getMemberId())
+                || !scope.getDramaId().equals(row.getDramaId())
+                || !episodeNo.equals(row.getEpisodeNo())
+                || !"TAKU".equals(row.getProvider())
+                || row.getSessionId() == null
+                || !row.getSessionId().matches("[A-Za-z0-9_-]{22}")
+                || row.getProviderShowId() == null
+                || !row.getProviderShowId().matches("[A-Za-z0-9._:/-]{1,128}")) {
+            return null;
+        }
+        return new VerifiedRewardProvenance(
+                episodeNo, row.getSessionId(), row.getProvider(), row.getProviderShowId());
     }
 
     private void requireEnabledAgent(Long tenantId, SkitAgentDO agent) {

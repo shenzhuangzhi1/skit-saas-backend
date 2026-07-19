@@ -30,6 +30,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.commission.SkitAdPolicySnapshotMap
 import cn.iocoder.yudao.module.skit.dal.mysql.commission.SkitCommissionPlanMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.commission.SkitCommissionRuleMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
@@ -1197,12 +1198,14 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         SkitContentEntitlementService contentEntitlementService(
                 SkitNativePlayerGrantMapper nativeGrantMapper,
                 SkitContentEntitlementMapper entitlementMapper,
+                SkitEntitlementGrantMapper entitlementGrantMapper,
                 SkitContentScopeService contentScopeService,
                 SkitMemberMapper memberMapper,
                 SkitAgentMapper agentMapper,
                 TenantService tenantService,
                 SkitTenantAdCapabilityService capabilityService) {
             return new SkitContentEntitlementServiceImpl(nativeGrantMapper, entitlementMapper,
+                    entitlementGrantMapper,
                     contentScopeService,
                     memberMapper, agentMapper, tenantService, capabilityService);
         }

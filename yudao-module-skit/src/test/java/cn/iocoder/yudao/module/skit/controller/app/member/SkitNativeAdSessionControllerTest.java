@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCre
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCreateRespVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionStatusRespVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitGrantedEpisodesRespVO;
+import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitRewardProvenanceRespVO;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientIpRateLimiterKeyResolver;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import javax.annotation.security.PermitAll;
+import javax.servlet.http.HttpServletResponse;
 import javax.validation.constraints.Pattern;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
@@ -59,6 +61,8 @@ class SkitNativeAdSessionControllerTest {
     private SkitContentEntitlementService entitlementService;
     @Mock
     private SkitClientRuntimeResolver clientRuntimeResolver;
+    @Mock
+    private HttpServletResponse response;
 
     private final SkitTenantAdCapabilityService.ClientRuntime runtime =
             new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
@@ -82,6 +86,8 @@ class SkitNativeAdSessionControllerTest {
                 String.class, String.class, SkitAdClientEventBatchReqVO.class);
         assertGetRoute("getAdSession", "/ad-sessions/{sessionId}", String.class, String.class);
         assertGetRoute("getEntitlements", "/entitlements", String.class);
+        assertGetRoute("getRewardProvenance", "/entitlements/{episodeNo}/reward-provenance",
+                String.class, Integer.class, HttpServletResponse.class);
     }
 
     @Test
@@ -167,6 +173,28 @@ class SkitNativeAdSessionControllerTest {
         verify(adSessionService).recordClientEventsForNativeGrant(
                 eq(grant), eq(sessionId), anyList(), eq(runtime));
         verify(entitlementService).listGrantedEpisodesForPlayerGrant(grant, runtime);
+    }
+
+    @Test
+    void nativeRewardProvenanceRemainsGrantAndEpisodeScoped() {
+        String grant = grantToken();
+        SkitContentEntitlementService.VerifiedRewardProvenance proof =
+                new SkitContentEntitlementService.VerifiedRewardProvenance(
+                        7, "abcdefghijklmnopqrstuv", "TAKU", "show-verified-1");
+        when(entitlementService.findVerifiedRewardProvenanceForPlayerGrant(grant, 7, runtime))
+                .thenReturn(proof);
+
+        CommonResult<SkitRewardProvenanceRespVO> result =
+                controller.getRewardProvenance(grant, 7, response);
+
+        assertTrue(result.getData().isVerified());
+        assertEquals(7, result.getData().getEpisodeNo());
+        assertEquals("abcdefghijklmnopqrstuv", result.getData().getSessionId());
+        assertEquals("TAKU", result.getData().getProvider());
+        assertEquals("show-verified-1", result.getData().getProviderShowId());
+        verify(entitlementService).findVerifiedRewardProvenanceForPlayerGrant(grant, 7, runtime);
+        verify(response).setHeader("Cache-Control", "no-store");
+        verify(response).setHeader("Pragma", "no-cache");
     }
 
     private static SkitAdClientEventReqVO validEvent(String sessionId) {
