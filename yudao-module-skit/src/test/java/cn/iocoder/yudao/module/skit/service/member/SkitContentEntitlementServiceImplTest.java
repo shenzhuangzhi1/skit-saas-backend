@@ -89,7 +89,7 @@ class SkitContentEntitlementServiceImplTest {
     }
 
     @Test
-    void playerGrantIsLoginTenantBoundShortLivedAndPersistsOnlyHash() throws Exception {
+    void playerGrantOutlivesTheFiveMinuteContentLeaseAndPersistsOnlyHash() throws Exception {
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.insert(any(SkitNativePlayerGrantDO.class))).thenAnswer(invocation -> {
@@ -108,7 +108,7 @@ class SkitContentEntitlementServiceImplTest {
         assertEquals(MEMBER_ID, row.getValue().getMemberId());
         assertEquals(DRAMA_ID, row.getValue().getDramaId());
         assertEquals("ACTIVE", row.getValue().getStatus());
-        assertEquals(LocalDateTime.ofInstant(NOW.plusSeconds(300), ZoneOffset.UTC), row.getValue().getExpiresAt());
+        assertEquals(LocalDateTime.ofInstant(NOW.plusSeconds(1800), ZoneOffset.UTC), row.getValue().getExpiresAt());
         assertArrayEquals(MessageDigest.getInstance("SHA-256")
                 .digest(token.getBytes(StandardCharsets.US_ASCII)), row.getValue().getGrantTokenHash());
         assertFalse(issue.toString().contains(token));
@@ -212,11 +212,11 @@ class SkitContentEntitlementServiceImplTest {
             org.mockito.ArgumentCaptor<SkitNativePlayerGrantDO> row =
                     org.mockito.ArgumentCaptor.forClass(SkitNativePlayerGrantDO.class);
             verify(nativeGrantMapper).insert(row.capture());
-            assertEquals(LocalDateTime.ofInstant(NOW.plusSeconds(300), shanghai),
+            assertEquals(LocalDateTime.ofInstant(NOW.plusSeconds(1800), shanghai),
                     row.getValue().getExpiresAt());
             com.fasterxml.jackson.databind.JsonNode json = new ObjectMapper().readTree(
                     JsonUtils.toJsonString(SkitPlayerGrantRespVO.from(issue)));
-            assertEquals(NOW.plusSeconds(300).toEpochMilli(), json.path("expiresAt").asLong());
+            assertEquals(NOW.plusSeconds(1800).toEpochMilli(), json.path("expiresAt").asLong());
         } finally {
             TimeZone.setDefault(previousTimeZone);
         }

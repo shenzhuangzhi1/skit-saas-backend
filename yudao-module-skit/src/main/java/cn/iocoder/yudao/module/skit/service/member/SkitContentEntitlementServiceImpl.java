@@ -45,7 +45,10 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
 
     private static final int PLAYER_GRANT_BYTES = 32;
     private static final int PLAYER_GRANT_RETRIES = 8;
-    private static final int PLAYER_GRANT_MINUTES = 5;
+    // A player grant is a short-lived bearer for the native ad flow, not content ownership.
+    // It must outlive the 20-minute signed-reward acceptance window so a legitimate ad that
+    // finishes near the former five-minute boundary can still complete server verification.
+    private static final int PLAYER_GRANT_MINUTES = 30;
     private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitNativePlayerGrantMapper nativeGrantMapper;
