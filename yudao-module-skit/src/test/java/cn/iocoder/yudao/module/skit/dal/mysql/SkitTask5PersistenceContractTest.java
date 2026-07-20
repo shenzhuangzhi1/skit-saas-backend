@@ -271,9 +271,10 @@ class SkitTask5PersistenceContractTest {
     @Test
     void entitlementMapperLocksEpisodeSetAndSafelyReturnsExistingId() throws Exception {
         String granted = selectSql(SkitContentEntitlementMapper.class.getMethod(
-                "selectGrantedEpisodes", Long.class, Long.class, Long.class));
+                "selectGrantedEpisodes", Long.class, Long.class, Long.class, LocalDateTime.class));
         assertContainsAll(granted, "tenant_id=#{tenantid}", "member_id=#{memberid}",
                 "drama_id=#{dramaid}", "deleted=b'0'", "status='granted'",
+                "granted_at > #{activeafter}",
                 "order by episode_no asc");
         assertFalse(granted.contains("for update"), "GET entitlement reads must not take row locks");
 
@@ -297,7 +298,7 @@ class SkitTask5PersistenceContractTest {
     void rewardProvenanceReadUsesOnlyOneExactSignedGrantChain() throws Exception {
         Method evidence = SkitEntitlementGrantMapper.class.getMethod(
                 "selectVerifiedRewardProvenance",
-                Long.class, Long.class, Long.class, Integer.class);
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
         String sql = selectSql(evidence);
         assertContainsAll(sql,
                 "from skit_entitlement_grant g",
@@ -307,6 +308,7 @@ class SkitTask5PersistenceContractTest {
                 "g.tenant_id=#{tenantid}", "g.member_id=#{memberid}",
                 "g.drama_id=#{dramaid}", "g.episode_no=#{episodeno}",
                 "g.grant_result='created'", "e.status='granted'",
+                "e.granted_at > #{activeafter}", "g.granted_at=e.granted_at",
                 "s.reward_verification_status='signed_verified'",
                 "s.entitlement_status='granted'",
                 "s.active_scope_release_reason='entitlement_granted'",
@@ -328,7 +330,7 @@ class SkitTask5PersistenceContractTest {
     void rewardProvenanceReadIsParsableByTheRuntimeSqlInterceptor() throws Exception {
         Method evidence = SkitEntitlementGrantMapper.class.getMethod(
                 "selectVerifiedRewardProvenance",
-                Long.class, Long.class, Long.class, Integer.class);
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
         String rawSql = String.join(" ", evidence.getAnnotation(Select.class).value());
 
         assertDoesNotThrow(() -> CCJSqlParserUtil.parse(rawSql.replaceAll("#\\{[^}]+}", "?")));

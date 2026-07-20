@@ -9,6 +9,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -30,17 +32,26 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
     private static final String DRAMA_PAGE_KEY = "drama";
     private static final int MAX_UNLOCK_SIZE = 100;
     private static final int MAX_TOTAL_EPISODES = 100_000;
+    private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitAdminRecordMapper recordMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
 
     public SkitContentScopeServiceImpl(SkitAdminRecordMapper recordMapper,
                                        SkitContentEntitlementMapper entitlementMapper,
                                        ObjectMapper objectMapper) {
+        this(recordMapper, entitlementMapper, objectMapper, Clock.systemDefaultZone());
+    }
+
+    SkitContentScopeServiceImpl(SkitAdminRecordMapper recordMapper,
+                                SkitContentEntitlementMapper entitlementMapper,
+                                ObjectMapper objectMapper, Clock clock) {
         this.recordMapper = Objects.requireNonNull(recordMapper, "recordMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
@@ -96,12 +107,16 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
             if (!"GRANTED".equals(requested.getStatus())) {
                 throw exception(AD_SESSION_INVALID);
             }
-            return scope(drama, requestedEpisodeNo, requestedEpisodeNo, true);
+            if (isActiveEntitlement(requested, now())) {
+                return scope(drama, requestedEpisodeNo, requestedEpisodeNo, true);
+            }
         }
-        requireContinuousUnlockFrontier(drama, memberId, requestedEpisodeNo);
+        requireContinuousUnlockFrontier(drama, memberId, requestedEpisodeNo, now());
         int episodeTo = lastCandidate;
         for (int episode = requestedEpisodeNo + 1; episode <= lastCandidate; episode++) {
-            if (existing.containsKey(episode)) {
+            SkitContentEntitlementDO entitlement = existing.get(episode);
+            if (entitlement != null && (!"GRANTED".equals(entitlement.getStatus())
+                    || isActiveEntitlement(entitlement, now()))) {
                 episodeTo = episode - 1;
                 break;
             }
@@ -110,7 +125,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
     }
 
     private void requireContinuousUnlockFrontier(AccessibleDrama drama, Long memberId,
-                                                 int requestedEpisodeNo) {
+                                                 int requestedEpisodeNo, LocalDateTime now) {
         int firstPaidEpisode = drama.getFreeEpisodes() + 1;
         int priorPaidEpisodes = requestedEpisodeNo - firstPaidEpisode;
         if (priorPaidEpisodes == 0) {
@@ -118,7 +133,8 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
         }
         Long granted = entitlementMapper.countGrantedEpisodesInRange(
                 drama.getTenantId(), memberId, drama.getDramaId(),
-                firstPaidEpisode, requestedEpisodeNo - 1);
+                firstPaidEpisode, requestedEpisodeNo - 1,
+                now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
         if (granted == null || granted.longValue() != priorPaidEpisodes) {
             throw exception(AD_SESSION_INVALID);
         }
@@ -158,12 +174,24 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                     || !candidates.contains(row.getEpisodeNo()) || Boolean.TRUE.equals(row.getDeleted())
                     || !("GRANTED".equals(row.getStatus())
                     || "SECURITY_REVOKED".equals(row.getStatus()))
+                    || row.getGrantedAt() == null
                     || result.put(row.getEpisodeNo(), row) != null) {
                 throw new IllegalStateException(
                         "Content entitlement escaped the tenant/member/catalog boundary");
             }
         }
         return result;
+    }
+
+    private boolean isActiveEntitlement(SkitContentEntitlementDO entitlement, LocalDateTime now) {
+        return entitlement != null && "GRANTED".equals(entitlement.getStatus())
+                && entitlement.getGrantedAt() != null
+                && entitlement.getGrantedAt()
+                .isAfter(now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
+    }
+
+    private LocalDateTime now() {
+        return LocalDateTime.now(clock).withNano(0);
     }
 
     private UnlockScope scope(AccessibleDrama drama, int episodeFrom, int episodeTo,

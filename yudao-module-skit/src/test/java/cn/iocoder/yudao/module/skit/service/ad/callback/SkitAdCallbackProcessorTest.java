@@ -174,6 +174,8 @@ class SkitAdCallbackProcessorTest {
             row.setId(entitlementId.incrementAndGet());
             return 1;
         }).when(entitlementMapper).insertGrantedIfAbsent(any(SkitContentEntitlementDO.class));
+        when(entitlementMapper.renewExpiredLeaseCas(anyLong(), anyLong(), anyLong(), anyLong(),
+                anyInt(), anyInt(), any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
         when(grantMapper.selectBySessionAndEpisodeForUpdate(eq(TENANT_ID), eq(SESSION_ID), anyInt()))
                 .thenReturn(null);
         when(grantMapper.insert(any(SkitEntitlementGrantDO.class))).thenReturn(1);
@@ -233,6 +235,26 @@ class SkitAdCallbackProcessorTest {
         assertTrue(rewardCasSql.contains("placement_id`=#{expectedplacementid}"));
         assertTrue(rewardCasSql.contains("network_firm_id`=#{expectednetworkfirmid}"));
         assertTrue(rewardCasSql.contains("adsource_id`=#{expectedadsourceid}"));
+    }
+
+    @Test
+    void newSignedRewardCreatesANewLeaseForAnExpiredEpisodeInsteadOfReportingAlreadyOwned() {
+        SkitContentEntitlementDO expired = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(PROCESSING_AT.minusMinutes(5));
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Arrays.asList(3, 4))).thenReturn(Collections.singletonList(expired));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        ArgumentCaptor<SkitEntitlementGrantDO> grants =
+                ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
+        verify(grantMapper, org.mockito.Mockito.times(2)).insert(grants.capture());
+        assertEquals("CREATED", grants.getAllValues().get(0).getGrantResult());
+        assertEquals(PROCESSING_AT, expired.getGrantedAt());
+        verify(entitlementMapper).renewExpiredLeaseCas(TENANT_ID, expired.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 0, PROCESSING_AT.minusMinutes(5), PROCESSING_AT);
     }
 
     @Test

@@ -48,6 +48,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private static final String SIGNED_REWARD = "SIGNED_REWARD";
     private static final long SIGNED_REWARD_FIELD_MASK = 0x3fL;
     private static final int LEGACY_GROSS_SCALE = 8;
+    private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitAdCallbackInboxMapper inboxMapper;
     private final SkitAdSessionMapper sessionMapper;
@@ -517,6 +518,17 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                String transactionId, LocalDateTime grantedAt) {
         for (Integer episode : episodes) {
             SkitContentEntitlementDO entitlement = existing.get(episode);
+            SkitEntitlementGrantDO grant = grantMapper.selectBySessionAndEpisodeForUpdate(
+                    session.getTenantId(), session.getId(), episode);
+            // A replay of this exact signed callback must remain an idempotent no-op even if the
+            // five-minute lease has elapsed by the time it is reprocessed.
+            if (grant != null) {
+                if (entitlement == null) {
+                    throw new IllegalStateException("Existing grant has no entitlement projection");
+                }
+                validateExistingGrant(grant, session, entitlement, episode, transactionId);
+                continue;
+            }
             String grantResult;
             if (entitlement == null) {
                 entitlement = new SkitContentEntitlementDO().setMemberId(session.getMemberId())
@@ -528,25 +540,40 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                     throw new IllegalStateException("Entitlement id was not returned after upsert");
                 }
                 grantResult = "CREATED";
+            } else if (isExpiredEntitlement(entitlement, grantedAt)) {
+                int renewed = entitlementMapper.renewExpiredLeaseCas(session.getTenantId(),
+                        entitlement.getId(), session.getMemberId(), session.getDramaId(), episode,
+                        entitlement.getVersion(), grantedAt.minusMinutes(CONTENT_ENTITLEMENT_MINUTES),
+                        grantedAt);
+                if (renewed != 1) {
+                    throw new IllegalStateException("Expired entitlement lease changed before renewal");
+                }
+                entitlement.setGrantedAt(grantedAt).setVersion(entitlement.getVersion() + 1);
+                // This is a fresh verified reward event and intentionally remains CREATED in the
+                // append-only grant ledger; the current lease is bound by the same granted_at.
+                grantResult = "CREATED";
             } else {
                 grantResult = "ALREADY_OWNED";
             }
-            SkitEntitlementGrantDO grant = grantMapper.selectBySessionAndEpisodeForUpdate(
-                    session.getTenantId(), session.getId(), episode);
-            if (grant == null) {
-                grant = new SkitEntitlementGrantDO().setAdSessionId(session.getId())
-                        .setEntitlementId(entitlement.getId()).setMemberId(session.getMemberId())
-                        .setDramaId(session.getDramaId()).setEpisodeNo(episode)
-                        .setProviderTransactionId(transactionId).setGrantResult(grantResult)
-                        .setGrantedAt(grantedAt);
-                grant.setTenantId(session.getTenantId());
-                if (grantMapper.insert(grant) != 1) {
-                    throw new IllegalStateException("Entitlement grant was not appended exactly once");
-                }
-            } else {
-                validateExistingGrant(grant, session, entitlement, episode, transactionId);
+            grant = new SkitEntitlementGrantDO().setAdSessionId(session.getId())
+                    .setEntitlementId(entitlement.getId()).setMemberId(session.getMemberId())
+                    .setDramaId(session.getDramaId()).setEpisodeNo(episode)
+                    .setProviderTransactionId(transactionId).setGrantResult(grantResult)
+                    .setGrantedAt(grantedAt);
+            grant.setTenantId(session.getTenantId());
+            if (grantMapper.insert(grant) != 1) {
+                throw new IllegalStateException("Entitlement grant was not appended exactly once");
             }
         }
+    }
+
+    private boolean isExpiredEntitlement(SkitContentEntitlementDO entitlement,
+                                         LocalDateTime authoritativeNow) {
+        if (entitlement.getGrantedAt() == null || entitlement.getVersion() == null) {
+            throw new IllegalStateException("Granted entitlement lease is malformed");
+        }
+        return !entitlement.getGrantedAt()
+                .isAfter(authoritativeNow.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
     }
 
     private LockedImpressionAuthority lockExistingImpressionAuthority(SkitAdSessionDO session) {

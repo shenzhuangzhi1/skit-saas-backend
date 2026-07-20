@@ -14,6 +14,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -31,6 +35,7 @@ class SkitContentScopeServiceImplTest {
     private static final long TENANT_ID = 41L;
     private static final long MEMBER_ID = 51L;
     private static final long DRAMA_ID = 61L;
+    private static final Instant NOW = Instant.parse("2026-07-20T02:00:00Z");
 
     @Mock private SkitAdminRecordMapper recordMapper;
     @Mock private SkitContentEntitlementMapper entitlementMapper;
@@ -41,7 +46,7 @@ class SkitContentScopeServiceImplTest {
     void setUp() {
         TenantContextHolder.setTenantId(TENANT_ID);
         service = new SkitContentScopeServiceImpl(recordMapper, entitlementMapper,
-                new ObjectMapper());
+                new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     @AfterEach
@@ -106,7 +111,27 @@ class SkitContentScopeServiceImplTest {
         verify(entitlementMapper, org.mockito.Mockito.never())
                 .countGrantedEpisodesInRange(org.mockito.ArgumentMatchers.anyLong(),
                         org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(),
-                        org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                        org.mockito.ArgumentMatchers.any(LocalDateTime.class));
+    }
+
+    @Test
+    void expiredRequestedEpisodeCreatesAFreshUnlockScope() {
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
+                catalog(TENANT_ID, false, 0, "正常", 20, 2, 3)));
+        SkitContentEntitlementDO expired = entitlement(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, "GRANTED")
+                .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Arrays.asList(3, 4, 5))).thenReturn(Collections.singletonList(expired));
+
+        SkitContentScopeService.UnlockScope scope =
+                service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
+
+        assertFalse(scope.isAlreadyEntitled());
+        assertEquals(3, scope.getEpisodeFrom());
+        assertEquals(5, scope.getEpisodeTo());
     }
 
     @Test
@@ -171,11 +196,13 @@ class SkitContentScopeServiceImplTest {
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Arrays.asList(9, 10, 11))).thenReturn(Collections.emptyList());
         when(entitlementMapper.countGrantedEpisodesInRange(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8)).thenReturn(5L);
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8,
+                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).minusMinutes(5))).thenReturn(5L);
 
         assertInvalid(() -> service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 9));
         verify(entitlementMapper).countGrantedEpisodesInRange(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8);
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8,
+                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).minusMinutes(5));
     }
 
     @Test
@@ -184,7 +211,8 @@ class SkitContentScopeServiceImplTest {
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
                 catalog(TENANT_ID, false, 0, "已完结", 20, 2, 3)));
         when(entitlementMapper.countGrantedEpisodesInRange(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8)).thenReturn(6L);
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8,
+                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).minusMinutes(5))).thenReturn(6L);
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Arrays.asList(9, 10, 11))).thenReturn(Collections.emptyList());
 
@@ -237,7 +265,8 @@ class SkitContentScopeServiceImplTest {
                                                   int episodeNo, String status) {
         SkitContentEntitlementDO row = new SkitContentEntitlementDO()
                 .setId(81L + episodeNo).setMemberId(memberId).setDramaId(dramaId)
-                .setEpisodeNo(episodeNo).setStatus(status);
+                .setEpisodeNo(episodeNo).setStatus(status)
+                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
         row.setTenantId(tenantId);
         row.setDeleted(false);
         return row;

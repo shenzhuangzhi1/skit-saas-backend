@@ -46,6 +46,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     private static final int PLAYER_GRANT_BYTES = 32;
     private static final int PLAYER_GRANT_RETRIES = 8;
     private static final int PLAYER_GRANT_MINUTES = 5;
+    private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitNativePlayerGrantMapper nativeGrantMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
@@ -191,14 +192,17 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         requirePositive(dramaId, "dramaId");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         List<SkitContentEntitlementDO> rows = entitlementMapper.selectGrantedEpisodes(
-                tenantId, memberId, dramaId);
+                tenantId, memberId, dramaId,
+                now().minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
         if (rows == null || rows.isEmpty()) {
             return Collections.emptyList();
         }
         List<Integer> episodes = new ArrayList<>(rows.size());
         for (SkitContentEntitlementDO row : rows) {
             validateEntitlementScope(row, tenantId, memberId, dramaId);
-            episodes.add(row.getEpisodeNo());
+            if (isActiveGrantedEntitlement(row, now())) {
+                episodes.add(row.getEpisodeNo());
+            }
         }
         return episodes;
     }
@@ -241,7 +245,8 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
             PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
             List<SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow> rows =
                     entitlementGrantMapper.selectVerifiedRewardProvenance(
-                            scope.getTenantId(), scope.getMemberId(), scope.getDramaId(), episodeNo);
+                            scope.getTenantId(), scope.getMemberId(), scope.getDramaId(), episodeNo,
+                            now().minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
             if (rows == null || rows.size() != 1) {
                 return;
             }
@@ -267,7 +272,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         }
         SkitContentEntitlementDO row = rows.get(0);
         validateEntitlementEnvelope(row, tenantId, memberId, dramaId, episodeNo);
-        return "GRANTED".equals(row.getStatus());
+        return isActiveGrantedEntitlement(row, now());
     }
 
     private boolean sameGrant(PlayerGrantReference reference, SkitNativePlayerGrantDO row) {
@@ -327,6 +332,11 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
             throw new IllegalStateException("Granted entitlement row is malformed");
         }
         validateEntitlementEnvelope(row, tenantId, memberId, dramaId, row.getEpisodeNo());
+    }
+
+    private boolean isActiveGrantedEntitlement(SkitContentEntitlementDO row, LocalDateTime now) {
+        return "GRANTED".equals(row.getStatus()) && row.getGrantedAt() != null
+                && row.getGrantedAt().isAfter(now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
     }
 
     private void validateEntitlementEnvelope(SkitContentEntitlementDO row, Long tenantId,

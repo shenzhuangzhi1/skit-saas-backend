@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
@@ -34,6 +35,7 @@ public interface SkitEntitlementGrantMapper {
             + "ON `e`.`tenant_id`=`g`.`tenant_id` AND `e`.`id`=`g`.`entitlement_id` "
             + "AND `e`.`member_id`=`g`.`member_id` AND `e`.`drama_id`=`g`.`drama_id` "
             + "AND `e`.`episode_no`=`g`.`episode_no` "
+            + "AND `g`.`granted_at`=`e`.`granted_at` "
             + "INNER JOIN `skit_ad_session` `s` "
             + "ON `s`.`tenant_id`=`g`.`tenant_id` AND `s`.`id`=`g`.`ad_session_id` "
             + "AND `s`.`member_id`=`g`.`member_id` AND `s`.`drama_id`=`g`.`drama_id` "
@@ -46,7 +48,8 @@ public interface SkitEntitlementGrantMapper {
             + "WHERE `g`.`tenant_id`=#{tenantId} AND `g`.`member_id`=#{memberId} "
             + "AND `g`.`drama_id`=#{dramaId} AND `g`.`episode_no`=#{episodeNo} "
             + "AND `g`.`grant_result`='CREATED' AND `g`.`deleted`=b'0' "
-            + "AND `e`.`status`='GRANTED' AND `e`.`deleted`=b'0' "
+            + "AND `e`.`status`='GRANTED' AND `e`.`granted_at` > #{activeAfter} "
+            + "AND `e`.`deleted`=b'0' "
             + "AND `s`.`provider`='TAKU' AND `s`.`reward_verification_status`='SIGNED_VERIFIED' "
             + "AND `s`.`entitlement_status`='GRANTED' "
             + "AND `s`.`active_scope_release_reason`='ENTITLEMENT_GRANTED' "
@@ -64,7 +67,8 @@ public interface SkitEntitlementGrantMapper {
             @Param("tenantId") Long tenantId,
             @Param("memberId") Long memberId,
             @Param("dramaId") Long dramaId,
-            @Param("episodeNo") Integer episodeNo);
+            @Param("episodeNo") Integer episodeNo,
+            @Param("activeAfter") LocalDateTime activeAfter);
 
     @Insert("INSERT INTO `skit_entitlement_grant` (tenant_id,`ad_session_id`,`entitlement_id`,"
             + "`member_id`,`drama_id`,`episode_no`,`provider_transaction_id`,`grant_result`,"

@@ -285,9 +285,11 @@ class SkitContentEntitlementServiceImplTest {
     void entitlementReadsAreAlwaysBoundToTenantMemberDramaEpisode() {
         SkitContentEntitlementDO existing = new SkitContentEntitlementDO()
                 .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
-                .setStatus("GRANTED");
+                .setStatus("GRANTED")
+                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
         existing.setTenantId(TENANT_ID);
-        when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID))
+        when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
                 .thenReturn(Collections.singletonList(existing));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Collections.singletonList(4))).thenReturn(Collections.emptyList());
@@ -298,19 +300,36 @@ class SkitContentEntitlementServiceImplTest {
     }
 
     @Test
+    void expiredContentEntitlementIsNeverReturnedAsUnlocked() {
+        SkitContentEntitlementDO expired = new SkitContentEntitlementDO()
+                .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setStatus("GRANTED")
+                .setGrantedAt(LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC));
+        expired.setTenantId(TENANT_ID);
+        when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
+                .thenReturn(Collections.singletonList(expired));
+
+        assertEquals(Collections.emptyList(),
+                service.listGrantedEpisodes(MEMBER_ID, DRAMA_ID, RUNTIME));
+    }
+
+    @Test
     void nativeEntitlementReadDerivesEveryScopeFieldFromGrant() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
         SkitContentEntitlementDO episode = new SkitContentEntitlementDO()
                 .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
-                .setStatus("GRANTED");
+                .setStatus("GRANTED")
+                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
         episode.setTenantId(TENANT_ID);
         when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.selectExactForShare(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
-        when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID))
+        when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
                 .thenReturn(Collections.singletonList(episode));
 
         assertEquals(Collections.singletonList(3),
@@ -330,7 +349,8 @@ class SkitContentEntitlementServiceImplTest {
         when(nativeGrantMapper.selectExactForShare(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         when(entitlementGrantMapper.selectVerifiedRewardProvenance(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3))
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
                 .thenReturn(Collections.singletonList(verifiedRewardRow(3)));
 
         SkitContentEntitlementService.VerifiedRewardProvenance proof =
@@ -342,7 +362,8 @@ class SkitContentEntitlementServiceImplTest {
         assertEquals("show-verified-1", proof.getProviderShowId());
         assertFalse(proof.toString().contains("show-verified-1"));
         verify(entitlementGrantMapper).selectVerifiedRewardProvenance(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3);
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC));
     }
 
     @Test
@@ -355,7 +376,8 @@ class SkitContentEntitlementServiceImplTest {
         when(nativeGrantMapper.selectExactForShare(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         when(entitlementGrantMapper.selectVerifiedRewardProvenance(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(Arrays.asList(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC))).thenReturn(Arrays.asList(
                 verifiedRewardRow(3), verifiedRewardRow(3)));
 
         assertNull(service.findVerifiedRewardProvenanceForPlayerGrant(token, 3, RUNTIME));
@@ -363,7 +385,8 @@ class SkitContentEntitlementServiceImplTest {
         SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow malformed = verifiedRewardRow(3);
         malformed.setProviderShowId("not a valid show id");
         when(entitlementGrantMapper.selectVerifiedRewardProvenance(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3))
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3,
+                LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
                 .thenReturn(Collections.singletonList(malformed));
         assertNull(service.findVerifiedRewardProvenanceForPlayerGrant(token, 3, RUNTIME));
     }
