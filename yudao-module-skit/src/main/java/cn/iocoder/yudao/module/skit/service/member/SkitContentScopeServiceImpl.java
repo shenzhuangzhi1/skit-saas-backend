@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMappe
 import cn.iocoder.yudao.module.skit.dal.mysql.record.SkitAdminRecordMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -39,6 +40,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
+    @Autowired
     public SkitContentScopeServiceImpl(SkitAdminRecordMapper recordMapper,
                                        SkitContentEntitlementMapper entitlementMapper,
                                        ObjectMapper objectMapper) {

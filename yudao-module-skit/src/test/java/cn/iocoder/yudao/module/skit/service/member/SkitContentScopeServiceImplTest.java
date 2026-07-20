@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -24,6 +25,7 @@ import java.util.Collections;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
@@ -47,6 +49,14 @@ class SkitContentScopeServiceImplTest {
         TenantContextHolder.setTenantId(TENANT_ID);
         service = new SkitContentScopeServiceImpl(recordMapper, entitlementMapper,
                 new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    void runtimeConstructorIsExplicitlyAutowiredWhenTestClockAddsAnOverload()
+            throws NoSuchMethodException {
+        assertNotNull(SkitContentScopeServiceImpl.class.getConstructor(
+                SkitAdminRecordMapper.class, SkitContentEntitlementMapper.class, ObjectMapper.class)
+                .getAnnotation(Autowired.class));
     }
 
     @AfterEach
