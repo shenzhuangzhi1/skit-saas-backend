@@ -22,6 +22,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
@@ -39,6 +40,7 @@ import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -312,13 +314,24 @@ class SkitTask5PersistenceContractTest {
                 "i.authentication_level='signed_reward'", "i.signature_status='valid'",
                 "i.delivery_integrity_status='canonical'", "i.processing_status='succeeded'",
                 "i.provider_show_id is not null",
-                "binary i.provider_show_id=binary s.provider_show_id",
-                "binary i.provider_transaction_id=binary s.provider_transaction_id",
+                "hex(i.provider_show_id)=hex(s.provider_show_id)",
+                "hex(i.provider_transaction_id)=hex(s.provider_transaction_id)",
+                "hex(s.provider_transaction_id)=hex(g.provider_transaction_id)",
                 "limit 2");
         assertFalse(sql.contains("select *"),
                 "provenance reads must not expose arbitrary callback-inbox fields");
         assertFalse(sql.contains("order by"),
                 "ambiguous reward grants must fail closed instead of selecting a latest row");
+    }
+
+    @Test
+    void rewardProvenanceReadIsParsableByTheRuntimeSqlInterceptor() throws Exception {
+        Method evidence = SkitEntitlementGrantMapper.class.getMethod(
+                "selectVerifiedRewardProvenance",
+                Long.class, Long.class, Long.class, Integer.class);
+        String rawSql = String.join(" ", evidence.getAnnotation(Select.class).value());
+
+        assertDoesNotThrow(() -> CCJSqlParserUtil.parse(rawSql.replaceAll("#\\{[^}]+}", "?")));
     }
 
     @Test

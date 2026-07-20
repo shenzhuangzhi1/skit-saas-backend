@@ -38,11 +38,11 @@ public interface SkitEntitlementGrantMapper {
             + "ON `s`.`tenant_id`=`g`.`tenant_id` AND `s`.`id`=`g`.`ad_session_id` "
             + "AND `s`.`member_id`=`g`.`member_id` AND `s`.`drama_id`=`g`.`drama_id` "
             + "AND `g`.`episode_no` BETWEEN `s`.`episode_from` AND `s`.`episode_to` "
-            + "AND BINARY `s`.`provider_transaction_id`=BINARY `g`.`provider_transaction_id` "
+            + "AND HEX(`s`.`provider_transaction_id`)=HEX(`g`.`provider_transaction_id`) "
             + "INNER JOIN `skit_ad_callback_inbox` `i` "
             + "ON `i`.`tenant_id`=`s`.`tenant_id` AND `i`.`id`=`s`.`reward_callback_inbox_id` "
             + "AND `i`.`ad_session_id`=`s`.`id` AND `i`.`ad_account_id`=`s`.`ad_account_id` "
-            + "AND BINARY `i`.`provider_transaction_id`=BINARY `s`.`provider_transaction_id` "
+            + "AND HEX(`i`.`provider_transaction_id`)=HEX(`s`.`provider_transaction_id`) "
             + "WHERE `g`.`tenant_id`=#{tenantId} AND `g`.`member_id`=#{memberId} "
             + "AND `g`.`drama_id`=#{dramaId} AND `g`.`episode_no`=#{episodeNo} "
             + "AND `g`.`grant_result`='CREATED' AND `g`.`deleted`=b'0' "
@@ -58,7 +58,7 @@ public interface SkitEntitlementGrantMapper {
             + "AND `i`.`delivery_integrity_status`='CANONICAL' "
             + "AND `i`.`processing_status`='SUCCEEDED' AND `i`.`deleted`=b'0' "
             + "AND `i`.`provider_show_id` IS NOT NULL AND `i`.`provider_show_id`<>'' "
-            + "AND BINARY `i`.`provider_show_id`=BINARY `s`.`provider_show_id` "
+            + "AND HEX(`i`.`provider_show_id`)=HEX(`s`.`provider_show_id`) "
             + "LIMIT 2")
     List<VerifiedRewardProvenanceRow> selectVerifiedRewardProvenance(
             @Param("tenantId") Long tenantId,
