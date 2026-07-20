@@ -221,7 +221,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
                         tenantId, memberId, contentScope.getDramaId(),
                         contentScope.getEpisodeFrom(), contentScope.getEpisodeTo()),
-                tenantId, memberId, account, contentScope);
+                tenantId, memberId, account, contentScope, nativeGrantId);
         if (overlappingResult != null) {
             return overlappingResult;
         }
@@ -235,7 +235,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         SkitAdSessionDO existing = sessionMapper.selectActiveScopeForUpdate(
                 tenantId, memberId, activeScopeHash);
         CreateResult existingResult = resolveExisting(existing, tenantId, memberId, account,
-                contentScope);
+                contentScope, nativeGrantId);
         if (existingResult != null) {
             return existingResult;
         }
@@ -280,17 +280,18 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     private CreateResult resolveExisting(SkitAdSessionDO row, Long tenantId, Long memberId,
                                          SkitAdAccountDO account,
-                                         SkitContentScopeService.UnlockScope contentScope) {
+                                         SkitContentScopeService.UnlockScope contentScope,
+                                         Long currentNativePlayerGrantId) {
         if (row == null) {
             return null;
         }
         validateExistingEnvelope(row, tenantId, memberId, account, contentScope);
-        return resolveExistingLifecycle(row, tenantId, memberId);
+        return resolveExistingLifecycle(row, tenantId, memberId, currentNativePlayerGrantId);
     }
 
     private CreateResult resolveOverlappingActiveScope(
             List<SkitAdSessionDO> rows, Long tenantId, Long memberId, SkitAdAccountDO account,
-            SkitContentScopeService.UnlockScope requestedScope) {
+            SkitContentScopeService.UnlockScope requestedScope, Long currentNativePlayerGrantId) {
         if (rows == null || rows.isEmpty()) {
             return null;
         }
@@ -300,6 +301,13 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         SkitAdSessionDO row = rows.get(0);
         validateExistingEnvelope(row, tenantId, memberId, account, null);
         LocalDateTime authoritativeNow = now();
+        if (!Objects.equals(row.getEpisodeFrom(), row.getEpisodeTo())) {
+            if (sessionMapper.rejectLegacyMultiEpisodeScopeCas(tenantId, row.getId(), memberId,
+                    row.getVersion(), authoritativeNow) != 1) {
+                throw exception(AD_SESSION_STATE_CONFLICT);
+            }
+            return null;
+        }
         if ("PENDING".equals(row.getRewardVerificationStatus())
                 && authoritativeNow.isAfter(row.getRewardAcceptUntil())) {
             if (sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(tenantId, row.getId(), memberId,
@@ -312,7 +320,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         if (requestedEpisode < row.getEpisodeFrom() || requestedEpisode > row.getEpisodeTo()) {
             throw exception(AD_SESSION_STATE_CONFLICT);
         }
-        return resolveExistingLifecycle(row, tenantId, memberId);
+        return resolveExistingLifecycle(row, tenantId, memberId, currentNativePlayerGrantId);
     }
 
     private void validateExistingEnvelope(SkitAdSessionDO row, Long tenantId, Long memberId,
@@ -336,7 +344,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         }
     }
 
-    private CreateResult resolveExistingLifecycle(SkitAdSessionDO row, Long tenantId, Long memberId) {
+    private CreateResult resolveExistingLifecycle(SkitAdSessionDO row, Long tenantId, Long memberId,
+                                                  Long currentNativePlayerGrantId) {
         LocalDateTime now = now();
         if ("PENDING".equals(row.getRewardVerificationStatus()) && now.isAfter(row.getRewardAcceptUntil())) {
             if (sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(tenantId, row.getId(), memberId,
@@ -352,6 +361,56 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 || "VERIFY_TIMEOUT".equals(row.getRewardVerificationStatus())) {
             throw new IllegalStateException("Terminal ad session retained an active scope");
         }
+        expireLoad(row, tenantId, memberId, now);
+        String lifecycle = row.getClientLifecycleStatus();
+        if ("LOAD_EXPIRED".equals(lifecycle)) {
+            if (isSafelyRetryableLoadExpired(row)) {
+                if (sessionMapper.rejectUnstartedLoadExpiredAndReleaseScopeCas(
+                        tenantId, row.getId(), memberId, row.getVersion(), now) != 1) {
+                    throw exception(AD_SESSION_STATE_CONFLICT);
+                }
+                return null;
+            }
+            return verificationPending(row);
+        }
+        if ("FAILED".equals(lifecycle)) {
+            if (isSafelyRetryablePreShowFailure(row)) {
+                if (sessionMapper.rejectPreShowFailedAndReleaseScopeCas(
+                        tenantId, row.getId(), memberId, row.getVersion(), now) != 1) {
+                    throw exception(AD_SESSION_STATE_CONFLICT);
+                }
+                return null;
+            }
+            return verificationPending(row);
+        }
+        if ("SHOWN".equals(lifecycle) || "CLIENT_REWARDED".equals(lifecycle)
+                || "CLOSED".equals(lifecycle)) {
+            return verificationPending(row);
+        }
+        if (!"CREATED".equals(lifecycle) && !"LOADING".equals(lifecycle)) {
+            throw new IllegalStateException("Unknown active ad session lifecycle");
+        }
+        if ("CREATED".equals(lifecycle)) {
+            if (!isPureCreatedSession(row)) {
+                return verificationPending(row);
+            }
+            if (sessionMapper.rejectPureCreatedAndReleaseScopeCas(
+                    tenantId, row.getId(), memberId, row.getVersion(), now) != 1) {
+                throw exception(AD_SESSION_STATE_CONFLICT);
+            }
+            return null;
+        }
+        if (!isPureLoadStartedSession(row)) {
+            return verificationPending(row);
+        }
+        if (isSupersededNativePlayerGrant(row, currentNativePlayerGrantId)) {
+            if (sessionMapper.rejectSupersededNativeGrantLoadingAndReleaseScopeCas(
+                    tenantId, row.getId(), memberId, row.getVersion(), row.getNativePlayerGrantId(),
+                    currentNativePlayerGrantId, now) != 1) {
+                throw exception(AD_SESSION_STATE_CONFLICT);
+            }
+            return null;
+        }
         SkitAdSessionTokenService.IssuedToken token = tokenService.restore(
                 row.getSessionId(), row.getSessionTokenKeyVersion());
         if (!MessageDigest.isEqual(token.getTokenHash(), row.getSessionTokenHash())) {
@@ -359,6 +418,72 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         }
         return new CreateResult("REUSED", row.getProtocolVersion(), row.getSessionId(), row.getProvider(),
                 row.getPlacementId(), row.getPseudonymousUserId(), token.consumeCustomData(), row.getScenarioId(),
+                row.getLoadExpiresAt(), row.getRewardAcceptUntil());
+    }
+
+    private boolean hasNoDisplayCallbackOrRevenueFact(SkitAdSessionDO row) {
+        return "PENDING".equals(row.getRewardVerificationStatus())
+                && "NONE".equals(row.getEntitlementStatus())
+                && "NONE".equals(row.getRevenueStatus())
+                && row.getProviderShowId() == null
+                && row.getProviderTransactionId() == null
+                && row.getRewardCallbackInboxId() == null
+                && row.getRewardCallbackReceivedAt() == null
+                && row.getNetworkFirmId() == null
+                && row.getAdsourceId() == null
+                && row.getActiveScopeHash() != null
+                && row.getActiveScopeReleasedAt() == null
+                && row.getActiveScopeReleaseReason() == null;
+    }
+
+    private boolean isPureCreatedSession(SkitAdSessionDO row) {
+        return "CREATED".equals(row.getClientLifecycleStatus())
+                && hasNoDisplayCallbackOrRevenueFact(row)
+                && Integer.valueOf(-1).equals(row.getLastCallbackSequence())
+                && row.getLastClientEvent() == null
+                && row.getSdkRequestId() == null;
+    }
+
+    private boolean isPureLoadStartedSession(SkitAdSessionDO row) {
+        return "LOADING".equals(row.getClientLifecycleStatus())
+                && hasNoDisplayCallbackOrRevenueFact(row)
+                && row.getLastCallbackSequence() != null
+                && row.getLastCallbackSequence() >= 0
+                && "LOAD_STARTED".equals(row.getLastClientEvent())
+                && row.getSdkRequestId() != null;
+    }
+
+    private boolean isSupersededNativePlayerGrant(SkitAdSessionDO row,
+                                                   Long currentNativePlayerGrantId) {
+        return currentNativePlayerGrantId != null
+                && "NATIVE_PLAYER_GRANT".equals(row.getAccessMode())
+                && row.getNativePlayerGrantId() != null
+                && !currentNativePlayerGrantId.equals(row.getNativePlayerGrantId());
+    }
+
+    private boolean isSafelyRetryableLoadExpired(SkitAdSessionDO row) {
+        if (!"LOAD_EXPIRED".equals(row.getClientLifecycleStatus())
+                || !hasNoDisplayCallbackOrRevenueFact(row)) {
+            return false;
+        }
+        return (Integer.valueOf(-1).equals(row.getLastCallbackSequence())
+                && row.getLastClientEvent() == null && row.getSdkRequestId() == null)
+                || (row.getLastCallbackSequence() != null && row.getLastCallbackSequence() >= 0
+                && "LOAD_STARTED".equals(row.getLastClientEvent()) && row.getSdkRequestId() != null);
+    }
+
+    private boolean isSafelyRetryablePreShowFailure(SkitAdSessionDO row) {
+        return "FAILED".equals(row.getClientLifecycleStatus())
+                && hasNoDisplayCallbackOrRevenueFact(row)
+                && row.getLastCallbackSequence() != null
+                && row.getLastCallbackSequence() >= 0
+                && "FAILED".equals(row.getLastClientEvent())
+                && row.getSdkRequestId() != null;
+    }
+
+    private CreateResult verificationPending(SkitAdSessionDO row) {
+        return new CreateResult("VERIFYING", row.getProtocolVersion(), row.getSessionId(), row.getProvider(),
+                row.getPlacementId(), row.getPseudonymousUserId(), null, row.getScenarioId(),
                 row.getLoadExpiresAt(), row.getRewardAcceptUntil());
     }
 
@@ -635,7 +760,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     private void expireLoad(SkitAdSessionDO row, Long tenantId, Long memberId,
                             LocalDateTime authoritativeNow) {
-        if ("CREATED".equals(row.getClientLifecycleStatus()) && row.getLoadExpiresAt() != null
+        if ((isPureCreatedSession(row) || isPureLoadStartedSession(row))
+                && row.getLoadExpiresAt() != null
                 && authoritativeNow.isAfter(row.getLoadExpiresAt())) {
             if (sessionMapper.markLoadExpiredCas(tenantId, row.getId(), memberId,
                     row.getVersion(), authoritativeNow) != 1) {
@@ -661,7 +787,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     }
 
     private boolean needsServerExpiry(SkitAdSessionDO row, LocalDateTime authoritativeNow) {
-        return ("CREATED".equals(row.getClientLifecycleStatus()) && row.getLoadExpiresAt() != null
+        return ((isPureCreatedSession(row) || isPureLoadStartedSession(row))
+                && row.getLoadExpiresAt() != null
                 && authoritativeNow.isAfter(row.getLoadExpiresAt()))
                 || ("PENDING".equals(row.getRewardVerificationStatus())
                 && row.getRewardAcceptUntil() != null && row.getActiveScopeHash() != null
@@ -782,8 +909,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 || scope.getEpisodeFrom() == null || scope.getEpisodeTo() == null
                 || scope.getEpisodeFrom() <= 0 || scope.getEpisodeTo() < scope.getEpisodeFrom()
                 || scope.getEpisodeTo() - scope.getEpisodeFrom() >= 100
-                || command.getEpisodeNo() < scope.getEpisodeFrom()
-                || command.getEpisodeNo() > scope.getEpisodeTo()
+                || !command.getEpisodeNo().equals(scope.getEpisodeFrom())
+                || !command.getEpisodeNo().equals(scope.getEpisodeTo())
                 || !validText(scope.getCanonicalScope(), 512)
                 || !canonicalUnlockScope(scope.getDramaId(), scope.getEpisodeFrom(),
                 scope.getEpisodeTo()).equals(scope.getCanonicalScope())) {

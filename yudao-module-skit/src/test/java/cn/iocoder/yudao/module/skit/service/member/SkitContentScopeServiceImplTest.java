@@ -65,12 +65,12 @@ class SkitContentScopeServiceImplTest {
     }
 
     @Test
-    void currentTenantOnlineCatalogComputesTheOnlyAuthoritativeUnlockRange() {
+    void currentTenantOnlineCatalogComputesExactRequestedEpisodeScope() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
                 catalog(TENANT_ID, false, 0, "上架", 20, 2, 3)));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4, 5))).thenReturn(Collections.emptyList());
+                Collections.singletonList(3))).thenReturn(Collections.emptyList());
 
         SkitContentScopeService.UnlockScope scope =
                 service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
@@ -78,21 +78,20 @@ class SkitContentScopeServiceImplTest {
         assertEquals(TENANT_ID, scope.getTenantId());
         assertEquals(DRAMA_ID, scope.getDramaId());
         assertEquals(3, scope.getEpisodeFrom());
-        assertEquals(5, scope.getEpisodeTo());
-        assertEquals("drama:61:episodes:3-5", scope.getCanonicalScope());
+        assertEquals(3, scope.getEpisodeTo());
+        assertEquals("drama:61:episode:3", scope.getCanonicalScope());
         assertFalse(scope.isAlreadyEntitled());
         verify(recordMapper).selectDramaCatalogByBusinessIdForShare(
                 TENANT_ID, Long.toString(DRAMA_ID));
     }
 
     @Test
-    void serverStopsBeforeAnAlreadyOwnedEpisodeAndNeverRegrantsIt() {
+    void catalogUnlockSizeNeverExpandsTheRequestedEpisodeScope() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
-                catalog(TENANT_ID, false, 0, "连载中", 20, 2, 3)));
+                catalog(TENANT_ID, false, 0, "连载中", 20, 2, 100)));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4, 5))).thenReturn(Collections.singletonList(
-                entitlement(TENANT_ID, MEMBER_ID, DRAMA_ID, 4, "GRANTED")));
+                Collections.singletonList(3))).thenReturn(Collections.emptyList());
 
         SkitContentScopeService.UnlockScope scope =
                 service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
@@ -109,7 +108,7 @@ class SkitContentScopeServiceImplTest {
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
                 catalog(TENANT_ID, false, 0, "正常", 20, 0, 3)));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4, 5))).thenReturn(Collections.singletonList(
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(
                 entitlement(TENANT_ID, MEMBER_ID, DRAMA_ID, 3, "GRANTED")));
 
         SkitContentScopeService.UnlockScope scope =
@@ -134,7 +133,7 @@ class SkitContentScopeServiceImplTest {
                 TENANT_ID, MEMBER_ID, DRAMA_ID, 3, "GRANTED")
                 .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4, 5))).thenReturn(Collections.singletonList(expired));
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(expired));
 
         SkitContentScopeService.UnlockScope scope =
                 service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
@@ -153,7 +152,7 @@ class SkitContentScopeServiceImplTest {
                 TENANT_ID, MEMBER_ID, DRAMA_ID, 9, "GRANTED")
                 .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(9, 10, 11))).thenReturn(Collections.singletonList(expired));
+                Collections.singletonList(9))).thenReturn(Collections.singletonList(expired));
 
         SkitContentScopeService.UnlockScope scope =
                 service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 9);
@@ -192,12 +191,51 @@ class SkitContentScopeServiceImplTest {
     }
 
     @Test
-    void freeAndOutOfBoundsEpisodesCanNeverProduceAdRevenue() {
+    void catalogFreeSetDoesNotExemptAnEpisodeFromItsOwnAdScope() {
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
+                catalog(TENANT_ID, false, 0, "上架", 20, 8, 5)));
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(1))).thenReturn(Collections.emptyList());
+
+        SkitContentScopeService.UnlockScope scope =
+                service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 1);
+
+        assertEquals(1, scope.getEpisodeFrom());
+        assertEquals(1, scope.getEpisodeTo());
+        assertEquals("drama:61:episode:1", scope.getCanonicalScope());
+        assertFalse(scope.isAlreadyEntitled());
+    }
+
+    @Test
+    void finalEpisodeBoundaryProducesItsOwnAdScopeWithoutAContinuityRequirement() {
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
+                catalog(TENANT_ID, false, 0, "上架", 20, 8, 5)));
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(20))).thenReturn(Collections.emptyList());
+
+        SkitContentScopeService.UnlockScope scope =
+                service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 20);
+
+        assertEquals(20, scope.getEpisodeFrom());
+        assertEquals(20, scope.getEpisodeTo());
+        assertEquals("drama:61:episode:20", scope.getCanonicalScope());
+        assertFalse(scope.isAlreadyEntitled());
+        verify(entitlementMapper, org.mockito.Mockito.never())
+                .countGrantedEpisodesInRange(org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                        org.mockito.ArgumentMatchers.any(LocalDateTime.class));
+    }
+
+    @Test
+    void outOfBoundsEpisodeCanNeverProduceAdRevenue() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
                 catalog(TENANT_ID, false, 0, "上架", 20, 8, 5)));
 
-        assertInvalid(() -> service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 8));
+        assertInvalid(() -> service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 0));
         assertInvalid(() -> service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 21));
         verify(entitlementMapper, org.mockito.Mockito.never())
                 .selectEpisodesForUpdate(org.mockito.ArgumentMatchers.anyLong(),
@@ -218,62 +256,73 @@ class SkitContentScopeServiceImplTest {
         assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
 
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4, 5))).thenReturn(Collections.singletonList(
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(
                 entitlement(TENANT_ID, MEMBER_ID, DRAMA_ID, 3, "SECURITY_REVOKED")));
         assertInvalid(() -> service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3));
     }
 
     @Test
-    void futureEpisodeCannotJumpAcrossAnyUnentitledPaidEpisode() {
+    void nonContinuousEpisodeJumpProducesItsOwnSingleEpisodeScope() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
                 catalog(TENANT_ID, false, 0, "已完结", 20, 2, 3)));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(9, 10, 11))).thenReturn(Collections.emptyList());
-        when(entitlementMapper.countGrantedEpisodesInRange(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8,
-                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).minusMinutes(5))).thenReturn(5L);
-
-        assertInvalid(() -> service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 9));
-        verify(entitlementMapper).countGrantedEpisodesInRange(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8,
-                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).minusMinutes(5));
-    }
-
-    @Test
-    void nextContinuousPaidEpisodeStillUsesTheServerUnlockSize() {
-        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
-                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
-                catalog(TENANT_ID, false, 0, "已完结", 20, 2, 3)));
-        when(entitlementMapper.countGrantedEpisodesInRange(
-                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 8,
-                LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).minusMinutes(5))).thenReturn(6L);
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(9, 10, 11))).thenReturn(Collections.emptyList());
+                Collections.singletonList(9))).thenReturn(Collections.emptyList());
 
         SkitContentScopeService.UnlockScope scope =
                 service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 9);
 
         assertEquals(9, scope.getEpisodeFrom());
-        assertEquals(11, scope.getEpisodeTo());
-        assertEquals("drama:61:episodes:9-11", scope.getCanonicalScope());
+        assertEquals(9, scope.getEpisodeTo());
+        assertEquals("drama:61:episode:9", scope.getCanonicalScope());
+        assertFalse(scope.isAlreadyEntitled());
+        verify(entitlementMapper, org.mockito.Mockito.never())
+                .countGrantedEpisodesInRange(org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                        org.mockito.ArgumentMatchers.any(LocalDateTime.class));
     }
 
     @Test
-    void sdkCatalogMustContainItsFreeAndUnlockFieldsAndRequiresExplicitPublication() {
-        SkitAdminRecordDO missingUnlockScope = catalog(TENANT_ID, false, 0, "已上架", 20, 2, 3);
-        missingUnlockScope.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
-                + "freeEpisodes\":2,\"publishStatus\":\"已上架\"}");
-        SkitAdminRecordDO sourceStatusOnly = catalog(TENANT_ID, false, 0, "连载中", 20, 2, 3);
-        sourceStatusOnly.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
-                + "freeEpisodes\":2,\"unlockSize\":3,\"status\":\"连载中\","
-                + "publishStatus\":\"下架\"}");
+    void catalogAdPolicyFieldsCannotOverrideTheFixedPerEpisodeAdPolicy() {
+        SkitAdminRecordDO missing = catalog(TENANT_ID, false, 0, "已上架", 20, 2, 3);
+        missing.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
+                + "\"publishStatus\":\"已上架\"}");
+        SkitAdminRecordDO zero = catalog(TENANT_ID, false, 0, "连载中", 20, 2, 3);
+        zero.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
+                + "\"freeEpisodes\":0,\"unlockSize\":0,\"status\":\"连载中\"}");
+        SkitAdminRecordDO malformed = catalog(TENANT_ID, false, 0, "已完结", 20, 2, 3);
+        malformed.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
+                + "\"freeSet\":{\"unexpected\":true},\"lockSet\":\"not-a-number\","
+                + "\"publishStatus\":\"已完结\"}");
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
-                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(missingUnlockScope))
-                .thenReturn(Collections.singletonList(sourceStatusOnly));
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(missing))
+                .thenReturn(Collections.singletonList(zero))
+                .thenReturn(Collections.singletonList(malformed));
+
+        assertAccessibleWithFixedPerEpisodePolicy();
+        assertAccessibleWithFixedPerEpisodePolicy();
+        assertAccessibleWithFixedPerEpisodePolicy();
+    }
+
+    @Test
+    void explicitUnpublishedCatalogStillFailsClosed() {
+        SkitAdminRecordDO unpublished = catalog(TENANT_ID, false, 0, "连载中", 20, 2, 3);
+        unpublished.setRecordData("{\"pangleDramaId\":61,\"episodes\":20,"
+                + "\"status\":\"连载中\",\"publishStatus\":\"下架\"}");
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(unpublished));
 
         assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
+    }
+
+    private void assertAccessibleWithFixedPerEpisodePolicy() {
+        SkitContentScopeService.AccessibleDrama drama = service.requireAccessibleDrama(DRAMA_ID);
+        assertEquals(TENANT_ID, drama.getTenantId());
+        assertEquals(DRAMA_ID, drama.getDramaId());
+        assertEquals(20, drama.getTotalEpisodes());
+        assertEquals(0, drama.getFreeEpisodes());
+        assertEquals(1, drama.getUnlockSize());
     }
 
     private void assertInvalid(org.junit.jupiter.api.function.Executable executable) {

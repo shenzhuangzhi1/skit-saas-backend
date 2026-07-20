@@ -161,17 +161,144 @@ public interface SkitAdSessionMapper {
             @Param("sdkRequestId") String sdkRequestId,
             @Param("failedAt") LocalDateTime failedAt);
 
+    @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='ORPHAN_CREATED_REPLACED',`version`=`version`+1,"
+            + "`updater`='ad-session-retry',`update_time`=#{rejectedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`='CREATED' "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status`='NONE' AND `sdk_request_id` IS NULL "
+            + "AND `provider_show_id` IS NULL AND `provider_transaction_id` IS NULL "
+            + "AND `reward_callback_inbox_id` IS NULL AND `reward_callback_received_at` IS NULL "
+            + "AND `network_firm_id` IS NULL AND `adsource_id` IS NULL "
+            + "AND `last_callback_sequence`=-1 AND `last_client_event` IS NULL "
+            + "AND `active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
+            + "AND `active_scope_release_reason` IS NULL AND `deleted`=b'0'")
+    int rejectPureCreatedAndReleaseScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("rejectedAt") LocalDateTime rejectedAt);
+
+    @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
+            + "`revenue_status`=CASE WHEN `revenue_status`='IMPRESSION_PENDING_REWARD' "
+            + "THEN 'SUSPENSE' ELSE `revenue_status` END,"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='LEGACY_MULTI_EPISODE_SCOPE',`version`=`version`+1,"
+            + "`updater`='ad-session-migration',`update_time`=#{rejectedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `episode_from`<>`episode_to` "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
+            + "AND `active_scope_release_reason` IS NULL AND `deleted`=b'0'")
+    int rejectLegacyMultiEpisodeScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("rejectedAt") LocalDateTime rejectedAt);
+
     @Update("UPDATE `skit_ad_session` SET `client_lifecycle_status`='LOAD_EXPIRED',"
             + "`failure_reason`='LOAD_WINDOW_EXPIRED',`version`=`version`+1,"
             + "`updater`='ad-load-expiry',`update_time`=#{authoritativeNow} "
             + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
-            + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`='CREATED' "
-            + "AND `load_expires_at` < #{authoritativeNow} AND `deleted`=b'0'")
+            + "AND `version`=#{expectedVersion} "
+            + "AND `client_lifecycle_status` IN ('CREATED','LOADING') "
+            + "AND `load_expires_at` < #{authoritativeNow} "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status`='NONE' AND `provider_show_id` IS NULL "
+            + "AND `provider_transaction_id` IS NULL AND `reward_callback_inbox_id` IS NULL "
+            + "AND `reward_callback_received_at` IS NULL AND `network_firm_id` IS NULL "
+            + "AND `adsource_id` IS NULL "
+            + "AND ((`client_lifecycle_status`='CREATED' AND `last_callback_sequence`=-1 "
+            + "AND `last_client_event` IS NULL AND `sdk_request_id` IS NULL) "
+            + "OR (`client_lifecycle_status`='LOADING' AND `last_callback_sequence`>=0 "
+            + "AND `last_client_event`='LOAD_STARTED' AND `sdk_request_id` IS NOT NULL)) "
+            + "AND `active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
+            + "AND `active_scope_release_reason` IS NULL AND `deleted`=b'0'")
     int markLoadExpiredCas(@Param("tenantId") Long tenantId,
                            @Param("id") Long id,
                            @Param("memberId") Long memberId,
                            @Param("expectedVersion") Integer expectedVersion,
                            @Param("authoritativeNow") LocalDateTime authoritativeNow);
+
+    @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='LOAD_WINDOW_EXPIRED',`version`=`version`+1,"
+            + "`updater`='ad-session-retry',`update_time`=#{rejectedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`='LOAD_EXPIRED' "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status`='NONE' AND `provider_show_id` IS NULL "
+            + "AND `provider_transaction_id` IS NULL AND `reward_callback_inbox_id` IS NULL "
+            + "AND `reward_callback_received_at` IS NULL AND `network_firm_id` IS NULL "
+            + "AND `adsource_id` IS NULL "
+            + "AND ((`last_callback_sequence`=-1 AND `last_client_event` IS NULL "
+            + "AND `sdk_request_id` IS NULL) OR (`last_callback_sequence`>=0 "
+            + "AND `last_client_event`='LOAD_STARTED' AND `sdk_request_id` IS NOT NULL)) "
+            + "AND `active_scope_hash` IS NOT NULL "
+            + "AND `active_scope_released_at` IS NULL AND `active_scope_release_reason` IS NULL "
+            + "AND `deleted`=b'0'")
+    int rejectUnstartedLoadExpiredAndReleaseScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("rejectedAt") LocalDateTime rejectedAt);
+
+    @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='CLIENT_PRE_SHOW_FAILED',`version`=`version`+1,"
+            + "`updater`='ad-session-retry',`update_time`=#{rejectedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`='FAILED' "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status`='NONE' AND `provider_show_id` IS NULL "
+            + "AND `provider_transaction_id` IS NULL AND `reward_callback_inbox_id` IS NULL "
+            + "AND `reward_callback_received_at` IS NULL AND `network_firm_id` IS NULL "
+            + "AND `adsource_id` IS NULL AND `last_callback_sequence`>=0 "
+            + "AND `last_client_event`='FAILED' AND `sdk_request_id` IS NOT NULL "
+            + "AND `active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
+            + "AND `active_scope_release_reason` IS NULL AND `deleted`=b'0'")
+    int rejectPreShowFailedAndReleaseScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("rejectedAt") LocalDateTime rejectedAt);
+
+    @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='NATIVE_PLAYER_GRANT_SUPERSEDED',`version`=`version`+1,"
+            + "`updater`='ad-session-takeover',`update_time`=#{rejectedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `access_mode`='NATIVE_PLAYER_GRANT' "
+            + "AND `native_player_grant_id`=#{expectedNativePlayerGrantId} "
+            + "AND `native_player_grant_id`<>#{currentNativePlayerGrantId} "
+            + "AND `client_lifecycle_status`='LOADING' AND `last_callback_sequence`>=0 "
+            + "AND `last_client_event`='LOAD_STARTED' AND `sdk_request_id` IS NOT NULL "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status`='NONE' AND `provider_show_id` IS NULL "
+            + "AND `provider_transaction_id` IS NULL AND `reward_callback_inbox_id` IS NULL "
+            + "AND `reward_callback_received_at` IS NULL AND `network_firm_id` IS NULL "
+            + "AND `adsource_id` IS NULL AND `active_scope_hash` IS NOT NULL "
+            + "AND `active_scope_released_at` IS NULL AND `active_scope_release_reason` IS NULL "
+            + "AND `deleted`=b'0'")
+    int rejectSupersededNativeGrantLoadingAndReleaseScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("expectedNativePlayerGrantId") Long expectedNativePlayerGrantId,
+            @Param("currentNativePlayerGrantId") Long currentNativePlayerGrantId,
+            @Param("rejectedAt") LocalDateTime rejectedAt);
 
     @Update("UPDATE `skit_ad_session` SET `reward_callback_inbox_id`=#{callbackInboxId},"
             + "`reward_callback_received_at`=#{receivedAt},`version`=`version`+1,"

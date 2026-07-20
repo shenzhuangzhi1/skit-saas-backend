@@ -167,7 +167,7 @@ class SkitAdCallbackProcessorTest {
                 TENANT_ID, ACCOUNT_ID, IMPRESSION_INBOX_ID))
                 .thenReturn(impressionAuthorityInbox(IMPRESSION_INBOX_ID, 66, ADSOURCE));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4))).thenReturn(Collections.emptyList());
+                Collections.singletonList(3))).thenReturn(Collections.emptyList());
         AtomicLong entitlementId = new AtomicLong(500);
         doAnswer(invocation -> {
             SkitContentEntitlementDO row = invocation.getArgument(0);
@@ -189,7 +189,25 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
-    void delayedRewardUsesReceivedTimeAndGrantsRangeWhileKeepingTransactionAndShowDistinct() {
+    void legacyMultiEpisodeRewardIsRejectedWithoutGrantingAnyEpisode() {
+        session.setEpisodeFrom(3).setEpisodeTo(4).setUnlockScope("range:3-4");
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("LEGACY_MULTI_EPISODE_SCOPE", result.getErrorCode());
+        verify(sessionMapper).markRewardReceiptRejectedCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, PROCESSING_AT, "LEGACY_MULTI_EPISODE_SCOPE");
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(), anyInt(), anyInt(), anyInt(),
+                anyString(), any(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void delayedRewardUsesReceivedTimeAndGrantsExactEpisodeWhileKeepingTransactionAndShowDistinct() {
         session.setClientLifecycleStatus("CLOSED");
         session.setRevenueStatus("IMPRESSION_PENDING_REWARD");
         SkitAdRevenueEventDO pendingEstimate = pendingEstimate();
@@ -213,16 +231,13 @@ class SkitAdCallbackProcessorTest {
                 PROCESSING_AT);
         ArgumentCaptor<SkitContentEntitlementDO> entitlements =
                 ArgumentCaptor.forClass(SkitContentEntitlementDO.class);
-        verify(entitlementMapper, org.mockito.Mockito.times(2))
+        verify(entitlementMapper)
                 .insertGrantedIfAbsent(entitlements.capture());
-        assertEquals(Arrays.asList(3, 4), Arrays.asList(
-                entitlements.getAllValues().get(0).getEpisodeNo(),
-                entitlements.getAllValues().get(1).getEpisodeNo()));
+        assertEquals(3, entitlements.getValue().getEpisodeNo());
         ArgumentCaptor<SkitEntitlementGrantDO> grants =
                 ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
-        verify(grantMapper, org.mockito.Mockito.times(2)).insert(grants.capture());
-        assertTrue(grants.getAllValues().stream()
-                .allMatch(row -> TRANSACTION.equals(row.getProviderTransactionId())));
+        verify(grantMapper).insert(grants.capture());
+        assertEquals(TRANSACTION, grants.getValue().getProviderTransactionId());
         verify(revenueMapper).markRewardQualifiedCas(TENANT_ID, pendingEstimate.getId(), SESSION_ID,
                 ACCOUNT_ID, pendingEstimate.getVersion(), IMPRESSION_INBOX_ID, PLACEMENT, 66,
                 ADSOURCE, TRANSACTION, SIGNED_SHOW, RECEIVED_AT);
@@ -242,7 +257,7 @@ class SkitAdCallbackProcessorTest {
         SkitContentEntitlementDO expired = entitlement(3, "GRANTED", 503L)
                 .setGrantedAt(PROCESSING_AT.minusMinutes(5));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4))).thenReturn(Collections.singletonList(expired));
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(expired));
 
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
@@ -250,7 +265,7 @@ class SkitAdCallbackProcessorTest {
         assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
         ArgumentCaptor<SkitEntitlementGrantDO> grants =
                 ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
-        verify(grantMapper, org.mockito.Mockito.times(2)).insert(grants.capture());
+        verify(grantMapper).insert(grants.capture());
         assertEquals("CREATED", grants.getAllValues().get(0).getGrantResult());
         assertEquals(PROCESSING_AT, expired.getGrantedAt());
         verify(entitlementMapper).renewExpiredLeaseCas(TENANT_ID, expired.getId(), MEMBER_ID,
@@ -440,7 +455,7 @@ class SkitAdCallbackProcessorTest {
     void revokedExistingEntitlementFailsClosedAndCannotBeRegranted() {
         SkitContentEntitlementDO revoked = entitlement(3, "SECURITY_REVOKED", 301L);
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4))).thenReturn(Collections.singletonList(revoked));
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(revoked));
 
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
@@ -871,7 +886,7 @@ class SkitAdCallbackProcessorTest {
                 .setCallbackKeyVersion(4).setRewardSecretVersion(7).setProvider("TAKU")
                 .setPlacementId(PLACEMENT).setScenarioId("drama_unlock")
                 .setBusinessType("DRAMA_EPISODE_UNLOCK").setDramaId(DRAMA_ID)
-                .setEpisodeFrom(3).setEpisodeTo(4).setUnlockScope("range:3-4")
+                .setEpisodeFrom(3).setEpisodeTo(3).setUnlockScope("drama:801:episode:3")
                 .setActiveScopeHash(new byte[32]).setPseudonymousUserId(PSEUDONYMOUS_USER)
                 .setAccessMode("MEMBER_OAUTH").setClientLifecycleStatus("SHOWN")
                 .setRewardVerificationStatus("PENDING").setEntitlementStatus("NONE")

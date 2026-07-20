@@ -46,9 +46,9 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     private static final int PLAYER_GRANT_BYTES = 32;
     private static final int PLAYER_GRANT_RETRIES = 8;
     // A player grant is a short-lived bearer for the native ad flow, not content ownership.
-    // It must outlive the 20-minute signed-reward acceptance window so a legitimate ad that
-    // finishes near the former five-minute boundary can still complete server verification.
-    private static final int PLAYER_GRANT_MINUTES = 30;
+    // Each legitimate use renews this idle window so continuous playback does not fail while
+    // an abandoned player grant still expires promptly.
+    private static final int PLAYER_GRANT_IDLE_MINUTES = 30;
     private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitNativePlayerGrantMapper nativeGrantMapper;
@@ -115,7 +115,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                 || drama.getCatalogRecordId() <= 0) {
             throw exception(AD_PLAYER_GRANT_INVALID);
         }
-        LocalDateTime expiresAt = now().plusMinutes(PLAYER_GRANT_MINUTES);
+        LocalDateTime expiresAt = now().plusMinutes(PLAYER_GRANT_IDLE_MINUTES);
         for (int attempt = 0; attempt < PLAYER_GRANT_RETRIES; attempt++) {
             byte[] random = new byte[PLAYER_GRANT_BYTES];
             secureRandom.nextBytes(random);
@@ -177,14 +177,20 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         requireEnabledAgent(tenantId, agentMapper.selectByTenantId(tenantId));
         requireEnabledMember(tenantId, reference.getMemberId(),
                 memberMapper.selectByTenantAndIdForShare(tenantId, reference.getMemberId()));
-        SkitNativePlayerGrantDO row = nativeGrantMapper.selectExactForShare(tenantId,
+        SkitNativePlayerGrantDO row = nativeGrantMapper.selectExactForUpdate(tenantId,
                 reference.getGrantId(), reference.getMemberId(), reference.getDramaId());
         if (!sameGrant(reference, row)) {
             throw exception(AD_PLAYER_GRANT_INVALID);
         }
         LocalDateTime now = now();
         if (!"ACTIVE".equals(row.getStatus()) || row.getRevokedAt() != null
-                || row.getExpiresAt() == null || !row.getExpiresAt().isAfter(now)) {
+                || row.getExpiresAt() == null || !row.getExpiresAt().isAfter(now)
+                || row.getVersion() == null || row.getVersion() < 0) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        LocalDateTime renewedExpiresAt = now.plusMinutes(PLAYER_GRANT_IDLE_MINUTES);
+        if (nativeGrantMapper.recordActiveUseCas(tenantId, row.getId(), row.getMemberId(),
+                row.getDramaId(), row.getVersion(), now, renewedExpiresAt) != 1) {
             throw exception(AD_PLAYER_GRANT_INVALID);
         }
         return new PlayerGrantScope(tenantId, row.getId(), row.getMemberId(), row.getDramaId());
@@ -220,7 +226,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     }
 
     @Override
-    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public List<Integer> listGrantedEpisodesForPlayerGrant(
             String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         PlayerGrantReference reference = resolvePlayerGrant(grantToken);
@@ -235,7 +241,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     }
 
     @Override
-    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public VerifiedRewardProvenance findVerifiedRewardProvenanceForPlayerGrant(
             String grantToken, Integer episodeNo,
             SkitTenantAdCapabilityService.ClientRuntime runtime) {

@@ -32,15 +32,8 @@ public interface SkitNativePlayerGrantMapper {
                                                  @Param("memberId") Long memberId,
                                                  @Param("dramaId") Long dramaId);
 
-    @Select("SELECT * FROM `skit_native_player_grant` WHERE `tenant_id`=#{tenantId} "
-            + "AND `id`=#{id} AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
-            + "AND `deleted`=b'0' FOR SHARE")
-    SkitNativePlayerGrantDO selectExactForShare(@Param("tenantId") Long tenantId,
-                                                @Param("id") Long id,
-                                                @Param("memberId") Long memberId,
-                                                @Param("dramaId") Long dramaId);
-
-    @Update("UPDATE `skit_native_player_grant` SET `version`=`version`+1,"
+    @Update("UPDATE `skit_native_player_grant` SET `expires_at`=#{renewedExpiresAt},"
+            + "`version`=`version`+1,"
             + "`updater`='native-player-use',`update_time`=#{usedAt} "
             + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
             + "AND `drama_id`=#{dramaId} AND `version`=#{expectedVersion} AND `status`='ACTIVE' "
@@ -50,7 +43,8 @@ public interface SkitNativePlayerGrantMapper {
                            @Param("memberId") Long memberId,
                            @Param("dramaId") Long dramaId,
                            @Param("expectedVersion") Integer expectedVersion,
-                           @Param("usedAt") LocalDateTime usedAt);
+                           @Param("usedAt") LocalDateTime usedAt,
+                           @Param("renewedExpiresAt") LocalDateTime renewedExpiresAt);
 
     @Update("UPDATE `skit_native_player_grant` SET `status`='REVOKED',`revoked_at`=#{revokedAt},"
             + "`version`=`version`+1,`updater`='native-player-revoke',`update_time`=#{revokedAt} "

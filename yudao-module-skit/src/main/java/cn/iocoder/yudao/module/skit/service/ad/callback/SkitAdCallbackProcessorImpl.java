@@ -30,8 +30,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -138,6 +138,9 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         if (envelopeError != null) {
             return rejectReward(inbox, session, envelopeError, processedAt);
         }
+        if (!isExactSingleEpisodeScope(session)) {
+            return rejectReward(inbox, session, "LEGACY_MULTI_EPISODE_SCOPE", processedAt);
+        }
         if (!"CANONICAL".equals(inbox.getDeliveryIntegrityStatus())) {
             return rejectReward(inbox, session, "CALLBACK_PAYLOAD_CONFLICT", processedAt);
         }
@@ -188,7 +191,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                     inbox, session, sourceAuthorityError, processedAt);
         }
 
-        List<Integer> episodes = episodeRange(session);
+        List<Integer> episodes = exactEpisodeScope(session);
         Map<Integer, SkitContentEntitlementDO> existing = lockExistingEntitlements(session, episodes);
         for (SkitContentEntitlementDO row : existing.values()) {
             if ("SECURITY_REVOKED".equals(row.getStatus())) {
@@ -898,17 +901,17 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         return networkFirmId == 35 || networkFirmId == 66 || networkFirmId == 67;
     }
 
-    private static List<Integer> episodeRange(SkitAdSessionDO session) {
+    private static boolean isExactSingleEpisodeScope(SkitAdSessionDO session) {
         Integer first = session.getEpisodeFrom();
         Integer last = session.getEpisodeTo();
-        if (first == null || last == null || first <= 0 || last < first || last - first > 100) {
-            throw new IllegalStateException("Session episode range is invalid");
+        return first != null && first > 0 && first.equals(last);
+    }
+
+    private static List<Integer> exactEpisodeScope(SkitAdSessionDO session) {
+        if (!isExactSingleEpisodeScope(session)) {
+            throw new IllegalStateException("Reward session must target exactly one episode");
         }
-        List<Integer> episodes = new ArrayList<>(last - first + 1);
-        for (int episode = first; episode <= last; episode++) {
-            episodes.add(episode);
-        }
-        return episodes;
+        return Collections.singletonList(session.getEpisodeFrom());
     }
 
     private static String rewardQualification(SkitAdSessionDO session) {
