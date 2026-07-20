@@ -126,7 +126,7 @@ class SkitContentScopeServiceImplTest {
     }
 
     @Test
-    void expiredRequestedEpisodeCreatesAFreshUnlockScope() {
+    void expiredRequestedEpisodeRenewsOnlyThatEpisode() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
                 catalog(TENANT_ID, false, 0, "正常", 20, 2, 3)));
@@ -141,7 +141,32 @@ class SkitContentScopeServiceImplTest {
 
         assertFalse(scope.isAlreadyEntitled());
         assertEquals(3, scope.getEpisodeFrom());
-        assertEquals(5, scope.getEpisodeTo());
+        assertEquals(3, scope.getEpisodeTo());
+    }
+
+    @Test
+    void expiredPreviouslyGrantedLaterEpisodeRenewsOnlyThatEpisodeWithoutLiveFrontier() {
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(
+                catalog(TENANT_ID, false, 0, "正常", 20, 2, 3)));
+        SkitContentEntitlementDO expired = entitlement(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 9, "GRANTED")
+                .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Arrays.asList(9, 10, 11))).thenReturn(Collections.singletonList(expired));
+
+        SkitContentScopeService.UnlockScope scope =
+                service.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 9);
+
+        assertFalse(scope.isAlreadyEntitled());
+        assertEquals(9, scope.getEpisodeFrom());
+        assertEquals(9, scope.getEpisodeTo());
+        assertEquals("drama:61:episode:9", scope.getCanonicalScope());
+        verify(entitlementMapper, org.mockito.Mockito.never())
+                .countGrantedEpisodesInRange(org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                        org.mockito.ArgumentMatchers.any(LocalDateTime.class));
     }
 
     @Test

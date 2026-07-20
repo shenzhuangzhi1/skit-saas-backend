@@ -105,20 +105,22 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
         Map<Integer, SkitContentEntitlementDO> existing = validateEntitlements(
                 rows, drama.getTenantId(), memberId, dramaId, candidates);
         SkitContentEntitlementDO requested = existing.get(requestedEpisodeNo);
+        LocalDateTime currentTime = now();
         if (requested != null) {
             if (!"GRANTED".equals(requested.getStatus())) {
                 throw exception(AD_SESSION_INVALID);
             }
-            if (isActiveEntitlement(requested, now())) {
+            if (isActiveEntitlement(requested, currentTime)) {
                 return scope(drama, requestedEpisodeNo, requestedEpisodeNo, true);
             }
+            return scope(drama, requestedEpisodeNo, requestedEpisodeNo, false);
         }
-        requireContinuousUnlockFrontier(drama, memberId, requestedEpisodeNo, now());
+        requireContinuousUnlockFrontier(drama, memberId, requestedEpisodeNo, currentTime);
         int episodeTo = lastCandidate;
         for (int episode = requestedEpisodeNo + 1; episode <= lastCandidate; episode++) {
             SkitContentEntitlementDO entitlement = existing.get(episode);
             if (entitlement != null && (!"GRANTED".equals(entitlement.getStatus())
-                    || isActiveEntitlement(entitlement, now()))) {
+                    || isActiveEntitlement(entitlement, currentTime))) {
                 episodeTo = episode - 1;
                 break;
             }
