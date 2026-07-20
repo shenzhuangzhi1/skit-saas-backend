@@ -223,6 +223,193 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
+    void freshPureCreatedSessionIsReusedBeforeStartupLeaseExpires() {
+        SessionFixture fixture = insertSessionFixture(951301L, 951302L, 951303L, 951304L, 951305L);
+        long dramaId = 951306L;
+        int episodeNo = 8;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        SkitAdSessionService.SessionView fresh = inTenant(fixture.tenantId,
+                () -> sessionService.getForMember(fixture.memberId, first.getSessionId(),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult second = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("CREATED", first.getOutcome());
+        assertEquals("CREATED", fresh.getClientLifecycleStatus());
+        assertEquals("PENDING", fresh.getRewardVerificationStatus());
+        assertEquals("REUSED", second.getOutcome());
+        assertEquals(first.getSessionId(), second.getSessionId());
+        assertEquals(1, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, snapshotCount(fixture.tenantId, fixture.memberId));
+    }
+
+    @Test
+    void stalePureCreatedStatusPollRejectsScopeAndNextCreateReplacesIt() {
+        SessionFixture fixture = insertSessionFixture(951401L, 951402L, 951403L, 951404L, 951405L);
+        long dramaId = 951406L;
+        int episodeNo = 9;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        assertEquals(1, jdbc().update("UPDATE skit_ad_session "
+                        + "SET create_time=DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 SECOND) "
+                        + "WHERE tenant_id=? AND session_id=? AND deleted=b'0'",
+                fixture.tenantId, first.getSessionId()));
+
+        SkitAdSessionService.SessionView rejected = inTenant(fixture.tenantId,
+                () -> sessionService.getForMember(fixture.memberId, first.getSessionId(),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult replacement = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("LOAD_EXPIRED", rejected.getClientLifecycleStatus());
+        assertEquals("REJECTED", rejected.getRewardVerificationStatus());
+        assertEquals("CREATED", replacement.getOutcome());
+        assertNotEquals(first.getSessionId(), replacement.getSessionId());
+        assertEquals(2, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(2, snapshotCount(fixture.tenantId, fixture.memberId));
+        assertEquals("ORPHAN_CREATED_REPLACED", jdbc().queryForObject(
+                "SELECT failure_reason FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                String.class, fixture.tenantId, first.getSessionId()));
+    }
+
+    @Test
+    void stalePureCreatedDirectCreateRejectsAndReplacesInOneRequest() {
+        SessionFixture fixture = insertSessionFixture(951701L, 951702L, 951703L, 951704L, 951705L);
+        long dramaId = 951706L;
+        int episodeNo = 12;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        assertEquals(1, jdbc().update("UPDATE skit_ad_session "
+                        + "SET create_time=DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 SECOND) "
+                        + "WHERE tenant_id=? AND session_id=? AND deleted=b'0'",
+                fixture.tenantId, first.getSessionId()));
+
+        SkitAdSessionService.CreateResult replacement = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("CREATED", replacement.getOutcome());
+        assertNotEquals(first.getSessionId(), replacement.getSessionId());
+        assertEquals(2, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(2, snapshotCount(fixture.tenantId, fixture.memberId));
+        assertEquals("LOAD_EXPIRED", jdbc().queryForObject(
+                "SELECT client_lifecycle_status FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                String.class, fixture.tenantId, first.getSessionId()));
+        assertEquals("REJECTED", jdbc().queryForObject(
+                "SELECT reward_verification_status FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                String.class, fixture.tenantId, first.getSessionId()));
+    }
+
+    @Test
+    void pureCreatedRecoveryCasUsesStrictDatabaseCutoffBoundary() {
+        SessionFixture fixture = insertSessionFixture(951801L, 951802L, 951803L, 951804L, 951805L);
+        long dramaId = 951806L;
+        int episodeNo = 13;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(
+                        fixture.memberId, command(dramaId, episodeNo)));
+        SkitAdSessionDO row = inTenant(fixture.tenantId,
+                () -> sessionMapper.selectByTenantMemberAndSessionId(
+                        fixture.tenantId, fixture.memberId, created.getSessionId()));
+        LocalDateTime exactCreateTime = row.getCreateTime();
+
+        int atBoundary = inTenant(fixture.tenantId,
+                () -> sessionMapper.rejectPureCreatedAndReleaseScopeCas(
+                        fixture.tenantId, row.getId(), fixture.memberId, row.getVersion(),
+                        exactCreateTime, exactCreateTime));
+        int afterBoundary = inTenant(fixture.tenantId,
+                () -> sessionMapper.rejectPureCreatedAndReleaseScopeCas(
+                        fixture.tenantId, row.getId(), fixture.memberId, row.getVersion(),
+                        exactCreateTime.plusSeconds(1), exactCreateTime.plusSeconds(1)));
+
+        assertEquals(0, atBoundary, "create_time equal to cutoff must remain reusable");
+        assertEquals(1, afterBoundary, "only create_time strictly before cutoff may be reclaimed");
+        assertEquals("ORPHAN_CREATED_REPLACED", jdbc().queryForObject(
+                "SELECT failure_reason FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                String.class, fixture.tenantId, created.getSessionId()));
+    }
+
+    @Test
+    void loadStartedFactPreventsOldSessionFromBeingReclaimedAsPureCreated() {
+        SessionFixture fixture = insertSessionFixture(951501L, 951502L, 951503L, 951504L, 951505L);
+        long dramaId = 951506L;
+        int episodeNo = 10;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        SkitAdSessionService.SessionView loading = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, first.getSessionId(),
+                        Collections.singletonList(clientEvent(first, "startup-loading", 0,
+                                "LOAD_STARTED", "LOADING", "request-startup-loading")),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        assertEquals(1, jdbc().update("UPDATE skit_ad_session "
+                        + "SET create_time=DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 SECOND) "
+                        + "WHERE tenant_id=? AND session_id=? AND deleted=b'0'",
+                fixture.tenantId, first.getSessionId()));
+
+        SkitAdSessionService.CreateResult second = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("LOADING", loading.getClientLifecycleStatus());
+        assertEquals("REUSED", second.getOutcome());
+        assertEquals(first.getSessionId(), second.getSessionId());
+        assertEquals(1, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, snapshotCount(fixture.tenantId, fixture.memberId));
+    }
+
+    @Test
+    void lateLoadStartIsAcceptedWhenNoRecoveryTransitionHasCommitted() {
+        SessionFixture fixture = insertSessionFixture(951601L, 951602L, 951603L, 951604L, 951605L);
+        long dramaId = 951606L;
+        int episodeNo = 11;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        assertEquals(1, jdbc().update("UPDATE skit_ad_session "
+                        + "SET create_time=DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 SECOND) "
+                        + "WHERE tenant_id=? AND session_id=? AND deleted=b'0'",
+                fixture.tenantId, first.getSessionId()));
+
+        SkitAdSessionService.SessionView loading = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, first.getSessionId(),
+                        Collections.singletonList(clientEvent(first, "late-startup-loading", 0,
+                                "LOAD_STARTED", "LOADING", "request-late-startup-loading")),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult reused = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("LOADING", loading.getClientLifecycleStatus());
+        assertEquals("PENDING", loading.getRewardVerificationStatus());
+        assertEquals("REUSED", reused.getOutcome());
+        assertEquals(first.getSessionId(), reused.getSessionId());
+        assertEquals(1, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM skit_ad_client_event e JOIN skit_ad_session s "
+                        + "ON s.tenant_id=e.tenant_id AND s.id=e.ad_session_id "
+                        + "WHERE s.tenant_id=? AND s.session_id=?",
+                Integer.class, fixture.tenantId, first.getSessionId()));
+    }
+
+    @Test
     void twoMembersInOneTenantReachTheirExclusiveCoordinationLocksConcurrently() throws Exception {
         SessionFixture firstMember = insertSessionFixture(
                 951101L, 951102L, 951103L, 951104L, 951105L);

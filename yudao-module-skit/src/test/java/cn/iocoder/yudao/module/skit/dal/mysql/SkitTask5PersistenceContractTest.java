@@ -241,19 +241,24 @@ class SkitTask5PersistenceContractTest {
 
         Method orphanCreatedRelease = SkitAdSessionMapper.class.getMethod(
                 "rejectPureCreatedAndReleaseScopeCas",
-                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
+                Long.class, Long.class, Long.class, Integer.class,
+                LocalDateTime.class, LocalDateTime.class);
         String orphanCreatedReleaseSql = updateSql(orphanCreatedRelease);
         assertContainsAll(orphanCreatedReleaseSql,
                 "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
                 "version=#{expectedversion}", "client_lifecycle_status='created'",
+                "create_time < #{stalebefore}",
                 "reward_verification_status='pending'", "entitlement_status='none'",
                 "revenue_status='none'", "sdk_request_id is null",
                 "provider_show_id is null", "provider_transaction_id is null",
                 "reward_callback_inbox_id is null", "reward_callback_received_at is null",
                 "network_firm_id is null", "adsource_id is null",
-                "last_callback_sequence=-1", "last_client_event is null",
-                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "last_callback_sequence=-1", "last_client_event is null", "failure_reason is null",
+                "client_lifecycle_status='load_expired'", "reward_verification_status='rejected'",
+                "active_scope_hash=null",
                 "active_scope_released_at=#{rejectedat}", "version=version+1");
+        assertFalse(orphanCreatedReleaseSql.contains("current_timestamp"),
+                "the stale cutoff must come from the same database timestamp captured at request entry");
 
         Method legacyScopeRelease = SkitAdSessionMapper.class.getMethod(
                 "rejectLegacyMultiEpisodeScopeCas",

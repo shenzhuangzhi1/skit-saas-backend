@@ -16,6 +16,10 @@ import java.util.List;
 @Mapper
 public interface SkitAdSessionMapper {
 
+    @Select("SELECT CURRENT_TIMESTAMP")
+    @InterceptorIgnore(tenantLine = "true")
+    LocalDateTime selectDatabaseNow();
+
     @Select("SELECT `tenant_id`,`ad_account_id`,`id` FROM `skit_ad_session` "
             + "WHERE `reward_verification_status`='PENDING' "
             + "AND `reward_accept_until`<CURRENT_TIMESTAMP "
@@ -161,19 +165,22 @@ public interface SkitAdSessionMapper {
             @Param("sdkRequestId") String sdkRequestId,
             @Param("failedAt") LocalDateTime failedAt);
 
-    @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
+    @Update("UPDATE `skit_ad_session` SET `client_lifecycle_status`='LOAD_EXPIRED',"
+            + "`reward_verification_status`='REJECTED',"
             + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
             + "`active_scope_release_reason`='REWARD_REJECTED',"
             + "`failure_reason`='ORPHAN_CREATED_REPLACED',`version`=`version`+1,"
             + "`updater`='ad-session-retry',`update_time`=#{rejectedAt} "
             + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
             + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`='CREATED' "
+            + "AND `create_time` < #{staleBefore} "
             + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
             + "AND `revenue_status`='NONE' AND `sdk_request_id` IS NULL "
             + "AND `provider_show_id` IS NULL AND `provider_transaction_id` IS NULL "
             + "AND `reward_callback_inbox_id` IS NULL AND `reward_callback_received_at` IS NULL "
             + "AND `network_firm_id` IS NULL AND `adsource_id` IS NULL "
             + "AND `last_callback_sequence`=-1 AND `last_client_event` IS NULL "
+            + "AND `failure_reason` IS NULL "
             + "AND `active_scope_hash` IS NOT NULL AND `active_scope_released_at` IS NULL "
             + "AND `active_scope_release_reason` IS NULL AND `deleted`=b'0'")
     int rejectPureCreatedAndReleaseScopeCas(
@@ -181,7 +188,8 @@ public interface SkitAdSessionMapper {
             @Param("id") Long id,
             @Param("memberId") Long memberId,
             @Param("expectedVersion") Integer expectedVersion,
-            @Param("rejectedAt") LocalDateTime rejectedAt);
+            @Param("rejectedAt") LocalDateTime rejectedAt,
+            @Param("staleBefore") LocalDateTime staleBefore);
 
     @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
             + "`revenue_status`=CASE WHEN `revenue_status`='IMPRESSION_PENDING_REWARD' "

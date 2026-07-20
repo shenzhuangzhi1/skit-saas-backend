@@ -32,6 +32,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
@@ -61,6 +62,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     private static final String SCENE = "drama_unlock";
     private static final String BUSINESS_TYPE = "EPISODE_UNLOCK";
     private static final int CREATE_TRANSACTION_ATTEMPTS = 3;
+    private static final Duration PURE_CREATED_RECOVERY_LEASE = Duration.ofSeconds(5);
 
     private final SkitAdSessionMapper sessionMapper;
     private final SkitAdClientEventMapper clientEventMapper;
@@ -158,7 +160,11 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     @Override
     public CreateResult createForMember(Long memberId, CreateCommand command) {
         requirePositive(memberId, "memberId");
-        return createWithRetry(() -> createInsideTenant(memberId, command, "MEMBER_OAUTH", null));
+        validateCreateCommand(command);
+        AtomicReference<LocalDateTime> requestStartedAt =
+                new AtomicReference<>(databaseNow());
+        return createWithRetry(() -> createInsideTenant(
+                memberId, command, "MEMBER_OAUTH", null, requestStartedAt));
     }
 
     @Override
@@ -167,9 +173,12 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         SkitContentEntitlementService.PlayerGrantReference reference =
                 entitlementService.resolvePlayerGrant(grantToken);
         AtomicReference<CreateResult> result = new AtomicReference<>();
-        TenantUtils.execute(reference.getTenantId(), () -> result.set(createWithRetry(
-                () -> createInsideTenant(reference.getMemberId(), command,
-                        "NATIVE_PLAYER_GRANT", reference))));
+        TenantUtils.execute(reference.getTenantId(), () -> {
+            AtomicReference<LocalDateTime> requestStartedAt =
+                    new AtomicReference<>(databaseNow());
+            result.set(createWithRetry(() -> createInsideTenant(reference.getMemberId(), command,
+                    "NATIVE_PLAYER_GRANT", reference, requestStartedAt)));
+        });
         return result.get();
     }
 
@@ -186,9 +195,11 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     }
 
     private CreateResult createInsideTenant(Long memberId, CreateCommand command, String accessMode,
-                                            SkitContentEntitlementService.PlayerGrantReference grantReference) {
+                                            SkitContentEntitlementService.PlayerGrantReference grantReference,
+                                            AtomicReference<LocalDateTime> requestStartedAt) {
         validateCreateCommand(command);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
+        LocalDateTime recoveryReferenceTime = captureDatabaseRequestStart(requestStartedAt);
         requireClientAccess(memberId, runtime(command),
                 SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
         requireEnabledTenant(tenantId, tenantService.getTenantForShare(tenantId));
@@ -221,7 +232,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
                         tenantId, memberId, contentScope.getDramaId(),
                         contentScope.getEpisodeFrom(), contentScope.getEpisodeTo()),
-                tenantId, memberId, account, contentScope, nativeGrantId);
+                tenantId, memberId, account, contentScope, nativeGrantId, recoveryReferenceTime);
         if (overlappingResult != null) {
             return overlappingResult;
         }
@@ -235,7 +246,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         SkitAdSessionDO existing = sessionMapper.selectActiveScopeForUpdate(
                 tenantId, memberId, activeScopeHash);
         CreateResult existingResult = resolveExisting(existing, tenantId, memberId, account,
-                contentScope, nativeGrantId);
+                contentScope, nativeGrantId, recoveryReferenceTime);
         if (existingResult != null) {
             return existingResult;
         }
@@ -281,17 +292,20 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     private CreateResult resolveExisting(SkitAdSessionDO row, Long tenantId, Long memberId,
                                          SkitAdAccountDO account,
                                          SkitContentScopeService.UnlockScope contentScope,
-                                         Long currentNativePlayerGrantId) {
+                                         Long currentNativePlayerGrantId,
+                                         LocalDateTime requestStartedAt) {
         if (row == null) {
             return null;
         }
         validateExistingEnvelope(row, tenantId, memberId, account, contentScope);
-        return resolveExistingLifecycle(row, tenantId, memberId, currentNativePlayerGrantId);
+        return resolveExistingLifecycle(
+                row, tenantId, memberId, currentNativePlayerGrantId, requestStartedAt);
     }
 
     private CreateResult resolveOverlappingActiveScope(
             List<SkitAdSessionDO> rows, Long tenantId, Long memberId, SkitAdAccountDO account,
-            SkitContentScopeService.UnlockScope requestedScope, Long currentNativePlayerGrantId) {
+            SkitContentScopeService.UnlockScope requestedScope, Long currentNativePlayerGrantId,
+            LocalDateTime requestStartedAt) {
         if (rows == null || rows.isEmpty()) {
             return null;
         }
@@ -308,19 +322,12 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             }
             return null;
         }
-        if ("PENDING".equals(row.getRewardVerificationStatus())
-                && authoritativeNow.isAfter(row.getRewardAcceptUntil())) {
-            if (sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(tenantId, row.getId(), memberId,
-                    row.getVersion(), authoritativeNow) != 1) {
-                throw exception(AD_SESSION_STATE_CONFLICT);
-            }
-            return null;
-        }
         Integer requestedEpisode = requestedScope.getEpisodeFrom();
         if (requestedEpisode < row.getEpisodeFrom() || requestedEpisode > row.getEpisodeTo()) {
             throw exception(AD_SESSION_STATE_CONFLICT);
         }
-        return resolveExistingLifecycle(row, tenantId, memberId, currentNativePlayerGrantId);
+        return resolveExistingLifecycle(
+                row, tenantId, memberId, currentNativePlayerGrantId, requestStartedAt);
     }
 
     private void validateExistingEnvelope(SkitAdSessionDO row, Long tenantId, Long memberId,
@@ -339,21 +346,16 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 || !expectedScope.getEpisodeTo().equals(row.getEpisodeTo())
                 || !expectedScope.getCanonicalScope().equals(row.getUnlockScope())))
                 || row.getSessionId() == null || row.getSessionTokenKeyVersion() == null
+                || row.getCreateTime() == null
                 || row.getRewardAcceptUntil() == null || row.getVersion() == null) {
             throw new IllegalStateException("Active ad scope escaped its immutable session envelope");
         }
     }
 
-    private CreateResult resolveExistingLifecycle(SkitAdSessionDO row, Long tenantId, Long memberId,
-                                                  Long currentNativePlayerGrantId) {
-        LocalDateTime now = now();
-        if ("PENDING".equals(row.getRewardVerificationStatus()) && now.isAfter(row.getRewardAcceptUntil())) {
-            if (sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(tenantId, row.getId(), memberId,
-                    row.getVersion(), now) != 1) {
-                throw exception(AD_SESSION_STATE_CONFLICT);
-            }
-            return null;
-        }
+    private CreateResult resolveExistingLifecycle(
+            SkitAdSessionDO row, Long tenantId, Long memberId,
+            Long currentNativePlayerGrantId, LocalDateTime requestStartedAt) {
+        LocalDateTime authoritativeNow = now();
         if ("GRANTED".equals(row.getEntitlementStatus())) {
             return alreadyEntitled();
         }
@@ -361,12 +363,20 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 || "VERIFY_TIMEOUT".equals(row.getRewardVerificationStatus())) {
             throw new IllegalStateException("Terminal ad session retained an active scope");
         }
-        expireLoad(row, tenantId, memberId, now);
+        if (rejectStalePureCreated(
+                row, tenantId, memberId, requestStartedAt)) {
+            return null;
+        }
+        expireLoad(row, tenantId, memberId, authoritativeNow);
+        expirePendingReward(row, tenantId, memberId, authoritativeNow);
+        if (row.getActiveScopeHash() == null) {
+            return null;
+        }
         String lifecycle = row.getClientLifecycleStatus();
         if ("LOAD_EXPIRED".equals(lifecycle)) {
             if (isSafelyRetryableLoadExpired(row)) {
                 if (sessionMapper.rejectUnstartedLoadExpiredAndReleaseScopeCas(
-                        tenantId, row.getId(), memberId, row.getVersion(), now) != 1) {
+                        tenantId, row.getId(), memberId, row.getVersion(), authoritativeNow) != 1) {
                     throw exception(AD_SESSION_STATE_CONFLICT);
                 }
                 return null;
@@ -376,7 +386,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         if ("FAILED".equals(lifecycle)) {
             if (isSafelyRetryablePreShowFailure(row)) {
                 if (sessionMapper.rejectPreShowFailedAndReleaseScopeCas(
-                        tenantId, row.getId(), memberId, row.getVersion(), now) != 1) {
+                        tenantId, row.getId(), memberId, row.getVersion(), authoritativeNow) != 1) {
                     throw exception(AD_SESSION_STATE_CONFLICT);
                 }
                 return null;
@@ -394,11 +404,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             if (!isPureCreatedSession(row)) {
                 return verificationPending(row);
             }
-            if (sessionMapper.rejectPureCreatedAndReleaseScopeCas(
-                    tenantId, row.getId(), memberId, row.getVersion(), now) != 1) {
-                throw exception(AD_SESSION_STATE_CONFLICT);
-            }
-            return null;
+            return reusedSession(row);
         }
         if (!isPureLoadStartedSession(row)) {
             return verificationPending(row);
@@ -406,11 +412,15 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         if (isSupersededNativePlayerGrant(row, currentNativePlayerGrantId)) {
             if (sessionMapper.rejectSupersededNativeGrantLoadingAndReleaseScopeCas(
                     tenantId, row.getId(), memberId, row.getVersion(), row.getNativePlayerGrantId(),
-                    currentNativePlayerGrantId, now) != 1) {
+                    currentNativePlayerGrantId, authoritativeNow) != 1) {
                 throw exception(AD_SESSION_STATE_CONFLICT);
             }
             return null;
         }
+        return reusedSession(row);
+    }
+
+    private CreateResult reusedSession(SkitAdSessionDO row) {
         SkitAdSessionTokenService.IssuedToken token = tokenService.restore(
                 row.getSessionId(), row.getSessionTokenKeyVersion());
         if (!MessageDigest.isEqual(token.getTokenHash(), row.getSessionTokenHash())) {
@@ -419,6 +429,30 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         return new CreateResult("REUSED", row.getProtocolVersion(), row.getSessionId(), row.getProvider(),
                 row.getPlacementId(), row.getPseudonymousUserId(), token.consumeCustomData(), row.getScenarioId(),
                 row.getLoadExpiresAt(), row.getRewardAcceptUntil());
+    }
+
+    private boolean rejectStalePureCreated(
+            SkitAdSessionDO row, Long tenantId, Long memberId,
+            LocalDateTime recoveryReferenceTime) {
+        LocalDateTime staleBefore = recoveryReferenceTime.minus(PURE_CREATED_RECOVERY_LEASE);
+        if (!isStalePureCreated(row, staleBefore)) {
+            return false;
+        }
+        if (sessionMapper.rejectPureCreatedAndReleaseScopeCas(
+                tenantId, row.getId(), memberId, row.getVersion(),
+                recoveryReferenceTime, staleBefore) != 1) {
+            throw exception(AD_SESSION_STATE_CONFLICT);
+        }
+        row.setClientLifecycleStatus("LOAD_EXPIRED").setRewardVerificationStatus("REJECTED")
+                .setActiveScopeHash(null).setActiveScopeReleasedAt(recoveryReferenceTime)
+                .setActiveScopeReleaseReason("REWARD_REJECTED")
+                .setFailureReason("ORPHAN_CREATED_REPLACED").setVersion(row.getVersion() + 1);
+        return true;
+    }
+
+    private boolean isStalePureCreated(SkitAdSessionDO row, LocalDateTime staleBefore) {
+        return isPureCreatedSession(row) && row.getCreateTime() != null
+                && row.getCreateTime().isBefore(staleBefore);
     }
 
     private boolean hasNoDisplayCallbackOrRevenueFact(SkitAdSessionDO row) {
@@ -441,7 +475,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 && hasNoDisplayCallbackOrRevenueFact(row)
                 && Integer.valueOf(-1).equals(row.getLastCallbackSequence())
                 && row.getLastClientEvent() == null
-                && row.getSdkRequestId() == null;
+                && row.getSdkRequestId() == null
+                && row.getFailureReason() == null;
     }
 
     private boolean isPureLoadStartedSession(SkitAdSessionDO row) {
@@ -492,8 +527,9 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     public SessionView getForMember(Long memberId, String sessionId,
                                     SkitTenantAdCapabilityService.ClientRuntime runtime) {
         requirePositive(memberId, "memberId");
+        LocalDateTime recoveryReferenceTime = databaseNow();
         requireClientAccess(memberId, runtime, SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
-        return getInsideTenant(memberId, sessionId, null);
+        return getInsideTenant(memberId, sessionId, null, recoveryReferenceTime);
     }
 
     @Override
@@ -504,17 +540,20 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 entitlementService.resolvePlayerGrant(grantToken);
         AtomicReference<SessionView> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
+            LocalDateTime recoveryReferenceTime = databaseNow();
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
             SkitContentEntitlementService.PlayerGrantScope scope =
                     entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
-            result.set(getInsideTenant(scope.getMemberId(), sessionId, scope));
+            result.set(getInsideTenant(
+                    scope.getMemberId(), sessionId, scope, recoveryReferenceTime));
         });
         return result.get();
     }
 
     private SessionView getInsideTenant(Long memberId, String sessionId,
-                                        SkitContentEntitlementService.PlayerGrantScope nativeScope) {
+                                        SkitContentEntitlementService.PlayerGrantScope nativeScope,
+                                        LocalDateTime recoveryReferenceTime) {
         validateSessionId(sessionId);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         SkitAdSessionDO row = sessionMapper.selectByTenantMemberAndSessionId(
@@ -522,12 +561,14 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         requireSession(row, tenantId, memberId, sessionId);
         requireNativeSessionScope(row, tenantId, nativeScope);
         LocalDateTime authoritativeNow = now();
-        if (!needsServerExpiry(row, authoritativeNow)) {
+        if (!needsServerExpiry(row, authoritativeNow, recoveryReferenceTime)) {
             return toView(row);
         }
         row = sessionMapper.selectByTenantMemberAndSessionIdForUpdate(tenantId, memberId, sessionId);
         requireSession(row, tenantId, memberId, sessionId);
         requireNativeSessionScope(row, tenantId, nativeScope);
+        rejectStalePureCreated(
+                row, tenantId, memberId, recoveryReferenceTime);
         expireLoad(row, tenantId, memberId, authoritativeNow);
         expirePendingReward(row, tenantId, memberId, authoritativeNow);
         return toView(row);
@@ -539,8 +580,10 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             Long memberId, String sessionId, List<ClientEventCommand> events,
             SkitTenantAdCapabilityService.ClientRuntime runtime) {
         requirePositive(memberId, "memberId");
+        LocalDateTime recoveryReferenceTime = databaseNow();
         requireClientAccess(memberId, runtime, SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
-        return recordClientEventsInsideTenant(memberId, sessionId, events, null);
+        return recordClientEventsInsideTenant(
+                memberId, sessionId, events, null, recoveryReferenceTime);
     }
 
     @Override
@@ -552,18 +595,21 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 entitlementService.resolvePlayerGrant(grantToken);
         AtomicReference<SessionView> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
+            LocalDateTime recoveryReferenceTime = databaseNow();
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
             SkitContentEntitlementService.PlayerGrantScope scope =
                     entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
-            result.set(recordClientEventsInsideTenant(scope.getMemberId(), sessionId, events, scope));
+            result.set(recordClientEventsInsideTenant(
+                    scope.getMemberId(), sessionId, events, scope, recoveryReferenceTime));
         });
         return result.get();
     }
 
     private SessionView recordClientEventsInsideTenant(
             Long memberId, String sessionId, List<ClientEventCommand> events,
-            SkitContentEntitlementService.PlayerGrantScope nativeScope) {
+            SkitContentEntitlementService.PlayerGrantScope nativeScope,
+            LocalDateTime recoveryReferenceTime) {
         validateSessionId(sessionId);
         if (events == null || events.isEmpty() || events.size() > 20) {
             throw exception(AD_SESSION_INVALID);
@@ -574,6 +620,10 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         requireSession(row, tenantId, memberId, sessionId);
         requireNativeSessionScope(row, tenantId, nativeScope);
         LocalDateTime authoritativeNow = now();
+        if (isLoadWindowExpired(row, authoritativeNow)) {
+            rejectStalePureCreated(
+                    row, tenantId, memberId, recoveryReferenceTime);
+        }
         expireLoad(row, tenantId, memberId, authoritativeNow);
         expirePendingReward(row, tenantId, memberId, authoritativeNow);
         if ("LOAD_EXPIRED".equals(row.getClientLifecycleStatus())) {
@@ -760,9 +810,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     private void expireLoad(SkitAdSessionDO row, Long tenantId, Long memberId,
                             LocalDateTime authoritativeNow) {
-        if ((isPureCreatedSession(row) || isPureLoadStartedSession(row))
-                && row.getLoadExpiresAt() != null
-                && authoritativeNow.isAfter(row.getLoadExpiresAt())) {
+        if (isLoadWindowExpired(row, authoritativeNow)) {
             if (sessionMapper.markLoadExpiredCas(tenantId, row.getId(), memberId,
                     row.getVersion(), authoritativeNow) != 1) {
                 throw exception(AD_SESSION_STATE_CONFLICT);
@@ -770,6 +818,13 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             row.setClientLifecycleStatus("LOAD_EXPIRED").setFailureReason("LOAD_WINDOW_EXPIRED")
                     .setVersion(row.getVersion() + 1);
         }
+    }
+
+    private boolean isLoadWindowExpired(
+            SkitAdSessionDO row, LocalDateTime authoritativeNow) {
+        return (isPureCreatedSession(row) || isPureLoadStartedSession(row))
+                && row.getLoadExpiresAt() != null
+                && authoritativeNow.isAfter(row.getLoadExpiresAt());
     }
 
     private void expirePendingReward(SkitAdSessionDO row, Long tenantId, Long memberId,
@@ -786,8 +841,12 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         }
     }
 
-    private boolean needsServerExpiry(SkitAdSessionDO row, LocalDateTime authoritativeNow) {
-        return ((isPureCreatedSession(row) || isPureLoadStartedSession(row))
+    private boolean needsServerExpiry(
+            SkitAdSessionDO row, LocalDateTime authoritativeNow,
+            LocalDateTime recoveryReferenceTime) {
+        return isStalePureCreated(
+                row, recoveryReferenceTime.minus(PURE_CREATED_RECOVERY_LEASE))
+                || ((isPureCreatedSession(row) || isPureLoadStartedSession(row))
                 && row.getLoadExpiresAt() != null
                 && authoritativeNow.isAfter(row.getLoadExpiresAt()))
                 || ("PENDING".equals(row.getRewardVerificationStatus())
@@ -976,6 +1035,27 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     private LocalDateTime now() {
         return LocalDateTime.now(clock).withNano(0);
+    }
+
+    private LocalDateTime databaseNow() {
+        LocalDateTime value = sessionMapper.selectDatabaseNow();
+        if (value == null) {
+            throw new IllegalStateException("Database time is unavailable for ad-session recovery");
+        }
+        return value.withNano(0);
+    }
+
+    private LocalDateTime captureDatabaseRequestStart(
+            AtomicReference<LocalDateTime> requestStartedAt) {
+        LocalDateTime captured = requestStartedAt.get();
+        if (captured != null) {
+            return captured;
+        }
+        LocalDateTime databaseTime = databaseNow();
+        if (requestStartedAt.compareAndSet(null, databaseTime)) {
+            return databaseTime;
+        }
+        return Objects.requireNonNull(requestStartedAt.get(), "requestStartedAt");
     }
 
     private void validateSessionId(String sessionId) {
