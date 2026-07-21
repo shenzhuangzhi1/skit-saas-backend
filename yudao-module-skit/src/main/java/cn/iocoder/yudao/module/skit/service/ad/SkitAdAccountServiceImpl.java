@@ -161,27 +161,36 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         String normalizedAppId = trimToEmpty(appId);
         String normalizedPlacementId = trimToEmpty(placementId);
         guardTakuReportScopeMutation(account, normalizedAppId, normalizedPlacementId);
-        account.setAccountName(normalizedUsername);
-        account.setAppId(normalizedAppId);
-        account.setConfigData(writePlacementId(normalizedPlacementId));
         // 空值表示保留已经配置的凭证，避免编辑页面回显凭证。
-        if (StrUtil.isNotBlank(appKey)) {
-            account.setAppKey(appKey);
-        }
-        if (StrUtil.isNotBlank(appSecret)) {
-            account.setSecret(appSecret);
-        }
+        String effectiveAppKey = StrUtil.isNotBlank(appKey) ? appKey : account.getAppKey();
+        String effectiveAppSecret = StrUtil.isNotBlank(appSecret) ? appSecret : account.getSecret();
+        Integer targetStatus = Boolean.TRUE.equals(enabled)
+                ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus();
         if (Boolean.TRUE.equals(enabled)) {
             boolean credentialReady = PROVIDER_TAKU.equals(provider)
-                    ? StrUtil.isNotBlank(account.getAppKey()) : StrUtil.isNotBlank(account.getSecret());
-            if (!StrUtil.isAllNotBlank(account.getAccountName(), account.getAppId(), normalizedPlacementId)
+                    ? StrUtil.isNotBlank(effectiveAppKey) : StrUtil.isNotBlank(effectiveAppSecret);
+            if (!StrUtil.isAllNotBlank(normalizedUsername, normalizedAppId, normalizedPlacementId)
                     || !credentialReady) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
                         provider + " 启用前必须完整配置账号、App ID、广告位和凭证");
             }
         }
-        account.setStatus(Boolean.TRUE.equals(enabled)
-                ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus());
+
+        boolean changed = !Objects.equals(account.getAccountName(), normalizedUsername)
+                || !Objects.equals(account.getAppId(), normalizedAppId)
+                || !Objects.equals(readPlacementId(account.getConfigData()), normalizedPlacementId)
+                || !Objects.equals(account.getAppKey(), effectiveAppKey)
+                || !Objects.equals(account.getSecret(), effectiveAppSecret)
+                || !Objects.equals(account.getStatus(), targetStatus);
+        if (!changed) {
+            return;
+        }
+        account.setAccountName(normalizedUsername);
+        account.setAppId(normalizedAppId);
+        account.setAppKey(effectiveAppKey);
+        account.setSecret(effectiveAppSecret);
+        account.setConfigData(writePlacementId(normalizedPlacementId));
+        account.setStatus(targetStatus);
         accountMapper.updateById(account);
     }
 

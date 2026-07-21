@@ -110,6 +110,36 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
+    void rotatingPangleServerKeyDoesNotRewriteUnchangedTakuAccount() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAccountName("pangle-user")
+                .setAppId("pangle-app")
+                .setSecret("old-pangle-secret")
+                .setConfigData("{\"placementId\":\"pangle-slot\",\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        SkitAdAccountDO taku = account(PROVIDER_TAKU)
+                .setAccountName("taku-user")
+                .setAppId("taku-app")
+                .setAppKey("old-taku-key")
+                .setSecret("old-taku-secret")
+                .setConfigData("{\"placementId\":\"taku-slot\",\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleAppSecret("new-pangle-secret");
+        settings.setTakuAppKey("");
+        settings.setTakuAppSecret(null);
+
+        accountService.saveSettings(settings);
+
+        assertEquals("new-pangle-secret", pangle.getSecret());
+        assertEquals("old-taku-key", taku.getAppKey());
+        assertEquals("old-taku-secret", taku.getSecret());
+        verify(accountMapper).updateById(pangle);
+        verify(accountMapper, never()).updateById(taku);
+    }
+
+    @Test
     void takuAccountWithoutHistoricalFactsMayChangeItsReportScopeAfterTheLockedGuardPasses() throws Exception {
         SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
         SkitAdAccountDO taku = account(PROVIDER_TAKU).setAppId("old-taku-app")
