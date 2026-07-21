@@ -1748,13 +1748,11 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 SkitMemberMapper memberMapper,
                 SkitAgentMapper agentMapper,
                 TenantService tenantService,
-                SkitTenantAdCapabilityService capabilityService,
-                SkitPangleDramaCatalogSyncService pangleDramaCatalogSyncService) {
+                SkitTenantAdCapabilityService capabilityService) {
             return new SkitContentEntitlementServiceImpl(nativeGrantMapper, entitlementMapper,
                     entitlementGrantMapper,
                     contentScopeService,
-                    memberMapper, agentMapper, tenantService, capabilityService,
-                    pangleDramaCatalogSyncService);
+                    memberMapper, agentMapper, tenantService, capabilityService);
         }
 
         @Bean

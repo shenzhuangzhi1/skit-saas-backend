@@ -1,8 +1,10 @@
 package cn.iocoder.yudao.module.skit.controller.app.member;
 
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.ratelimiter.core.annotation.RateLimiter;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdClientEventBatchReqVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCreateReqVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCreateRespVO;
@@ -13,6 +15,8 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitPlayerGrantR
 import cn.iocoder.yudao.module.skit.framework.security.SkitMemberRateLimiterKeyResolver;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
+import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
+import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -34,6 +38,8 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils.getLoginUserId;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE;
 
 @Tag(name = "用户 APP - 广告会话与服务端权益")
 @RestController
@@ -47,6 +53,8 @@ public class SkitMemberAdSessionController {
     @Resource
     private SkitContentEntitlementService entitlementService;
     @Resource
+    private SkitPangleDramaCatalogSyncService catalogSyncService;
+    @Resource
     private SkitClientRuntimeResolver clientRuntimeResolver;
 
     @PostMapping("/player-grants")
@@ -55,9 +63,21 @@ public class SkitMemberAdSessionController {
     @Operation(summary = "为当前会员和短剧签发短时原生播放器权限")
     public CommonResult<SkitPlayerGrantRespVO> issuePlayerGrant(
             @Valid @RequestBody SkitPlayerGrantCreateReqVO request) {
-        return success(SkitPlayerGrantRespVO.from(
-                entitlementService.issuePlayerGrant(getLoginUserId(), request.getDramaId(),
-                        clientRuntimeResolver.resolve())));
+        Long memberId = getLoginUserId();
+        SkitTenantAdCapabilityService.ClientRuntime runtime = clientRuntimeResolver.resolve();
+        SkitContentEntitlementService.PlayerGrantIssue issue;
+        try {
+            issue = entitlementService.issuePlayerGrant(memberId, request.getDramaId(), runtime);
+        } catch (ServiceException failure) {
+            if (!AD_CONTENT_CATALOG_MISSING.getCode().equals(failure.getCode())
+                    && !AD_CONTENT_CATALOG_STALE.getCode().equals(failure.getCode())) {
+                throw failure;
+            }
+            catalogSyncService.syncDrama(
+                    TenantContextHolder.getRequiredTenantId(), request.getDramaId());
+            issue = entitlementService.issuePlayerGrant(memberId, request.getDramaId(), runtime);
+        }
+        return success(SkitPlayerGrantRespVO.from(issue));
     }
 
     @PostMapping("/ad-sessions")

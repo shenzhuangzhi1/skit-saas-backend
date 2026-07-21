@@ -1,7 +1,6 @@
 package cn.iocoder.yudao.module.skit.service.member;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
-import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
@@ -14,7 +13,6 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
-import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,8 +36,6 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
-import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
-import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PLAYER_GRANT_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_DISABLED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_NOT_EXISTS;
@@ -63,7 +59,6 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     private final SkitAgentMapper agentMapper;
     private final TenantService tenantService;
     private final SkitTenantAdCapabilityService capabilityService;
-    private final SkitPangleDramaCatalogSyncService catalogSyncService;
     private final Clock clock;
     private final SecureRandom secureRandom;
 
@@ -75,11 +70,10 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                                              SkitMemberMapper memberMapper,
                                              SkitAgentMapper agentMapper,
                                              TenantService tenantService,
-                                             SkitTenantAdCapabilityService capabilityService,
-                                             SkitPangleDramaCatalogSyncService catalogSyncService) {
+                                             SkitTenantAdCapabilityService capabilityService) {
         this(nativeGrantMapper, entitlementMapper, entitlementGrantMapper, contentScopeService,
                 memberMapper, agentMapper, tenantService, Clock.systemDefaultZone(),
-                new SecureRandom(), capabilityService, catalogSyncService);
+                new SecureRandom(), capabilityService);
     }
 
     SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
@@ -91,8 +85,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                                       TenantService tenantService,
                                       Clock clock,
                                       SecureRandom secureRandom,
-                                      SkitTenantAdCapabilityService capabilityService,
-                                      SkitPangleDramaCatalogSyncService catalogSyncService) {
+                                      SkitTenantAdCapabilityService capabilityService) {
         this.nativeGrantMapper = Objects.requireNonNull(nativeGrantMapper, "nativeGrantMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
         this.entitlementGrantMapper = Objects.requireNonNull(
@@ -102,7 +95,6 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         this.agentMapper = Objects.requireNonNull(agentMapper, "agentMapper");
         this.tenantService = Objects.requireNonNull(tenantService, "tenantService");
         this.capabilityService = Objects.requireNonNull(capabilityService, "capabilityService");
-        this.catalogSyncService = Objects.requireNonNull(catalogSyncService, "catalogSyncService");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.secureRandom = Objects.requireNonNull(secureRandom, "secureRandom");
     }
@@ -152,16 +144,6 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     public PlayerGrantIssue issuePlayerGrant(
             Long memberId, Long dramaId, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         requireClientAccess(memberId, runtime, SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
-        try {
-            return issuePlayerGrantInsideTenant(memberId, dramaId);
-        } catch (ServiceException failure) {
-            if (!AD_CONTENT_CATALOG_MISSING.getCode().equals(failure.getCode())
-                    && !AD_CONTENT_CATALOG_STALE.getCode().equals(failure.getCode())) {
-                throw failure;
-            }
-        }
-        Long tenantId = TenantContextHolder.getRequiredTenantId();
-        catalogSyncService.syncDrama(tenantId, dramaId);
         return issuePlayerGrantInsideTenant(memberId, dramaId);
     }
 
