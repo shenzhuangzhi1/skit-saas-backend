@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackEdgeAttemptMapper;
@@ -36,6 +37,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberClosureMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.record.SkitAdminRecordMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitCallbackPayloadCryptoService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionCreateTransactionExecutor;
@@ -48,6 +50,7 @@ import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackIngressServi
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackIngressServiceImpl;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRateLimiter;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRoutingService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardReceiptResolutionService;
 import cn.iocoder.yudao.module.skit.service.ad.callback.TakuCallbackCanonicalizer;
 import cn.iocoder.yudao.module.skit.service.ad.callback.TakuRewardSignatureVerifier;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
@@ -612,6 +615,331 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
+    void shownUnrewardedCloseAtomicallyRejectsScopeAndAllowsImmediateEpisodeRetry() {
+        SessionFixture fixture = insertSessionFixture(953301L, 953302L, 953303L, 953304L, 953305L);
+        long dramaId = 953306L;
+        int episodeNo = 14;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        String sdkRequestId = "request-unrewarded-close";
+        String showId = "show-unrewarded-close";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(first,
+                "unrewarded-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(first,
+                "unrewarded-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        SkitAdSessionService.ClientEventCommand closed = clientEvent(first,
+                "unrewarded-closed", 2, "CLOSED", "CLOSED", sdkRequestId);
+        closed.setProviderShowId(showId);
+        closed.setClosed(true);
+
+        SkitAdSessionService.SessionView terminal = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, first.getSessionId(),
+                        Arrays.asList(loading, shown, closed),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult second = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("CLOSED", terminal.getClientLifecycleStatus());
+        assertEquals("REJECTED", terminal.getRewardVerificationStatus());
+        assertEquals("NONE", terminal.getEntitlementStatus());
+        assertEquals("CREATED", second.getOutcome());
+        assertNotEquals(first.getSessionId(), second.getSessionId());
+        assertEquals(2, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        Map<String, Object> rejected = jdbc().queryForMap(
+                "SELECT reward_verification_status,entitlement_status,active_scope_hash,"
+                        + "active_scope_released_at,active_scope_release_reason,failure_reason "
+                        + "FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, first.getSessionId());
+        assertEquals("REJECTED", rejected.get("reward_verification_status"));
+        assertEquals("NONE", rejected.get("entitlement_status"));
+        assertNull(rejected.get("active_scope_hash"));
+        assertNotNull(rejected.get("active_scope_released_at"));
+        assertEquals("REWARD_REJECTED", rejected.get("active_scope_release_reason"));
+        assertEquals("CLIENT_CLOSED_UNREWARDED", rejected.get("failure_reason"));
+        assertEquals(1, jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_client_event "
+                        + "WHERE tenant_id=? AND ad_session_id=(SELECT id FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?) AND event_type='CLOSED' "
+                        + "AND client_reward_observed=b'0' AND closed=b'1'",
+                Integer.class, fixture.tenantId, fixture.tenantId, first.getSessionId()));
+    }
+
+    @Test
+    void rewardObservedCloseNeverUsesUnrewardedReleasePath() {
+        SessionFixture fixture = insertSessionFixture(953401L, 953402L, 953403L, 953404L, 953405L);
+        long dramaId = 953406L;
+        int episodeNo = 15;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        String sdkRequestId = "request-rewarded-close";
+        String showId = "show-rewarded-close";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "rewarded-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "rewarded-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        SkitAdSessionService.ClientEventCommand reward = clientEvent(created,
+                "reward-observed", 2, "REWARD_OBSERVED", "SHOWING", sdkRequestId);
+        reward.setProviderShowId(showId);
+        reward.setClientRewardObserved(true);
+        SkitAdSessionService.ClientEventCommand closed = clientEvent(created,
+                "rewarded-closed", 3, "CLOSED", "CLOSED", sdkRequestId);
+        closed.setProviderShowId(showId);
+        closed.setClientRewardObserved(true);
+        closed.setClosed(true);
+
+        SkitAdSessionService.SessionView pending = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown, reward, closed),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult retry = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("CLOSED", pending.getClientLifecycleStatus());
+        assertEquals("PENDING", pending.getRewardVerificationStatus());
+        assertEquals("VERIFYING", retry.getOutcome());
+        assertEquals(created.getSessionId(), retry.getSessionId());
+        assertEquals(1, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertNull(jdbc().queryForObject("SELECT failure_reason FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?", String.class,
+                fixture.tenantId, created.getSessionId()));
+    }
+
+    @Test
+    void unrewardedCloseWinningRewardIngressRaceRejectsLateSignedReceipt() throws Exception {
+        SessionFixture fixture = insertSessionFixture(953501L, 953502L, 953503L, 953504L, 953505L);
+        long dramaId = 953506L;
+        int episodeNo = 16;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        insertSignedRewardCapability(fixture);
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command(dramaId, episodeNo)));
+        String sdkRequestId = "request-close-wins-race";
+        String showId = "show-close-wins-race";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "close-wins-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "close-wins-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.ClientEventCommand closed = clientEvent(created,
+                "close-wins-closed", 2, "CLOSED", "CLOSED", sdkRequestId);
+        closed.setProviderShowId(showId);
+        closed.setClosed(true);
+        String rawQuery = signedRewardQuery(created, showId);
+
+        sessionRowLockRaceProbe.arm(fixture.tenantId,
+                "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate");
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        SkitAdSessionService.SessionView closeResult;
+        SkitCallbackIngressService.IngressResponse callbackResult;
+        try {
+            Future<SkitAdSessionService.SessionView> clientClose = workers.submit(() -> {
+                awaitRaceStart(ready, start);
+                return inTenant(fixture.tenantId,
+                        () -> sessionService.recordClientEvents(fixture.memberId,
+                                created.getSessionId(), Collections.singletonList(closed),
+                                new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+            });
+            Future<SkitCallbackIngressService.IngressResponse> callback = workers.submit(() -> {
+                awaitRaceStart(ready, start);
+                return callbackIngressService.receiveReward(callbackKey(fixture), rawQuery,
+                        "203.0.113.30");
+            });
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "race workers did not become ready");
+            start.countDown();
+            closeResult = clientClose.get(30, TimeUnit.SECONDS);
+            callbackResult = callback.get(30, TimeUnit.SECONDS);
+        } finally {
+            start.countDown();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(10, TimeUnit.SECONDS));
+        }
+        sessionRowLockRaceProbe.assertConcurrentTransactionBoundary();
+
+        assertEquals("REJECTED", closeResult.getRewardVerificationStatus());
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, callbackResult);
+        Map<String, Object> session = jdbc().queryForMap(
+                "SELECT reward_verification_status,entitlement_status,reward_callback_inbox_id,"
+                        + "reward_callback_received_at,active_scope_hash,active_scope_release_reason "
+                        + "FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, created.getSessionId());
+        assertEquals("REJECTED", session.get("reward_verification_status"));
+        assertEquals("NONE", session.get("entitlement_status"));
+        assertNull(session.get("reward_callback_inbox_id"));
+        assertNull(session.get("reward_callback_received_at"));
+        assertNull(session.get("active_scope_hash"));
+        assertEquals("REWARD_REJECTED", session.get("active_scope_release_reason"));
+        assertEquals(0, callbackInboxCount(fixture.tenantId));
+        assertEquals(1, callbackEdgeAttemptCount(fixture.tenantId));
+    }
+
+    @Test
+    void signedRewardReceiptWinningUnrewardedCloseRacePreservesVerificationScope() throws Exception {
+        SessionFixture fixture = insertSessionFixture(953601L, 953602L, 953603L, 953604L, 953605L);
+        long dramaId = 953606L;
+        int episodeNo = 17;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        insertSignedRewardCapability(fixture);
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command(dramaId, episodeNo)));
+        String sdkRequestId = "request-receipt-wins-race";
+        String showId = "show-receipt-wins-race";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "receipt-wins-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "receipt-wins-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.ClientEventCommand closed = clientEvent(created,
+                "receipt-wins-closed", 2, "CLOSED", "CLOSED", sdkRequestId);
+        closed.setProviderShowId(showId);
+        closed.setClosed(true);
+        String rawQuery = signedRewardQuery(created, showId);
+
+        sessionRowLockRaceProbe.arm(fixture.tenantId,
+                "SkitAdSessionMapper.selectByTokenHashForUpdate");
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        SkitCallbackIngressService.IngressResponse callbackResult;
+        SkitAdSessionService.SessionView closeResult;
+        try {
+            Future<SkitCallbackIngressService.IngressResponse> callback = workers.submit(() -> {
+                awaitRaceStart(ready, start);
+                return callbackIngressService.receiveReward(callbackKey(fixture), rawQuery,
+                        "203.0.113.31");
+            });
+            Future<SkitAdSessionService.SessionView> clientClose = workers.submit(() -> {
+                awaitRaceStart(ready, start);
+                return inTenant(fixture.tenantId,
+                        () -> sessionService.recordClientEvents(fixture.memberId,
+                                created.getSessionId(), Collections.singletonList(closed),
+                                new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+            });
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "race workers did not become ready");
+            start.countDown();
+            callbackResult = callback.get(30, TimeUnit.SECONDS);
+            closeResult = clientClose.get(30, TimeUnit.SECONDS);
+        } finally {
+            start.countDown();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(10, TimeUnit.SECONDS));
+        }
+        sessionRowLockRaceProbe.assertConcurrentTransactionBoundary();
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK, callbackResult);
+        assertEquals("CLOSED", closeResult.getClientLifecycleStatus());
+        assertEquals("PENDING", closeResult.getRewardVerificationStatus());
+        Map<String, Object> session = jdbc().queryForMap(
+                "SELECT reward_verification_status,entitlement_status,reward_callback_inbox_id,"
+                        + "reward_callback_received_at,active_scope_hash,active_scope_released_at,"
+                        + "active_scope_release_reason,failure_reason FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, created.getSessionId());
+        assertEquals("PENDING", session.get("reward_verification_status"));
+        assertEquals("NONE", session.get("entitlement_status"));
+        assertNotNull(session.get("reward_callback_inbox_id"));
+        assertNotNull(session.get("reward_callback_received_at"));
+        assertNotNull(session.get("active_scope_hash"));
+        assertNull(session.get("active_scope_released_at"));
+        assertNull(session.get("active_scope_release_reason"));
+        assertNull(session.get("failure_reason"));
+        assertEquals(1, callbackInboxCount(fixture.tenantId));
+        assertEquals(0, callbackEdgeAttemptCount(fixture.tenantId));
+    }
+
+    @Test
+    void deadLetterRewardReceiptIsCompensatedOnStatusPollAndExactEpisodeCanRetry() {
+        SessionFixture fixture = insertSessionFixture(953701L, 953702L, 953703L, 953704L, 953705L);
+        long dramaId = 953706L;
+        int episodeNo = 18;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        insertSignedRewardCapability(fixture);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        String sdkRequestId = "request-dead-letter-receipt";
+        String showId = "show-dead-letter-receipt";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "dead-letter-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "dead-letter-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        String canonicalReward = signedRewardQuery(created, showId);
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK,
+                callbackIngressService.receiveReward(callbackKey(fixture),
+                        canonicalReward, "203.0.113.32"));
+        long inboxId = jdbc().queryForObject(
+                "SELECT id FROM skit_ad_callback_inbox WHERE tenant_id=? "
+                        + "AND ad_session_id=(SELECT id FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?) AND callback_type='REWARD'",
+                Long.class, fixture.tenantId, fixture.tenantId, created.getSessionId());
+        SkitAdCallbackInboxMapper inboxMapper = context.getBean(SkitAdCallbackInboxMapper.class);
+        assertEquals(1, inTenant(fixture.tenantId,
+                () -> inboxMapper.claimForProcessingCas(fixture.tenantId, fixture.accountId,
+                        inboxId, "dead-letter-test", 60)));
+        assertEquals(1, inTenant(fixture.tenantId,
+                () -> inboxMapper.markDeadLetterCas(fixture.tenantId, fixture.accountId,
+                        inboxId, "dead-letter-test", "PROCESSING_RETRIES_EXHAUSTED", 1)));
+        String conflictingReplay = canonicalReward.replace(
+                "reward_name=coin", "reward_name=gem");
+        assertNotEquals(canonicalReward, conflictingReplay);
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
+                callbackIngressService.receiveReward(callbackKey(fixture),
+                        conflictingReplay, "203.0.113.33"));
+        assertEquals("PAYLOAD_CONFLICT", jdbc().queryForObject(
+                "SELECT delivery_integrity_status FROM skit_ad_callback_inbox "
+                        + "WHERE tenant_id=? AND id=?", String.class,
+                fixture.tenantId, inboxId));
+
+        SkitAdSessionService.SessionView rejected = inTenant(fixture.tenantId,
+                () -> sessionService.getForMember(fixture.memberId, created.getSessionId(),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult retry = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("REJECTED", rejected.getRewardVerificationStatus());
+        assertEquals("NONE", rejected.getEntitlementStatus());
+        assertEquals("CREATED", retry.getOutcome());
+        assertNotEquals(created.getSessionId(), retry.getSessionId());
+        assertEquals(2, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        Map<String, Object> terminal = jdbc().queryForMap(
+                "SELECT reward_verification_status,entitlement_status,revenue_status,"
+                        + "active_scope_hash,active_scope_released_at,active_scope_release_reason,"
+                        + "failure_reason FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, created.getSessionId());
+        assertEquals("REJECTED", terminal.get("reward_verification_status"));
+        assertEquals("NONE", terminal.get("entitlement_status"));
+        assertEquals("NONE", terminal.get("revenue_status"));
+        assertNull(terminal.get("active_scope_hash"));
+        assertNotNull(terminal.get("active_scope_released_at"));
+        assertEquals("REWARD_REJECTED", terminal.get("active_scope_release_reason"));
+        assertEquals("CALLBACK_PAYLOAD_CONFLICT", terminal.get("failure_reason"));
+    }
+
+    @Test
     void signedRewardIngressAndPreShowFailureRaceHasExactlyOneAuthoritativeOutcome() throws Exception {
         SessionFixture fixture = insertSessionFixture(953201L, 953202L, 953203L, 953204L, 953205L);
         long dramaId = 953206L;
@@ -804,6 +1132,15 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 "{\"id\":" + dramaId + ",\"episodes\":" + totalEpisodes
                         + ",\"freeEpisodes\":" + freeEpisodes
                         + ",\"unlockSize\":1,\"status\":\"上架\"}");
+    }
+
+    private void insertSignedRewardCapability(SessionFixture fixture) {
+        jdbc().update("INSERT INTO skit_ad_network_capability "
+                        + "(tenant_id,ad_account_id,network_firm_id,reward_authority,supports_user_id,"
+                        + "supports_custom_data,supports_stable_transaction,supports_impression_revenue,"
+                        + "supports_reporting,enabled,verified_at) "
+                        + "VALUES (?,?,66,'SIGNED_REWARD',b'1',b'1',b'1',b'1',b'1',b'1',NOW())",
+                fixture.tenantId, fixture.accountId);
     }
 
     private int sessionCount(long tenantId, long memberId, long dramaId, int episodeNo) {
@@ -1201,6 +1538,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             initializeTableInfo(assistant, SkitMemberClosureDO.class);
             initializeTableInfo(assistant, SkitMemberDO.class);
             initializeTableInfo(assistant, SkitAdSessionDO.class);
+            initializeTableInfo(assistant, SkitAdRevenueEventDO.class);
             initializeTableInfo(assistant, SkitEntitlementGrantDO.class);
             initializeTableInfo(assistant, SkitNativePlayerGrantDO.class);
             initializeTableInfo(assistant, SkitAdminRecordDO.class);
@@ -1225,6 +1563,12 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         MapperFactoryBean<SkitAdClientEventMapper> adClientEventMapperFactory(
                 SqlSessionFactory sqlSessionFactory) {
             return mapperFactory(SkitAdClientEventMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitAdRevenueEventMapper> adRevenueEventMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitAdRevenueEventMapper.class, sqlSessionFactory);
         }
 
         @Bean
@@ -1477,9 +1821,19 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        SkitAdRewardReceiptResolutionService rewardReceiptResolutionService(
+                SkitAdCallbackInboxMapper inboxMapper,
+                SkitAdSessionMapper sessionMapper,
+                SkitAdRevenueEventMapper revenueEventMapper) {
+            return new SkitAdRewardReceiptResolutionService(
+                    inboxMapper, sessionMapper, revenueEventMapper);
+        }
+
+        @Bean
         SkitAdSessionService adSessionService(
                 SkitAdSessionMapper sessionMapper,
                 SkitAdClientEventMapper clientEventMapper,
+                SkitAdRevenueEventMapper revenueEventMapper,
                 SkitAdAccountMapper accountMapper,
                 SkitAgentMapper agentMapper,
                 SkitMemberMapper memberMapper,
@@ -1491,11 +1845,12 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 SkitAdSessionTokenService tokenService,
                 ObjectMapper objectMapper,
                 SkitAdSessionCreateTransactionExecutor createTransactionExecutor,
-                SkitTenantAdCapabilityService capabilityService) {
-            return new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, accountMapper,
+                SkitTenantAdCapabilityService capabilityService,
+                SkitAdRewardReceiptResolutionService rewardReceiptResolutionService) {
+            return new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper,
                     agentMapper, memberMapper, credentialService, snapshotService,
                     entitlementService, contentScopeService, tenantService, tokenService, objectMapper,
-                    createTransactionExecutor, capabilityService);
+                    createTransactionExecutor, capabilityService, rewardReceiptResolutionService);
         }
     }
 

@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
 import cn.iocoder.yudao.module.skit.service.commission.SkitFrozenCommissionProjectionService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -14,11 +15,13 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
+@Slf4j
 public class SkitAdRewardVerificationExpiryServiceImpl
         implements SkitAdRewardVerificationExpiryService {
 
@@ -26,6 +29,7 @@ public class SkitAdRewardVerificationExpiryServiceImpl
 
     private final SkitAdSessionMapper sessionMapper;
     private final SkitAdRevenueEventMapper eventMapper;
+    private final SkitAdRewardReceiptResolutionService rewardReceiptResolutionService;
     private final SkitFrozenCommissionProjectionService projectionService;
     private final TransactionTemplate transactionTemplate;
     private final int batchSize;
@@ -34,11 +38,14 @@ public class SkitAdRewardVerificationExpiryServiceImpl
     public SkitAdRewardVerificationExpiryServiceImpl(
             SkitAdSessionMapper sessionMapper,
             SkitAdRevenueEventMapper eventMapper,
+            SkitAdRewardReceiptResolutionService rewardReceiptResolutionService,
             SkitFrozenCommissionProjectionService projectionService,
             PlatformTransactionManager transactionManager,
             @Value("${skit.ad.reward-expiry.batch-size:100}") int batchSize) {
         this.sessionMapper = Objects.requireNonNull(sessionMapper, "sessionMapper");
         this.eventMapper = Objects.requireNonNull(eventMapper, "eventMapper");
+        this.rewardReceiptResolutionService = Objects.requireNonNull(
+                rewardReceiptResolutionService, "rewardReceiptResolutionService");
         this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
         this.transactionTemplate = new TransactionTemplate(
                 Objects.requireNonNull(transactionManager, "transactionManager"));
@@ -59,12 +66,21 @@ public class SkitAdRewardVerificationExpiryServiceImpl
         }
         int expired = 0;
         for (SkitAdRewardExpiryClaimDO claim : claims) {
-            validateClaim(claim);
-            AtomicBoolean changed = new AtomicBoolean();
-            TenantUtils.execute(claim.getTenantId(), (Runnable) () -> changed.set(Boolean.TRUE.equals(
-                    transactionTemplate.execute(status -> expireInsideTenant(claim)))));
-            if (changed.get()) {
-                expired++;
+            try {
+                validateClaim(claim);
+                AtomicBoolean changed = new AtomicBoolean();
+                TenantUtils.execute(claim.getTenantId(), (Runnable) () -> changed.set(Boolean.TRUE.equals(
+                        transactionTemplate.execute(status -> expireInsideTenant(claim)))));
+                if (changed.get()) {
+                    expired++;
+                }
+            } catch (RuntimeException ex) {
+                log.error("[sweepOnce][reward expiry claim failed; continuing] "
+                                + "tenantId={}, adAccountId={}, sessionId={}, exceptionType={}",
+                        claim == null ? null : claim.getTenantId(),
+                        claim == null ? null : claim.getAdAccountId(),
+                        claim == null ? null : claim.getId(),
+                        ex.getClass().getName());
             }
         }
         return expired;
@@ -91,7 +107,13 @@ public class SkitAdRewardVerificationExpiryServiceImpl
                     || session.getRewardCallbackReceivedAt() == null) {
                 throw new IllegalStateException("Reward callback receipt is partially bound");
             }
-            return false;
+            LocalDateTime authoritativeNow = sessionMapper.selectDatabaseNow();
+            if (authoritativeNow == null) {
+                throw new IllegalStateException(
+                        "Database time is unavailable for reward receipt compensation");
+            }
+            return rewardReceiptResolutionService.resolveTerminalReceipt(
+                    session, authoritativeNow.withNano(0));
         }
         if (session.getActiveScopeHash() == null
                 || session.getActiveScopeReleasedAt() != null

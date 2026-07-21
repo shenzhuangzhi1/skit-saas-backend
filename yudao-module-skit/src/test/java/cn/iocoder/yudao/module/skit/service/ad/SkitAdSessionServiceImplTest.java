@@ -10,11 +10,14 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdClientEventDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdClientEventMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardReceiptResolutionService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeService;
@@ -73,6 +76,7 @@ class SkitAdSessionServiceImplTest {
 
     @Mock private SkitAdSessionMapper sessionMapper;
     @Mock private SkitAdClientEventMapper clientEventMapper;
+    @Mock private SkitAdRevenueEventMapper revenueEventMapper;
     @Mock private SkitAdAccountMapper accountMapper;
     @Mock private SkitAgentMapper agentMapper;
     @Mock private SkitMemberMapper memberMapper;
@@ -82,6 +86,7 @@ class SkitAdSessionServiceImplTest {
     @Mock private SkitContentScopeService contentScopeService;
     @Mock private TenantService tenantService;
     @Mock private SkitTenantAdCapabilityService capabilityService;
+    @Mock private SkitAdRewardReceiptResolutionService rewardReceiptResolutionService;
 
     private SkitAdSessionServiceImpl service;
     private SkitAdSessionTokenService tokenService;
@@ -97,11 +102,12 @@ class SkitAdSessionServiceImplTest {
                         invocation.getArgument(2), false));
         org.mockito.Mockito.lenient().when(sessionMapper.selectDatabaseNow()).thenReturn(now());
         tokenService = new SkitHmacAdSessionTokenService(1, Collections.singletonMap(1, TOKEN_KEY));
-        service = new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, accountMapper,
+        service = new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper,
                 agentMapper, memberMapper, credentialService, snapshotService, entitlementService,
                 contentScopeService, tenantService,
                 tokenService, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
-                new FixedSecureRandom(sequence(16)), capabilityService);
+                new FixedSecureRandom(sequence(16)), capabilityService,
+                rewardReceiptResolutionService);
     }
 
     @AfterEach
@@ -205,10 +211,10 @@ class SkitAdSessionServiceImplTest {
     @Test
     void missingCapabilityGateIsRejectedAtConstruction() {
         assertThrows(NullPointerException.class, () -> new SkitAdSessionServiceImpl(
-                sessionMapper, clientEventMapper, accountMapper, agentMapper, memberMapper,
+                sessionMapper, clientEventMapper, revenueEventMapper, accountMapper, agentMapper, memberMapper,
                 credentialService, snapshotService, entitlementService, contentScopeService, tenantService,
                 tokenService, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
-                new FixedSecureRandom(sequence(16)), null));
+                new FixedSecureRandom(sequence(16)), null, rewardReceiptResolutionService));
     }
 
     @Test
@@ -223,10 +229,11 @@ class SkitAdSessionServiceImplTest {
                 return 1;
             });
             SkitAdSessionServiceImpl shanghaiService = new SkitAdSessionServiceImpl(
-                    sessionMapper, clientEventMapper, accountMapper, agentMapper, memberMapper,
+                    sessionMapper, clientEventMapper, revenueEventMapper, accountMapper, agentMapper, memberMapper,
                     credentialService, snapshotService, entitlementService, contentScopeService, tenantService,
                     tokenService, new ObjectMapper(), Clock.fixed(NOW, shanghai),
-                    new FixedSecureRandom(sequence(16)), capabilityService);
+                    new FixedSecureRandom(sequence(16)), capabilityService,
+                    rewardReceiptResolutionService);
 
             SkitAdSessionService.CreateResult result = shanghaiService.createForMember(
                     MEMBER_ID, command(DRAMA_ID, 3));
@@ -378,13 +385,48 @@ class SkitAdSessionServiceImplTest {
     }
 
     @Test
-    void closedPendingSessionReturnsVerifyingInsteadOfReusedAndKeepsOriginalProtocol() {
+    void legacyUnrewardedClosedSessionIsRejectedReleasedAndReplacedAfterUpgrade() {
+        stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
+        SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLOSED").setProviderShowId("show-1")
+                .setSdkRequestId("request-1").setLastCallbackSequence(2)
+                .setLastClientEvent("CLOSED").setProtocolVersion(7).setVersion(4);
+        byte[] activeScopeHash = existing.getActiveScopeHash();
+        SkitAdClientEventDO closeEvidence = closedEvidence(existing, false);
+        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
+                .thenReturn(existing);
+        when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 2)).thenReturn(closeEvidence);
+        when(sessionMapper.rejectLegacyUnrewardedClosedAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 4, 2, DRAMA_ID, 3, 3,
+                activeScopeHash, now())).thenReturn(1);
+        when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitAdSessionDO>getArgument(0).setId(93L);
+            return 1;
+        });
+
+        SkitAdSessionService.CreateResult result = service.createForMember(
+                MEMBER_ID, command(DRAMA_ID, 3));
+
+        assertEquals("CREATED", result.getOutcome());
+        assertEquals("REJECTED", existing.getRewardVerificationStatus());
+        assertEquals("NONE", existing.getEntitlementStatus());
+        assertNull(existing.getActiveScopeHash());
+        assertEquals("REWARD_REJECTED", existing.getActiveScopeReleaseReason());
+        assertEquals("CLIENT_CLOSED_UNREWARDED", existing.getFailureReason());
+        verify(sessionMapper).insert(any(SkitAdSessionDO.class));
+    }
+
+    @Test
+    void legacyRewardObservedClosedSessionKeepsSignedVerificationPending() {
         stubSessionEnvelopeDependencies();
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
                 .setClientLifecycleStatus("CLOSED").setProviderShowId("show-1")
-                .setProtocolVersion(7).setVersion(4);
+                .setSdkRequestId("request-1").setLastCallbackSequence(2)
+                .setLastClientEvent("CLOSED").setProtocolVersion(7).setVersion(4);
         when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
                 .thenReturn(existing);
+        when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 2))
+                .thenReturn(closedEvidence(existing, true));
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -392,9 +434,35 @@ class SkitAdSessionServiceImplTest {
         assertEquals("VERIFYING", result.getOutcome());
         assertEquals(7, result.getProtocolVersion());
         assertEquals(SESSION_ID, result.getSessionId());
-        assertNull(result.getCustomData(), "verification-only responses must not reopen the ad SDK");
+        assertNull(result.getCustomData());
         assertNotNull(existing.getActiveScopeHash());
+        verify(sessionMapper, never()).rejectLegacyUnrewardedClosedAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), anyLong(),
+                anyInt(), anyInt(), any(byte[].class), any());
         verify(sessionMapper, never()).insert(any());
+    }
+
+    @Test
+    void legacyUnrewardedClosedSessionWithRewardReceiptKeepsSignedVerificationPending() {
+        stubSessionEnvelopeDependencies();
+        SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLOSED").setProviderShowId("show-1")
+                .setSdkRequestId("request-1").setLastCallbackSequence(2)
+                .setLastClientEvent("CLOSED").setVersion(4)
+                .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusSeconds(1));
+        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
+                .thenReturn(existing);
+
+        SkitAdSessionService.CreateResult result = service.createForMember(
+                MEMBER_ID, command(DRAMA_ID, 3));
+
+        assertEquals("VERIFYING", result.getOutcome());
+        assertEquals("PENDING", existing.getRewardVerificationStatus());
+        assertNotNull(existing.getActiveScopeHash());
+        verify(clientEventMapper, never()).selectBySequence(anyLong(), anyLong(), anyInt());
+        verify(sessionMapper, never()).rejectLegacyUnrewardedClosedAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), anyLong(),
+                anyInt(), anyInt(), any(byte[].class), any());
     }
 
     @Test
@@ -529,6 +597,34 @@ class SkitAdSessionServiceImplTest {
         assertNull(session.getActiveScopeHash());
         assertEquals("REWARD_REJECTED", session.getActiveScopeReleaseReason());
         assertEquals("ORPHAN_CREATED_REPLACED", session.getFailureReason());
+    }
+
+    @Test
+    void statusPollImmediatelyRejectsAndReleasesLegacyUnrewardedClosedSession() {
+        SkitAdSessionDO session = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLOSED").setProviderShowId("show-1")
+                .setSdkRequestId("request-1").setLastCallbackSequence(2)
+                .setLastClientEvent("CLOSED").setVersion(4);
+        byte[] activeScopeHash = session.getActiveScopeHash();
+        when(sessionMapper.selectByTenantMemberAndSessionId(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 2))
+                .thenReturn(closedEvidence(session, false));
+        when(sessionMapper.rejectLegacyUnrewardedClosedAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 4, 2, DRAMA_ID, 3, 3,
+                activeScopeHash, now())).thenReturn(1);
+
+        SkitAdSessionService.SessionView result = service.getForMember(
+                MEMBER_ID, SESSION_ID, RUNTIME);
+
+        assertEquals("CLOSED", result.getClientLifecycleStatus());
+        assertEquals("REJECTED", result.getRewardVerificationStatus());
+        assertEquals("NONE", result.getEntitlementStatus());
+        assertNull(session.getActiveScopeHash());
+        assertEquals("REWARD_REJECTED", session.getActiveScopeReleaseReason());
+        assertEquals("CLIENT_CLOSED_UNREWARDED", session.getFailureReason());
     }
 
     @Test
@@ -802,6 +898,56 @@ class SkitAdSessionServiceImplTest {
     }
 
     @Test
+    void acceptedRewardReceiptIsNeverTimedOutWhileSignedVerificationIsPending() {
+        stubSessionEnvelopeDependencies();
+        SkitAdSessionDO received = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLOSED").setLastCallbackSequence(2)
+                .setLastClientEvent("CLOSED").setSdkRequestId("request-1")
+                .setProviderShowId("show-1").setRewardAcceptUntil(now().minusSeconds(1))
+                .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusMinutes(2))
+                .setVersion(7);
+        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
+                .thenReturn(received);
+
+        SkitAdSessionService.CreateResult result = service.createForMember(
+                MEMBER_ID, command(DRAMA_ID, 3));
+
+        assertEquals("VERIFYING", result.getOutcome());
+        assertEquals("PENDING", received.getRewardVerificationStatus());
+        assertNotNull(received.getActiveScopeHash());
+        verify(sessionMapper, never()).markRewardVerifyTimeoutAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), any());
+        verify(sessionMapper, never()).rejectLegacyUnrewardedClosedAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), anyLong(),
+                anyInt(), anyInt(), any(byte[].class), any());
+    }
+
+    @Test
+    void statusPollWithAcceptedRewardReceiptAvoidsTimeoutMutationAfterDeadline() {
+        SkitAdSessionDO received = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLOSED").setLastCallbackSequence(2)
+                .setLastClientEvent("CLOSED").setSdkRequestId("request-1")
+                .setProviderShowId("show-1").setRewardAcceptUntil(now().minusSeconds(1))
+                .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusMinutes(2))
+                .setVersion(7);
+        when(sessionMapper.selectByTenantMemberAndSessionId(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(received);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(
+                TENANT_ID, MEMBER_ID, SESSION_ID)).thenReturn(received);
+
+        SkitAdSessionService.SessionView result = service.getForMember(
+                MEMBER_ID, SESSION_ID, RUNTIME);
+
+        assertEquals("PENDING", result.getRewardVerificationStatus());
+        assertNotNull(received.getActiveScopeHash());
+        verify(sessionMapper).selectByTenantMemberAndSessionIdForUpdate(
+                TENANT_ID, MEMBER_ID, SESSION_ID);
+        verify(rewardReceiptResolutionService).resolveTerminalReceipt(received, now());
+        verify(sessionMapper, never()).markRewardVerifyTimeoutAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), any());
+    }
+
+    @Test
     void nativeGrantGloballyResolvesTenantThenRestoresUntrustedOriginalContext() {
         long nativeTenant = 77L;
         TenantContextHolder.setTenantId(999L);
@@ -922,6 +1068,149 @@ class SkitAdSessionServiceImplTest {
         verify(sessionMapper, never()).markPreShowClientFailureAndReleaseScopeCas(
                 anyLong(), anyLong(), anyLong(), any(), any(), any(), any(),
                 any(), any());
+    }
+
+    @Test
+    void shownUnrewardedCloseRejectsRewardAndReleasesOnlyItsEpisodeScope() {
+        SkitAdSessionDO session = shownSession();
+        byte[] activeScopeHash = session.getActiveScopeHash();
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        stubFreshClientEvent(2);
+        when(sessionMapper.markUnrewardedClientCloseAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 3, 1, 2, "request-1", "show-1",
+                null, null, DRAMA_ID, 3, 3, activeScopeHash, now())).thenReturn(1);
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(unrewardedCloseEvent(2)), RUNTIME);
+
+        assertEquals("CLOSED", result.getClientLifecycleStatus());
+        assertEquals("REJECTED", result.getRewardVerificationStatus());
+        assertEquals("NONE", result.getEntitlementStatus());
+        assertEquals("NONE", result.getRevenueStatus());
+        assertNull(session.getActiveScopeHash());
+        assertEquals(now(), session.getActiveScopeReleasedAt());
+        assertEquals("REWARD_REJECTED", session.getActiveScopeReleaseReason());
+        assertEquals("CLIENT_CLOSED_UNREWARDED", session.getFailureReason());
+        verify(sessionMapper, never()).updateClientLifecycleCas(anyLong(), anyLong(), anyLong(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(revenueEventMapper, never()).selectByTenantSessionAndSourceForUpdate(
+                anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void overdueShownCloseKeepsCommittedVerifyTimeoutInsteadOfReterminalizingReward() {
+        SkitAdSessionDO session = shownSession().setRewardAcceptUntil(now().minusSeconds(1));
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        when(sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 3, now())).thenReturn(1);
+        stubFreshClientEvent(2);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 4,
+                "SHOWN", 1, 2, "CLOSED", "CLOSED", "request-1", "show-1", null, null))
+                .thenReturn(1);
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(unrewardedCloseEvent(2)), RUNTIME);
+
+        assertEquals("CLOSED", result.getClientLifecycleStatus());
+        assertEquals("VERIFY_TIMEOUT", result.getRewardVerificationStatus());
+        assertEquals("NONE", result.getEntitlementStatus());
+        assertNull(session.getActiveScopeHash());
+        assertEquals(now(), session.getActiveScopeReleasedAt());
+        assertEquals("VERIFY_TIMEOUT", session.getActiveScopeReleaseReason());
+        verify(sessionMapper, never()).markUnrewardedClientCloseAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), anyInt(),
+                any(), any(), any(), any(), anyLong(), anyInt(), anyInt(), any(byte[].class), any());
+    }
+
+    @Test
+    void shownUnrewardedCloseConvergesPendingImpressionToNonRewardedSuspense() {
+        SkitAdSessionDO session = shownSession().setRevenueStatus("IMPRESSION_PENDING_REWARD");
+        byte[] activeScopeHash = session.getActiveScopeHash();
+        SkitAdRevenueEventDO impression = pendingImpression(session);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        stubFreshClientEvent(2);
+        when(revenueEventMapper.selectByTenantSessionAndSourceForUpdate(
+                TENANT_ID, 92L, "TAKU_IMPRESSION")).thenReturn(impression);
+        when(sessionMapper.markUnrewardedClientCloseAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 3, 1, 2, "request-1", "show-1",
+                null, null, DRAMA_ID, 3, 3, activeScopeHash, now())).thenReturn(1);
+        when(revenueEventMapper.markNonRewardedSuspenseCas(
+                TENANT_ID, 801L, 92L, ACCOUNT_ID, 5, now())).thenReturn(1);
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(unrewardedCloseEvent(2)), RUNTIME);
+
+        assertEquals("REJECTED", result.getRewardVerificationStatus());
+        assertEquals("SUSPENSE", result.getRevenueStatus());
+        assertEquals("NON_REWARDED", impression.getRewardQualificationStatus());
+        assertEquals("SUSPENSE", impression.getReconciliationStatus());
+        verify(revenueEventMapper).markNonRewardedSuspenseCas(
+                TENANT_ID, 801L, 92L, ACCOUNT_ID, 5, now());
+    }
+
+    @Test
+    void signedRewardReceiptWinsBeforeUnrewardedCloseAndKeepsScopeActive() {
+        SkitAdSessionDO session = shownSession()
+                .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusSeconds(1));
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        stubFreshClientEvent(2);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 3,
+                "SHOWN", 1, 2, "CLOSED", "CLOSED", "request-1", "show-1", null, null))
+                .thenReturn(1);
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(unrewardedCloseEvent(2)), RUNTIME);
+
+        assertEquals("CLOSED", result.getClientLifecycleStatus());
+        assertEquals("PENDING", result.getRewardVerificationStatus());
+        assertEquals("NONE", result.getEntitlementStatus());
+        assertNotNull(session.getActiveScopeHash());
+        assertNull(session.getActiveScopeReleasedAt());
+        verify(sessionMapper, never()).markUnrewardedClientCloseAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), anyInt(),
+                any(), any(), any(), any(), anyLong(), anyInt(), anyInt(), any(byte[].class), any());
+    }
+
+    @Test
+    void unrewardedCloseCasLossFailsClosedSoEvidenceCannotCommitAlone() {
+        SkitAdSessionDO session = shownSession();
+        byte[] activeScopeHash = session.getActiveScopeHash();
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+        stubFreshClientEvent(2);
+        when(sessionMapper.markUnrewardedClientCloseAndReleaseScopeCas(
+                TENANT_ID, 92L, MEMBER_ID, 3, 1, 2, "request-1", "show-1",
+                null, null, DRAMA_ID, 3, 3, activeScopeHash, now())).thenReturn(0);
+
+        ServiceException conflict = assertThrows(ServiceException.class,
+                () -> service.recordClientEvents(MEMBER_ID, SESSION_ID,
+                        Collections.singletonList(unrewardedCloseEvent(2)), RUNTIME));
+
+        assertEquals(AD_SESSION_STATE_CONFLICT.getCode(), conflict.getCode());
+        assertEquals("SHOWN", session.getClientLifecycleStatus());
+        assertEquals("PENDING", session.getRewardVerificationStatus());
+        assertNotNull(session.getActiveScopeHash());
+    }
+
+    @Test
+    void partialRewardReceiptBindingFailsClosedInsteadOfDiscardingCallbackAuthority() {
+        SkitAdSessionDO session = shownSession().setRewardCallbackInboxId(901L);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(TENANT_ID, MEMBER_ID, SESSION_ID))
+                .thenReturn(session);
+
+        assertThrows(IllegalStateException.class,
+                () -> service.recordClientEvents(MEMBER_ID, SESSION_ID,
+                        Collections.singletonList(unrewardedCloseEvent(2)), RUNTIME));
+
+        verify(sessionMapper, never()).markUnrewardedClientCloseAndReleaseScopeCas(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), anyInt(),
+                any(), any(), any(), any(), anyLong(), anyInt(), anyInt(), any(byte[].class), any());
+        verify(sessionMapper, never()).updateClientLifecycleCas(anyLong(), anyLong(), anyLong(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -1136,6 +1425,50 @@ class SkitAdSessionServiceImplTest {
         return event;
     }
 
+    private SkitAdSessionService.ClientEventCommand unrewardedCloseEvent(int sequence) {
+        SkitAdSessionService.ClientEventCommand event = baseEvent(sequence, "CLOSED", "CLOSED");
+        event.setProviderShowId("show-1");
+        event.setClosed(true);
+        return event;
+    }
+
+    private void stubFreshClientEvent(int sequence) {
+        when(clientEventMapper.selectByClientEventId(TENANT_ID, 92L, "event-" + sequence))
+                .thenReturn(null);
+        when(clientEventMapper.selectBySequence(TENANT_ID, 92L, sequence)).thenReturn(null);
+        when(clientEventMapper.insertCanonical(any(SkitAdClientEventDO.class))).thenReturn(1);
+    }
+
+    private SkitAdSessionDO shownSession() {
+        return activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("SHOWN").setLastCallbackSequence(1)
+                .setLastClientEvent("SHOWN").setSdkRequestId("request-1")
+                .setProviderShowId("show-1").setVersion(3);
+    }
+
+    private SkitAdClientEventDO closedEvidence(SkitAdSessionDO session, boolean rewardObserved) {
+        SkitAdClientEventDO event = new SkitAdClientEventDO()
+                .setId(702L).setAdSessionId(session.getId()).setProtocolVersion(1)
+                .setClientEventId("event-2").setCallbackSequence(2)
+                .setEventType("CLOSED").setNativeState("CLOSED")
+                .setSdkRequestId("request-1").setProviderShowId("show-1")
+                .setClientRewardObserved(rewardObserved).setClosed(true).setOccurredAt(now());
+        event.setTenantId(session.getTenantId());
+        return event;
+    }
+
+    private SkitAdRevenueEventDO pendingImpression(SkitAdSessionDO session) {
+        SkitAdRevenueEventDO event = new SkitAdRevenueEventDO()
+                .setId(801L).setAdAccountId(session.getAdAccountId()).setProvider("TAKU")
+                .setPlacementId(session.getPlacementId()).setSourceMemberId(session.getMemberId())
+                .setAdSessionId(session.getId()).setPolicySnapshotId(session.getPolicySnapshotId())
+                .setSourceType("TAKU_IMPRESSION").setRewardQualificationStatus("PENDING_REWARD")
+                .setSourceVerificationStatus("UNSIGNED_OBSERVATION")
+                .setReconciliationStatus("FROZEN").setLegacyUnverified(false).setVersion(5);
+        event.setTenantId(session.getTenantId());
+        return event;
+    }
+
     private SkitAdSessionService.ClientEventCommand baseEvent(int sequence, String type, String nativeState) {
         SkitAdSessionService.ClientEventCommand event = new SkitAdSessionService.ClientEventCommand();
         event.setProtocolVersion(1);
@@ -1237,7 +1570,8 @@ class SkitAdSessionServiceImplTest {
     private SkitAdSessionDO activeSession(long tenantId, long memberId) {
         SkitAdSessionDO row = new SkitAdSessionDO().setId(92L).setSessionId(SESSION_ID)
                 .setSessionTokenKeyVersion(1).setProtocolVersion(1).setMemberId(memberId)
-                .setAdAccountId(ACCOUNT_ID).setProvider("TAKU").setPlacementId("placement-1")
+                .setAdAccountId(ACCOUNT_ID).setPolicySnapshotId(81L)
+                .setProvider("TAKU").setPlacementId("placement-1")
                 .setScenarioId("drama_unlock").setBusinessType("EPISODE_UNLOCK")
                 .setDramaId(DRAMA_ID).setEpisodeFrom(3).setEpisodeTo(3)
                 .setUnlockScope("drama:" + DRAMA_ID + ":episode:3")

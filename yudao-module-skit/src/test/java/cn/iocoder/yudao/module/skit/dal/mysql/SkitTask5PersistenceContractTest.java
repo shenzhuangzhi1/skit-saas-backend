@@ -219,6 +219,56 @@ class SkitTask5PersistenceContractTest {
                 "last_callback_sequence=#{expectedlastcallbacksequence}",
                 "#{callbacksequence} > last_callback_sequence", "version=version+1");
 
+        Method unrewardedClose = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(
+                        "markUnrewardedClientCloseAndReleaseScopeCas"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String unrewardedCloseSql = updateSql(unrewardedClose);
+        assertContainsAll(unrewardedCloseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='shown'",
+                "last_callback_sequence=#{expectedlastcallbacksequence}",
+                "#{callbacksequence} > last_callback_sequence",
+                "client_lifecycle_status='closed'", "last_client_event='closed'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status in ('none','impression_pending_reward')",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "provider_transaction_id is null", "drama_id=#{dramaid}",
+                "episode_from=#{episodefrom}", "episode_to=#{episodeto}",
+                "active_scope_hash=#{expectedactivescopehash}",
+                "active_scope_released_at is null", "active_scope_release_reason is null",
+                "reward_verification_status='rejected'",
+                "active_scope_hash=null", "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'",
+                "failure_reason='client_closed_unrewarded'", "version=version+1",
+                "exists (select 1 from skit_ad_client_event e",
+                "e.tenant_id=#{tenantid}", "e.ad_session_id=#{id}",
+                "e.callback_sequence=#{callbacksequence}", "e.event_type='closed'",
+                "e.client_reward_observed=b'0'", "e.closed=b'1'", "e.deleted=b'0'");
+
+        Method legacyUnrewardedClose = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(
+                        "rejectLegacyUnrewardedClosedAndReleaseScopeCas"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String legacyUnrewardedCloseSql = updateSql(legacyUnrewardedClose);
+        assertContainsAll(legacyUnrewardedCloseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='closed'",
+                "last_client_event='closed'",
+                "last_callback_sequence=#{expectedlastcallbacksequence}",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "provider_transaction_id is null", "drama_id=#{dramaid}",
+                "episode_from=#{episodefrom}", "episode_to=#{episodeto}",
+                "active_scope_hash=#{expectedactivescopehash}",
+                "exists (select 1 from skit_ad_client_event e",
+                "e.tenant_id=#{tenantid}", "e.ad_session_id=#{id}",
+                "e.callback_sequence=#{expectedlastcallbacksequence}",
+                "e.event_type='closed'", "e.client_reward_observed=b'0'",
+                "e.closed=b'1'", "e.deleted=b'0'",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "failure_reason='client_closed_unrewarded'", "version=version+1");
+
         assertFalse(Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
                         .anyMatch(method -> method.getName().equals("releaseActiveScopeAfterServerTerminalCas")),
                 "strict lifecycle checks forbid a separately committed terminal state before release");
