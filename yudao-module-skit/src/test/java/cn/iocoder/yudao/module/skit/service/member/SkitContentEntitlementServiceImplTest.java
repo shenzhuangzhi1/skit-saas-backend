@@ -14,6 +14,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
+import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -66,6 +67,7 @@ class SkitContentEntitlementServiceImplTest {
     @Mock private SkitAgentMapper agentMapper;
     @Mock private TenantService tenantService;
     @Mock private SkitTenantAdCapabilityService capabilityService;
+    @Mock private SkitPangleDramaCatalogSyncService catalogSyncService;
 
     private SkitContentEntitlementServiceImpl service;
 
@@ -80,7 +82,8 @@ class SkitContentEntitlementServiceImplTest {
                 entitlementGrantMapper,
                 contentScopeService,
                 memberMapper, agentMapper, tenantService,
-                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)), capabilityService);
+                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)), capabilityService,
+                catalogSyncService);
     }
 
     @AfterEach
@@ -114,6 +117,52 @@ class SkitContentEntitlementServiceImplTest {
         assertFalse(issue.toString().contains(token));
         assertFalse(new ObjectMapper().findAndRegisterModules().writeValueAsString(issue).contains(token));
         assertThrows(IllegalStateException.class, issue::consumeGrantToken);
+    }
+
+    @Test
+    void playerGrantRetriesAfterRefreshingAStaleTenantDramaCatalog() {
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        org.mockito.Mockito.doThrow(
+                        cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                                cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE))
+                .doReturn(accessibleDrama(TENANT_ID, DRAMA_ID))
+                .when(contentScopeService).requireAccessibleDrama(DRAMA_ID);
+        when(nativeGrantMapper.insert(any(SkitNativePlayerGrantDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitNativePlayerGrantDO>getArgument(0).setId(71L);
+            return 1;
+        });
+
+        SkitContentEntitlementService.PlayerGrantIssue issue =
+                service.issuePlayerGrant(MEMBER_ID, DRAMA_ID, RUNTIME);
+
+        assertEquals(DRAMA_ID, issue.getDramaId());
+        verify(catalogSyncService).syncDrama(TENANT_ID, DRAMA_ID);
+        verify(contentScopeService, org.mockito.Mockito.times(2)).requireAccessibleDrama(DRAMA_ID);
+        verify(nativeGrantMapper).insert(any(SkitNativePlayerGrantDO.class));
+    }
+
+    @Test
+    void playerGrantRetriesAfterSyncingAMissingTenantDramaCatalog() {
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        org.mockito.Mockito.doThrow(
+                        cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                                cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING))
+                .doReturn(accessibleDrama(TENANT_ID, DRAMA_ID))
+                .when(contentScopeService).requireAccessibleDrama(DRAMA_ID);
+        when(nativeGrantMapper.insert(any(SkitNativePlayerGrantDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitNativePlayerGrantDO>getArgument(0).setId(71L);
+            return 1;
+        });
+
+        SkitContentEntitlementService.PlayerGrantIssue issue =
+                service.issuePlayerGrant(MEMBER_ID, DRAMA_ID, RUNTIME);
+
+        assertEquals(DRAMA_ID, issue.getDramaId());
+        verify(catalogSyncService).syncDrama(TENANT_ID, DRAMA_ID);
+        verify(contentScopeService, org.mockito.Mockito.times(2)).requireAccessibleDrama(DRAMA_ID);
+        verify(nativeGrantMapper).insert(any(SkitNativePlayerGrantDO.class));
     }
 
     @Test
@@ -184,7 +233,8 @@ class SkitContentEntitlementServiceImplTest {
         assertThrows(NullPointerException.class, () -> new SkitContentEntitlementServiceImpl(
                 nativeGrantMapper, entitlementMapper, entitlementGrantMapper, contentScopeService,
                 memberMapper, agentMapper, tenantService,
-                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)), null));
+                Clock.fixed(NOW, ZoneOffset.UTC), new FixedSecureRandom(sequence(32)), null,
+                catalogSyncService));
     }
 
     @Test
@@ -204,7 +254,7 @@ class SkitContentEntitlementServiceImplTest {
                             entitlementGrantMapper,
                             contentScopeService, memberMapper, agentMapper, tenantService,
                             Clock.fixed(NOW, shanghai),
-                            new FixedSecureRandom(sequence(32)), capabilityService);
+                            new FixedSecureRandom(sequence(32)), capabilityService, catalogSyncService);
 
             SkitContentEntitlementService.PlayerGrantIssue issue =
                     shanghaiService.issuePlayerGrant(MEMBER_ID, DRAMA_ID, RUNTIME);
