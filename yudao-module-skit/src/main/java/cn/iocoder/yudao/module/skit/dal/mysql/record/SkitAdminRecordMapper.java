@@ -10,6 +10,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
@@ -39,6 +40,21 @@ public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
     @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit and row_key is deterministic per provider drama
     int upsertPangleDramaCatalog(@Param("tenantId") Long tenantId,
                                  @Param("record") SkitAdminRecordDO record);
+
+    @Update("UPDATE `skit_admin_record` SET `deleted`=b'1',`status`=2,"
+            + "`updater`='pangle-catalog-sync',`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `page_key`='drama' AND `deleted`=b'0' "
+            + "AND (`row_key` IS NULL OR `row_key`<>#{canonicalRowKey}) AND JSON_VALID(`record_data`) "
+            + "AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.pangleDramaId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.dramaId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.drama_id')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.contentId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.nativeId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.id')),''))=#{businessId}")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit and aliases never cross tenants
+    int retirePangleDramaCatalogAliases(@Param("tenantId") Long tenantId,
+                                        @Param("businessId") String businessId,
+                                        @Param("canonicalRowKey") String canonicalRowKey);
 
     @Select("SELECT * FROM `skit_admin_record` WHERE `tenant_id`=#{tenantId} "
             + "AND `page_key`='drama' AND `deleted`=b'0' AND JSON_VALID(`record_data`) "

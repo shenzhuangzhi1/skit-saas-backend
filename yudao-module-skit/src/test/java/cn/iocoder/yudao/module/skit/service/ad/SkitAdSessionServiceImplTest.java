@@ -174,7 +174,7 @@ class SkitAdSessionServiceImplTest {
                 () -> service.createForMember(MEMBER_ID, command(forgedDramaId, 3)));
         assertEquals(AD_SESSION_INVALID.getCode(), rejected.getCode());
 
-        verify(catalogSyncService, never()).syncMissingDrama(anyLong(), anyLong());
+        verify(catalogSyncService, never()).syncDrama(anyLong(), anyLong());
         verify(sessionMapper, never()).insert(any());
         verify(snapshotService, never()).createSnapshot(any());
         verify(credentialService, never()).getActiveCallbackKeyVersion(anyLong(), anyLong());
@@ -196,7 +196,29 @@ class SkitAdSessionServiceImplTest {
                 MEMBER_ID, command(DRAMA_ID, 3));
 
         assertEquals("CREATED", result.getOutcome());
-        verify(catalogSyncService).syncMissingDrama(TENANT_ID, DRAMA_ID);
+        verify(catalogSyncService).syncDrama(TENANT_ID, DRAMA_ID);
+        verify(contentScopeService, org.mockito.Mockito.times(3))
+                .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
+        verify(sessionMapper).insert(any(SkitAdSessionDO.class));
+    }
+
+    @Test
+    void staleTenantCatalogSynchronizesThenRetriesTheWholeSessionTransaction() {
+        stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
+        when(contentScopeService.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3))
+                .thenThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE))
+                .thenReturn(contentScope(DRAMA_ID, 3, false));
+        when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitAdSessionDO>getArgument(0).setId(91L);
+            return 1;
+        });
+
+        SkitAdSessionService.CreateResult result = service.createForMember(
+                MEMBER_ID, command(DRAMA_ID, 3));
+
+        assertEquals("CREATED", result.getOutcome());
+        verify(catalogSyncService).syncDrama(TENANT_ID, DRAMA_ID);
         verify(contentScopeService, org.mockito.Mockito.times(3))
                 .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
         verify(sessionMapper).insert(any(SkitAdSessionDO.class));

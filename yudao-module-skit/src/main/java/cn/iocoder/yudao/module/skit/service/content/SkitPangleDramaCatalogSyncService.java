@@ -5,7 +5,6 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.record.SkitAdminRecordDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
-import cn.iocoder.yudao.module.skit.dal.mysql.record.SkitAdminRecordMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,17 +22,17 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_C
 public class SkitPangleDramaCatalogSyncService {
 
     private final SkitAdAccountMapper accountMapper;
-    private final SkitAdminRecordMapper recordMapper;
+    private final SkitPangleDramaCatalogStore catalogStore;
     private final PangleShortPlayClient client;
     private final ObjectMapper objectMapper;
 
     @Autowired
     public SkitPangleDramaCatalogSyncService(SkitAdAccountMapper accountMapper,
-                                             SkitAdminRecordMapper recordMapper,
+                                             SkitPangleDramaCatalogStore catalogStore,
                                              PangleShortPlayClient client,
                                              ObjectMapper objectMapper) {
         this.accountMapper = Objects.requireNonNull(accountMapper, "accountMapper");
-        this.recordMapper = Objects.requireNonNull(recordMapper, "recordMapper");
+        this.catalogStore = Objects.requireNonNull(catalogStore, "catalogStore");
         this.client = Objects.requireNonNull(client, "client");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
     }
@@ -44,7 +43,7 @@ public class SkitPangleDramaCatalogSyncService {
      * transaction and revalidates the authoritative row.
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public void syncMissingDrama(long tenantId, long dramaId) {
+    public void syncDrama(long tenantId, long dramaId) {
         if (tenantId <= 0 || dramaId <= 0
                 || !Long.valueOf(tenantId).equals(TenantContextHolder.getRequiredTenantId())) {
             throw new IllegalArgumentException("Pangle catalog sync scope is invalid");
@@ -55,9 +54,7 @@ public class SkitPangleDramaCatalogSyncService {
             PangleShortPlayClient.Drama drama = client.fetchDrama(
                     account.getAppId(), account.getSecret(), dramaId);
             SkitAdminRecordDO row = catalogRow(tenantId, drama);
-            if (recordMapper.upsertPangleDramaCatalog(tenantId, row) <= 0) {
-                throw new IllegalStateException("Pangle catalog upsert did not commit");
-            }
+            catalogStore.replaceDrama(tenantId, dramaId, row);
         } catch (RuntimeException failure) {
             throw exception(AD_CONTENT_CATALOG_SYNC_UNAVAILABLE);
         }

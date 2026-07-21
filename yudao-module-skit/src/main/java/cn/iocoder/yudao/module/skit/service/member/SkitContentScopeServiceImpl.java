@@ -22,6 +22,7 @@ import java.util.Objects;
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE;
 
 /**
  * Uses the existing tenant-scoped {@code skit_admin_record(page_key = 'drama')} directory as the
@@ -66,7 +67,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
             throw exception(AD_CONTENT_CATALOG_MISSING);
         }
         if (matches.size() != 1) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         SkitAdminRecordDO row = matches.get(0);
         JsonNode data = readCatalog(row, tenantId);
@@ -76,7 +77,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 "episodeCount", "total", "count");
         if (authoritativeDramaId != dramaId || totalEpisodes > MAX_TOTAL_EPISODES
                 || !isPublished(publishStatus(data))) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         return new AccessibleDrama(tenantId, row.getId(), dramaId, totalEpisodes, 0, 1);
     }
@@ -114,18 +115,18 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 || !tenantId.equals(row.getTenantId()) || !DRAMA_PAGE_KEY.equals(row.getPageKey())
                 || Boolean.TRUE.equals(row.getDeleted()) || !Integer.valueOf(0).equals(row.getStatus())
                 || row.getRecordData() == null || row.getRecordData().length() > 64_000) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         try {
             JsonNode data = objectMapper.readTree(row.getRecordData());
             if (data == null || !data.isObject()) {
-                throw exception(AD_SESSION_INVALID);
+                throw exception(AD_CONTENT_CATALOG_STALE);
             }
             return data;
         } catch (RuntimeException runtime) {
             throw runtime;
         } catch (Exception invalidJson) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
     }
 
@@ -208,13 +209,13 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 }
             }
         }
-        throw exception(AD_SESSION_INVALID);
+        throw exception(AD_CONTENT_CATALOG_STALE);
     }
 
     private int firstPositiveInt(JsonNode data, String... names) {
         long value = firstPositiveLong(data, names);
         if (value > Integer.MAX_VALUE) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         return (int) value;
     }

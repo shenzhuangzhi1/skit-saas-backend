@@ -130,6 +130,33 @@ class SkitAdminRecordSeedMySqlIT extends SkitMySqlIntegrationTestBase {
                 Integer.class, TENANT_A));
     }
 
+    @Test
+    void pangleDramaRefreshRetiresLegacyAliasesOnlyInsideTheRequestedTenant() {
+        long refreshedDramaId = 1731L;
+        jdbc().update("INSERT INTO skit_admin_record "
+                        + "(tenant_id,page_key,row_key,record_data,status,sort,deleted,creator,updater) "
+                        + "VALUES (?,?,?,?,0,0,b'0','legacy','legacy'),"
+                        + "(?,?,?,?,0,0,b'0','legacy','legacy')",
+                TENANT_A, "drama", "legacy-1731",
+                "{\"id\":1731,\"episodes\":1,\"publishStatus\":\"下架\"}",
+                TENANT_B, "drama", "legacy-1731",
+                "{\"id\":1731,\"episodes\":66,\"publishStatus\":\"上架\"}");
+        SkitAdminRecordDO canonical = pangleDrama(TENANT_A, refreshedDramaId, "独立刷新测试剧", 88);
+
+        assertTrue(recordMapper.upsertPangleDramaCatalog(TENANT_A, canonical) > 0);
+        assertEquals(1, recordMapper.retirePangleDramaCatalogAliases(
+                TENANT_A, String.valueOf(refreshedDramaId), "pangle-1731"));
+
+        assertEquals(1, recordMapper.selectDramaCatalogByBusinessIdForShare(
+                TENANT_A, String.valueOf(refreshedDramaId)).size());
+        assertEquals("pangle-1731", recordMapper.selectDramaCatalogByBusinessIdForShare(
+                TENANT_A, String.valueOf(refreshedDramaId)).get(0).getRowKey());
+        assertEquals(1, recordMapper.selectDramaCatalogByBusinessIdForShare(
+                TENANT_B, String.valueOf(refreshedDramaId)).size());
+        assertEquals("legacy-1731", recordMapper.selectDramaCatalogByBusinessIdForShare(
+                TENANT_B, String.valueOf(refreshedDramaId)).get(0).getRowKey());
+    }
+
     private SkitAdminRecordDO pangleDrama(long tenantId, long dramaId,
                                            String title, int episodes) {
         SkitAdminRecordDO row = SkitAdminRecordDO.builder()

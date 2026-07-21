@@ -32,7 +32,7 @@ class SkitPangleDramaCatalogSyncServiceTest {
     private static final long DRAMA_ID = 1631L;
 
     @Mock private SkitAdAccountMapper accountMapper;
-    @Mock private SkitAdminRecordMapper recordMapper;
+    @Mock private SkitPangleDramaCatalogStore catalogStore;
     @Mock private PangleShortPlayClient client;
 
     private ObjectMapper objectMapper;
@@ -43,7 +43,7 @@ class SkitPangleDramaCatalogSyncServiceTest {
         TenantContextHolder.setTenantId(TENANT_ID);
         objectMapper = new ObjectMapper();
         service = new SkitPangleDramaCatalogSyncService(
-                accountMapper, recordMapper, client, objectMapper);
+                accountMapper, catalogStore, client, objectMapper);
     }
 
     @AfterEach
@@ -64,15 +64,12 @@ class SkitPangleDramaCatalogSyncServiceTest {
                 .thenReturn(new PangleShortPlayClient.Drama(
                         DRAMA_ID, "人间至味是", "简介", "https://example.test/cover.jpg",
                         12L, "都市", 88, 1_760_000_000L, 0));
-        when(recordMapper.upsertPangleDramaCatalog(
-                org.mockito.ArgumentMatchers.eq(TENANT_ID),
-                org.mockito.ArgumentMatchers.any(SkitAdminRecordDO.class))).thenReturn(1);
-
-        service.syncMissingDrama(TENANT_ID, DRAMA_ID);
+        service.syncDrama(TENANT_ID, DRAMA_ID);
 
         ArgumentCaptor<SkitAdminRecordDO> row = ArgumentCaptor.forClass(SkitAdminRecordDO.class);
-        verify(recordMapper).upsertPangleDramaCatalog(
-                org.mockito.ArgumentMatchers.eq(TENANT_ID), row.capture());
+        verify(catalogStore).replaceDrama(
+                org.mockito.ArgumentMatchers.eq(TENANT_ID),
+                org.mockito.ArgumentMatchers.eq(DRAMA_ID), row.capture());
         assertEquals(TENANT_ID, row.getValue().getTenantId());
         assertEquals("drama", row.getValue().getPageKey());
         assertEquals("pangle-1631", row.getValue().getRowKey());
@@ -93,14 +90,15 @@ class SkitPangleDramaCatalogSyncServiceTest {
                 .thenReturn(Collections.emptyList());
 
         ServiceException failure = assertThrows(ServiceException.class,
-                () -> service.syncMissingDrama(TENANT_ID, DRAMA_ID));
+                () -> service.syncDrama(TENANT_ID, DRAMA_ID));
 
         assertEquals(1_030_007_008, failure.getCode());
         verify(client, never()).fetchDrama(
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyLong());
-        verify(recordMapper, never()).upsertPangleDramaCatalog(
+        verify(catalogStore, never()).replaceDrama(
+                org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.any(SkitAdminRecordDO.class));
     }
@@ -108,7 +106,7 @@ class SkitPangleDramaCatalogSyncServiceTest {
     @Test
     void explicitTenantMustMatchTheAmbientMemberTenant() {
         assertThrows(IllegalArgumentException.class,
-                () -> service.syncMissingDrama(TENANT_ID + 1, DRAMA_ID));
+                () -> service.syncDrama(TENANT_ID + 1, DRAMA_ID));
 
         verify(accountMapper, never()).selectEnabledPangleForShare(
                 org.mockito.ArgumentMatchers.anyLong());

@@ -52,6 +52,8 @@ public interface ErrorCodeConstants {
             "当前代理商剧目目录尚未同步");
     ErrorCode AD_CONTENT_CATALOG_SYNC_UNAVAILABLE = new ErrorCode(1_030_007_008,
             "当前剧目同步失败，请稍后重试");
+    ErrorCode AD_CONTENT_CATALOG_STALE = new ErrorCode(1_030_007_009,
+            "当前代理商剧目目录需要刷新");
 
     ErrorCode AD_ROLLOUT_NOT_READY = new ErrorCode(1_030_008_000, "当前租户广告接入尚未满足该发布阶段：{}");
     ErrorCode AD_ROLLOUT_STATE_INVALID = new ErrorCode(1_030_008_001, "广告发布状态迁移不合法");

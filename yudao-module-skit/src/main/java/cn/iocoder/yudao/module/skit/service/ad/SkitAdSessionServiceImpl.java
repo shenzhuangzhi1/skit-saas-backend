@@ -55,6 +55,7 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_N
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_STATE_CONFLICT;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PLAYER_GRANT_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_DISABLED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_NOT_EXISTS;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_STATUS_INVALID;
@@ -213,11 +214,12 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             return createWithRetry(() -> createInsideTenant(
                     memberId, command, accessMode, grantReference, requestStartedAt));
         } catch (ServiceException failure) {
-            if (!AD_CONTENT_CATALOG_MISSING.getCode().equals(failure.getCode())) {
+            if (!AD_CONTENT_CATALOG_MISSING.getCode().equals(failure.getCode())
+                    && !AD_CONTENT_CATALOG_STALE.getCode().equals(failure.getCode())) {
                 throw failure;
             }
         }
-        catalogSyncService.syncMissingDrama(tenantId, command.getDramaId());
+        catalogSyncService.syncDrama(tenantId, command.getDramaId());
         AtomicReference<LocalDateTime> synchronizedRequestStartedAt =
                 new AtomicReference<>(databaseNow());
         return createWithRetry(() -> createInsideTenant(

@@ -24,6 +24,7 @@ import java.util.Collections;
 
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -181,7 +182,7 @@ class SkitContentScopeServiceImplTest {
     }
 
     @Test
-    void wrongTenantDeletedOfflineOrAmbiguousCatalogFailsClosed() {
+    void wrongTenantDeletedOfflineOrAmbiguousCatalogRequestsAuthoritativeRefresh() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID)))
                 .thenReturn(Collections.singletonList(
@@ -194,10 +195,10 @@ class SkitContentScopeServiceImplTest {
                         catalog(TENANT_ID, false, 0, "上架", 20, 2, 3),
                         catalog(TENANT_ID, false, 0, "上架", 20, 2, 3)));
 
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertStale(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertStale(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertStale(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertStale(() -> service.requireAccessibleDrama(DRAMA_ID));
     }
 
     @Test
@@ -263,7 +264,7 @@ class SkitContentScopeServiceImplTest {
                 .thenReturn(Collections.singletonList(
                         catalog(TENANT_ID, false, 0, "上架", 20, 2, 3)));
 
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertStale(() -> service.requireAccessibleDrama(DRAMA_ID));
 
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Collections.singletonList(3))).thenReturn(Collections.singletonList(
@@ -323,7 +324,7 @@ class SkitContentScopeServiceImplTest {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID))).thenReturn(Collections.singletonList(unpublished));
 
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
+        assertStale(() -> service.requireAccessibleDrama(DRAMA_ID));
     }
 
     private void assertAccessibleWithFixedPerEpisodePolicy() {
@@ -338,6 +339,11 @@ class SkitContentScopeServiceImplTest {
     private void assertInvalid(org.junit.jupiter.api.function.Executable executable) {
         ServiceException failure = assertThrows(ServiceException.class, executable);
         assertEquals(AD_SESSION_INVALID.getCode(), failure.getCode());
+    }
+
+    private void assertStale(org.junit.jupiter.api.function.Executable executable) {
+        ServiceException failure = assertThrows(ServiceException.class, executable);
+        assertEquals(AD_CONTENT_CATALOG_STALE.getCode(), failure.getCode());
     }
 
     private SkitAdminRecordDO catalog(long tenantId, boolean deleted, int recordStatus,
