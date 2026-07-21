@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -169,10 +170,20 @@ class SkitContentScopeServiceImplTest {
     }
 
     @Test
-    void missingWrongTenantDeletedOfflineOrAmbiguousCatalogFailsClosed() {
+    void missingCatalogSignalsTheDynamicTenantSyncPath() {
+        when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
+                Long.toString(DRAMA_ID))).thenReturn(Collections.emptyList());
+
+        ServiceException failure = assertThrows(ServiceException.class,
+                () -> service.requireAccessibleDrama(DRAMA_ID));
+
+        assertEquals(AD_CONTENT_CATALOG_MISSING.getCode(), failure.getCode());
+    }
+
+    @Test
+    void wrongTenantDeletedOfflineOrAmbiguousCatalogFailsClosed() {
         when(recordMapper.selectDramaCatalogByBusinessIdForShare(TENANT_ID,
                 Long.toString(DRAMA_ID)))
-                .thenReturn(Collections.emptyList())
                 .thenReturn(Collections.singletonList(
                         catalog(TENANT_ID + 1, false, 0, "上架", 20, 2, 3)))
                 .thenReturn(Collections.singletonList(
@@ -183,7 +194,6 @@ class SkitContentScopeServiceImplTest {
                         catalog(TENANT_ID, false, 0, "上架", 20, 2, 3),
                         catalog(TENANT_ID, false, 0, "上架", 20, 2, 3)));
 
-        assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
         assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
         assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));
         assertInvalid(() -> service.requireAccessibleDrama(DRAMA_ID));

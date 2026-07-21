@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.service.ad;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
@@ -17,6 +18,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardReceiptResolutionService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
+import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
@@ -52,6 +54,7 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_I
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_NOT_EXISTS;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_STATE_CONFLICT;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_PLAYER_GRANT_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_DISABLED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_NOT_EXISTS;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MEMBER_STATUS_INVALID;
@@ -79,6 +82,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     private final SkitPolicySnapshotService snapshotService;
     private final SkitContentEntitlementService entitlementService;
     private final SkitContentScopeService contentScopeService;
+    private final SkitPangleDramaCatalogSyncService catalogSyncService;
     private final TenantService tenantService;
     private final SkitAdSessionTokenService tokenService;
     private final SkitTenantAdCapabilityService capabilityService;
@@ -100,6 +104,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                                     SkitPolicySnapshotService snapshotService,
                                     SkitContentEntitlementService entitlementService,
                                     SkitContentScopeService contentScopeService,
+                                    SkitPangleDramaCatalogSyncService catalogSyncService,
                                     TenantService tenantService,
                                     SkitAdSessionTokenService tokenService,
                                     ObjectMapper objectMapper,
@@ -107,7 +112,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                                     SkitTenantAdCapabilityService capabilityService,
                                     SkitAdRewardReceiptResolutionService rewardReceiptResolutionService) {
         this(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper, agentMapper, memberMapper,
-                credentialService, snapshotService, entitlementService, contentScopeService, tenantService,
+                credentialService, snapshotService, entitlementService, contentScopeService,
+                catalogSyncService, tenantService,
                 tokenService, objectMapper,
                 Clock.systemDefaultZone(), new SecureRandom(), createTransactionExecutor::execute,
                 capabilityService, rewardReceiptResolutionService);
@@ -123,6 +129,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                              SkitPolicySnapshotService snapshotService,
                              SkitContentEntitlementService entitlementService,
                              SkitContentScopeService contentScopeService,
+                             SkitPangleDramaCatalogSyncService catalogSyncService,
                              TenantService tenantService,
                              SkitAdSessionTokenService tokenService,
                              ObjectMapper objectMapper,
@@ -131,7 +138,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                              SkitTenantAdCapabilityService capabilityService,
                              SkitAdRewardReceiptResolutionService rewardReceiptResolutionService) {
         this(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper, agentMapper, memberMapper, credentialService,
-                snapshotService, entitlementService, contentScopeService, tenantService, tokenService, objectMapper,
+                snapshotService, entitlementService, contentScopeService, catalogSyncService,
+                tenantService, tokenService, objectMapper,
                 clock, secureRandom, Supplier::get, capabilityService, rewardReceiptResolutionService);
     }
 
@@ -145,6 +153,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                                      SkitPolicySnapshotService snapshotService,
                                      SkitContentEntitlementService entitlementService,
                                      SkitContentScopeService contentScopeService,
+                                     SkitPangleDramaCatalogSyncService catalogSyncService,
                                      TenantService tenantService,
                                      SkitAdSessionTokenService tokenService,
                                      ObjectMapper objectMapper,
@@ -163,6 +172,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         this.snapshotService = Objects.requireNonNull(snapshotService, "snapshotService");
         this.entitlementService = Objects.requireNonNull(entitlementService, "entitlementService");
         this.contentScopeService = Objects.requireNonNull(contentScopeService, "contentScopeService");
+        this.catalogSyncService = Objects.requireNonNull(catalogSyncService, "catalogSyncService");
         this.tenantService = Objects.requireNonNull(tenantService, "tenantService");
         this.tokenService = Objects.requireNonNull(tokenService, "tokenService");
         this.capabilityService = Objects.requireNonNull(capabilityService, "capabilityService");
@@ -178,10 +188,8 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     public CreateResult createForMember(Long memberId, CreateCommand command) {
         requirePositive(memberId, "memberId");
         validateCreateCommand(command);
-        AtomicReference<LocalDateTime> requestStartedAt =
-                new AtomicReference<>(databaseNow());
-        return createWithRetry(() -> createInsideTenant(
-                memberId, command, "MEMBER_OAUTH", null, requestStartedAt));
+        return createWithCatalogSync(TenantContextHolder.getRequiredTenantId(), memberId, command,
+                "MEMBER_OAUTH", null);
     }
 
     @Override
@@ -191,12 +199,29 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 entitlementService.resolvePlayerGrant(grantToken);
         AtomicReference<CreateResult> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
-            AtomicReference<LocalDateTime> requestStartedAt =
-                    new AtomicReference<>(databaseNow());
-            result.set(createWithRetry(() -> createInsideTenant(reference.getMemberId(), command,
-                    "NATIVE_PLAYER_GRANT", reference, requestStartedAt)));
+            result.set(createWithCatalogSync(reference.getTenantId(), reference.getMemberId(), command,
+                    "NATIVE_PLAYER_GRANT", reference));
         });
         return result.get();
+    }
+
+    private CreateResult createWithCatalogSync(Long tenantId, Long memberId, CreateCommand command,
+                                               String accessMode,
+                                               SkitContentEntitlementService.PlayerGrantReference grantReference) {
+        AtomicReference<LocalDateTime> requestStartedAt = new AtomicReference<>(databaseNow());
+        try {
+            return createWithRetry(() -> createInsideTenant(
+                    memberId, command, accessMode, grantReference, requestStartedAt));
+        } catch (ServiceException failure) {
+            if (!AD_CONTENT_CATALOG_MISSING.getCode().equals(failure.getCode())) {
+                throw failure;
+            }
+        }
+        catalogSyncService.syncMissingDrama(tenantId, command.getDramaId());
+        AtomicReference<LocalDateTime> synchronizedRequestStartedAt =
+                new AtomicReference<>(databaseNow());
+        return createWithRetry(() -> createInsideTenant(
+                memberId, command, accessMode, grantReference, synchronizedRequestStartedAt));
     }
 
     private CreateResult createWithRetry(Supplier<CreateResult> operation) {

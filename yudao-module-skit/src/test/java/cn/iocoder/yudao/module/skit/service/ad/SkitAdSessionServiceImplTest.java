@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardReceiptResolutionService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
+import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
@@ -46,6 +47,7 @@ import java.util.TimeZone;
 
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_STATE_CONFLICT;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -84,6 +86,7 @@ class SkitAdSessionServiceImplTest {
     @Mock private SkitPolicySnapshotService snapshotService;
     @Mock private SkitContentEntitlementService entitlementService;
     @Mock private SkitContentScopeService contentScopeService;
+    @Mock private SkitPangleDramaCatalogSyncService catalogSyncService;
     @Mock private TenantService tenantService;
     @Mock private SkitTenantAdCapabilityService capabilityService;
     @Mock private SkitAdRewardReceiptResolutionService rewardReceiptResolutionService;
@@ -104,7 +107,7 @@ class SkitAdSessionServiceImplTest {
         tokenService = new SkitHmacAdSessionTokenService(1, Collections.singletonMap(1, TOKEN_KEY));
         service = new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper,
                 agentMapper, memberMapper, credentialService, snapshotService, entitlementService,
-                contentScopeService, tenantService,
+                contentScopeService, catalogSyncService, tenantService,
                 tokenService, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
                 new FixedSecureRandom(sequence(16)), capabilityService,
                 rewardReceiptResolutionService);
@@ -171,9 +174,32 @@ class SkitAdSessionServiceImplTest {
                 () -> service.createForMember(MEMBER_ID, command(forgedDramaId, 3)));
         assertEquals(AD_SESSION_INVALID.getCode(), rejected.getCode());
 
+        verify(catalogSyncService, never()).syncMissingDrama(anyLong(), anyLong());
         verify(sessionMapper, never()).insert(any());
         verify(snapshotService, never()).createSnapshot(any());
         verify(credentialService, never()).getActiveCallbackKeyVersion(anyLong(), anyLong());
+    }
+
+    @Test
+    void missingTenantCatalogSynchronizesThenRetriesTheWholeSessionTransaction() {
+        stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
+        when(contentScopeService.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3))
+                .thenThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        AD_CONTENT_CATALOG_MISSING))
+                .thenReturn(contentScope(DRAMA_ID, 3, false));
+        when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitAdSessionDO>getArgument(0).setId(91L);
+            return 1;
+        });
+
+        SkitAdSessionService.CreateResult result = service.createForMember(
+                MEMBER_ID, command(DRAMA_ID, 3));
+
+        assertEquals("CREATED", result.getOutcome());
+        verify(catalogSyncService).syncMissingDrama(TENANT_ID, DRAMA_ID);
+        verify(contentScopeService, org.mockito.Mockito.times(3))
+                .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
+        verify(sessionMapper).insert(any(SkitAdSessionDO.class));
     }
 
     @Test
@@ -212,7 +238,8 @@ class SkitAdSessionServiceImplTest {
     void missingCapabilityGateIsRejectedAtConstruction() {
         assertThrows(NullPointerException.class, () -> new SkitAdSessionServiceImpl(
                 sessionMapper, clientEventMapper, revenueEventMapper, accountMapper, agentMapper, memberMapper,
-                credentialService, snapshotService, entitlementService, contentScopeService, tenantService,
+                credentialService, snapshotService, entitlementService, contentScopeService,
+                catalogSyncService, tenantService,
                 tokenService, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
                 new FixedSecureRandom(sequence(16)), null, rewardReceiptResolutionService));
     }
@@ -230,7 +257,8 @@ class SkitAdSessionServiceImplTest {
             });
             SkitAdSessionServiceImpl shanghaiService = new SkitAdSessionServiceImpl(
                     sessionMapper, clientEventMapper, revenueEventMapper, accountMapper, agentMapper, memberMapper,
-                    credentialService, snapshotService, entitlementService, contentScopeService, tenantService,
+                    credentialService, snapshotService, entitlementService, contentScopeService,
+                    catalogSyncService, tenantService,
                     tokenService, new ObjectMapper(), Clock.fixed(NOW, shanghai),
                     new FixedSecureRandom(sequence(16)), capabilityService,
                     rewardReceiptResolutionService);

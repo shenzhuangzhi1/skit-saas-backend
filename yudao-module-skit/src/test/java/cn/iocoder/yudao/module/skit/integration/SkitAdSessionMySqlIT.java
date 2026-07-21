@@ -55,6 +55,7 @@ import cn.iocoder.yudao.module.skit.service.ad.callback.TakuCallbackCanonicalize
 import cn.iocoder.yudao.module.skit.service.ad.callback.TakuRewardSignatureVerifier;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotServiceImpl;
+import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementServiceImpl;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentScopeService;
@@ -1734,6 +1735,11 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        SkitPangleDramaCatalogSyncService pangleDramaCatalogSyncService() {
+            return mock(SkitPangleDramaCatalogSyncService.class);
+        }
+
+        @Bean
         SkitContentEntitlementService contentEntitlementService(
                 SkitNativePlayerGrantMapper nativeGrantMapper,
                 SkitContentEntitlementMapper entitlementMapper,
@@ -1841,6 +1847,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 SkitPolicySnapshotService snapshotService,
                 SkitContentEntitlementService entitlementService,
                 SkitContentScopeService contentScopeService,
+                SkitPangleDramaCatalogSyncService catalogSyncService,
                 TenantService tenantService,
                 SkitAdSessionTokenService tokenService,
                 ObjectMapper objectMapper,
@@ -1849,7 +1856,8 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 SkitAdRewardReceiptResolutionService rewardReceiptResolutionService) {
             return new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper,
                     agentMapper, memberMapper, credentialService, snapshotService,
-                    entitlementService, contentScopeService, tenantService, tokenService, objectMapper,
+                    entitlementService, contentScopeService, catalogSyncService,
+                    tenantService, tokenService, objectMapper,
                     createTransactionExecutor, capabilityService, rewardReceiptResolutionService);
         }
     }

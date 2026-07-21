@@ -29,6 +29,17 @@ public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
     int insertSeedBatchIfAbsent(@Param("tenantId") Long tenantId,
                                 @Param("records") List<SkitAdminRecordDO> records);
 
+    @Insert("INSERT INTO `skit_admin_record` (`tenant_id`,`page_key`,`row_key`,`record_data`,"
+            + "`status`,`sort`,`deleted`,`creator`,`updater`) VALUES "
+            + "(#{tenantId},#{record.pageKey},#{record.rowKey},#{record.recordData},"
+            + "#{record.status},#{record.sort},b'0','pangle-catalog-sync','pangle-catalog-sync') "
+            + "ON DUPLICATE KEY UPDATE `record_data`=VALUES(`record_data`),"
+            + "`status`=VALUES(`status`),`sort`=VALUES(`sort`),`deleted`=b'0',"
+            + "`updater`='pangle-catalog-sync',`update_time`=CURRENT_TIMESTAMP")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit and row_key is deterministic per provider drama
+    int upsertPangleDramaCatalog(@Param("tenantId") Long tenantId,
+                                 @Param("record") SkitAdminRecordDO record);
+
     @Select("SELECT * FROM `skit_admin_record` WHERE `tenant_id`=#{tenantId} "
             + "AND `page_key`='drama' AND `deleted`=b'0' AND JSON_VALID(`record_data`) "
             + "AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.pangleDramaId')),''),"

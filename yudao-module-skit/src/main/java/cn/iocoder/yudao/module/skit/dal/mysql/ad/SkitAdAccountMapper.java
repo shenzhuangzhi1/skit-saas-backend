@@ -133,6 +133,14 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
             + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR SHARE")
     List<SkitAdAccountDO> selectEnabledTakuForShare(@Param("tenantId") Long tenantId);
 
+    /** Uses the MyBatis-Plus entity result map so the encrypted Server Key is decrypted by its type handler. */
+    default List<SkitAdAccountDO> selectEnabledPangleForShare(Long tenantId) {
+        return selectList(new LambdaQueryWrapperX<SkitAdAccountDO>()
+                .eq(SkitAdAccountDO::getTenantId, tenantId)
+                .eq(SkitAdAccountDO::getProvider, "PANGLE")
+                .eq(SkitAdAccountDO::getStatus, CommonStatusEnum.ENABLE.getStatus()));
+    }
+
     /** Global routing projection. Call only inside TenantUtils.executeIgnore. */
     @Select("SELECT `a`.`id`,`a`.`tenant_id`,`a`.`provider`,`a`.`account_id`,`a`.`app_id`,"
             + "`a`.`config_data`,`a`.`status`,`a`.`report_timezone`,`a`.`report_currency`,"

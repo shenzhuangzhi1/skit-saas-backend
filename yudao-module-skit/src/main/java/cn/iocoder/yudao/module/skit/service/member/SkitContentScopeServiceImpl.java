@@ -21,6 +21,7 @@ import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
 
 /**
  * Uses the existing tenant-scoped {@code skit_admin_record(page_key = 'drama')} directory as the
@@ -61,7 +62,10 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         List<SkitAdminRecordDO> matches = recordMapper.selectDramaCatalogByBusinessIdForShare(
                 tenantId, Long.toString(dramaId));
-        if (matches == null || matches.size() != 1) {
+        if (matches == null || matches.isEmpty()) {
+            throw exception(AD_CONTENT_CATALOG_MISSING);
+        }
+        if (matches.size() != 1) {
             throw exception(AD_SESSION_INVALID);
         }
         SkitAdminRecordDO row = matches.get(0);

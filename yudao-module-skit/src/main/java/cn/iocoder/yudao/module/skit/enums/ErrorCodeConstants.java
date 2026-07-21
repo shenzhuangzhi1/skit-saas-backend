@@ -48,6 +48,10 @@ public interface ErrorCodeConstants {
     ErrorCode AD_SESSION_EVENT_CONFLICT = new ErrorCode(1_030_007_004, "客户端广告事件与既有证据冲突");
     ErrorCode AD_PLAYER_GRANT_INVALID = new ErrorCode(1_030_007_005, "原生播放器授权无效或已过期");
     ErrorCode AD_ENTITLEMENT_INVALID = new ErrorCode(1_030_007_006, "内容权益授予条件不成立");
+    ErrorCode AD_CONTENT_CATALOG_MISSING = new ErrorCode(1_030_007_007,
+            "当前代理商剧目目录尚未同步");
+    ErrorCode AD_CONTENT_CATALOG_SYNC_UNAVAILABLE = new ErrorCode(1_030_007_008,
+            "当前剧目同步失败，请稍后重试");
 
     ErrorCode AD_ROLLOUT_NOT_READY = new ErrorCode(1_030_008_000, "当前租户广告接入尚未满足该发布阶段：{}");
     ErrorCode AD_ROLLOUT_STATE_INVALID = new ErrorCode(1_030_008_001, "广告发布状态迁移不合法");

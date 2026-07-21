@@ -221,7 +221,8 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         }
         validateLength(settings.getPangleUsername(), 128, "PANGLE 账号最长 128 个字符");
         validateLength(settings.getPangleAppId(), 128, "PANGLE App ID 最长 128 个字符");
-        validateLength(settings.getPangleAppSecret(), 2048, "PANGLE 密钥最长 2048 个字符");
+        validateLength(settings.getPangleAppSecret(), 2048,
+                "PANGLE 内容接口 Server Key 最长 2048 个字符");
         validateLength(settings.getPanglePlacementId(), 128, "PANGLE 广告位最长 128 个字符");
         validateLength(settings.getTakuUsername(), 128, "TAKU 账号最长 128 个字符");
         validateLength(settings.getTakuAppId(), 128, "TAKU App ID 最长 128 个字符");
