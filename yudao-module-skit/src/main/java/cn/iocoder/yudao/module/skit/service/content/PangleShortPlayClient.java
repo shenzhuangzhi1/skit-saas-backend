@@ -4,6 +4,39 @@ public interface PangleShortPlayClient {
 
     Drama fetchDrama(String siteId, String serverKey, long dramaId);
 
+    enum FailureReason {
+        PROVIDER_REJECTED,
+        CONTENT_UNAVAILABLE,
+        PROVIDER_UNAVAILABLE,
+        INVALID_RESPONSE
+    }
+
+    final class Failure extends IllegalStateException {
+        private final FailureReason reason;
+        private final int providerCode;
+        private final String providerSubCode;
+        private final String requestId;
+
+        public Failure(FailureReason reason, int providerCode,
+                       String providerSubCode, String requestId) {
+            super("Pangle short-play request failed: " + reason);
+            this.reason = reason;
+            this.providerCode = providerCode;
+            this.providerSubCode = safeDiagnostic(providerSubCode);
+            this.requestId = safeDiagnostic(requestId);
+        }
+
+        public FailureReason getReason() { return reason; }
+        public int getProviderCode() { return providerCode; }
+        public String getProviderSubCode() { return providerSubCode; }
+        public String getRequestId() { return requestId; }
+
+        private static String safeDiagnostic(String value) {
+            String normalized = value == null ? "" : value.trim();
+            return normalized.matches("[A-Za-z0-9._:-]{0,128}") ? normalized : "";
+        }
+    }
+
     final class Drama {
         private final long dramaId;
         private final String title;

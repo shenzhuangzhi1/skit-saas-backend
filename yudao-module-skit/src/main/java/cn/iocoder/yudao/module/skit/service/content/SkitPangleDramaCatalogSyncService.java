@@ -11,15 +11,22 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_SYNC_UNAVAILABLE;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_CREDENTIAL_UNAVAILABLE;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_NOT_AVAILABLE_FOR_TENANT;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_PROVIDER_REJECTED;
 
 @Service
 public class SkitPangleDramaCatalogSyncService {
+
+    private static final Logger log = LoggerFactory.getLogger(SkitPangleDramaCatalogSyncService.class);
 
     private final SkitAdAccountMapper accountMapper;
     private final SkitPangleDramaCatalogStore catalogStore;
@@ -48,16 +55,60 @@ public class SkitPangleDramaCatalogSyncService {
                 || !Long.valueOf(tenantId).equals(TenantContextHolder.getRequiredTenantId())) {
             throw new IllegalArgumentException("Pangle catalog sync scope is invalid");
         }
+        List<SkitAdAccountDO> matches;
         try {
-            SkitAdAccountDO account = enabledAccount(tenantId,
-                    accountMapper.selectEnabledPangleForShare(tenantId));
-            PangleShortPlayClient.Drama drama = client.fetchDrama(
+            matches = accountMapper.selectEnabledPangleForShare(tenantId);
+        } catch (RuntimeException failure) {
+            log.warn("[syncDrama][tenantId({}) dramaId({}) Pangle account lookup failed]",
+                    tenantId, dramaId);
+            throw exception(AD_CONTENT_CATALOG_SYNC_UNAVAILABLE);
+        }
+        SkitAdAccountDO account;
+        try {
+            account = enabledAccount(tenantId, matches);
+        } catch (RuntimeException failure) {
+            log.warn("[syncDrama][tenantId({}) dramaId({}) Pangle account unavailable]",
+                    tenantId, dramaId);
+            throw exception(AD_CONTENT_CATALOG_CREDENTIAL_UNAVAILABLE);
+        }
+        PangleShortPlayClient.Drama drama;
+        try {
+            drama = client.fetchDrama(
                     account.getAppId(), account.getSecret(), dramaId);
+        } catch (PangleShortPlayClient.Failure failure) {
+            logProviderFailure(tenantId, dramaId, account.getAppId(), failure);
+            if (PangleShortPlayClient.FailureReason.CONTENT_UNAVAILABLE.equals(failure.getReason())) {
+                throw exception(AD_CONTENT_NOT_AVAILABLE_FOR_TENANT);
+            }
+            if (PangleShortPlayClient.FailureReason.PROVIDER_REJECTED.equals(failure.getReason())) {
+                throw exception(AD_CONTENT_PROVIDER_REJECTED);
+            }
+            throw exception(AD_CONTENT_CATALOG_SYNC_UNAVAILABLE);
+        } catch (IllegalArgumentException failure) {
+            log.warn("[syncDrama][tenantId({}) dramaId({}) siteId({}) Pangle credentials invalid]",
+                    tenantId, dramaId, account.getAppId());
+            throw exception(AD_CONTENT_CATALOG_CREDENTIAL_UNAVAILABLE);
+        } catch (RuntimeException failure) {
+            log.warn("[syncDrama][tenantId({}) dramaId({}) siteId({}) provider call failed]",
+                    tenantId, dramaId, account.getAppId());
+            throw exception(AD_CONTENT_CATALOG_SYNC_UNAVAILABLE);
+        }
+        try {
             SkitAdminRecordDO row = catalogRow(tenantId, drama);
             catalogStore.replaceDrama(tenantId, dramaId, row);
         } catch (RuntimeException failure) {
+            log.warn("[syncDrama][tenantId({}) dramaId({}) catalog write failed]",
+                    tenantId, dramaId);
             throw exception(AD_CONTENT_CATALOG_SYNC_UNAVAILABLE);
         }
+    }
+
+    private void logProviderFailure(long tenantId, long dramaId, String siteId,
+                                    PangleShortPlayClient.Failure failure) {
+        log.warn("[syncDrama][tenantId({}) dramaId({}) siteId({}) reason({}) ret({}) "
+                        + "subRet({}) requestId({})]",
+                tenantId, dramaId, siteId, failure.getReason(), failure.getProviderCode(),
+                failure.getProviderSubCode(), failure.getRequestId());
     }
 
     private SkitAdAccountDO enabledAccount(long tenantId, List<SkitAdAccountDO> matches) {

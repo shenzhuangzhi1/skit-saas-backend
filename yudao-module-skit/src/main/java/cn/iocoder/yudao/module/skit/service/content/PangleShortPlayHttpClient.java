@@ -74,7 +74,7 @@ public class PangleShortPlayHttpClient implements PangleShortPlayClient {
         try {
             response = transport.execute(new TransportRequest("POST", ENDPOINT, headers, body));
         } catch (Exception exception) {
-            throw new IllegalStateException("Pangle short-play request failed");
+            throw failure(PangleShortPlayClient.FailureReason.PROVIDER_UNAVAILABLE);
         }
         return response(response, dramaId);
     }
@@ -97,21 +97,42 @@ public class PangleShortPlayHttpClient implements PangleShortPlayClient {
 
     private Drama response(TransportResponse response, long requestedDramaId) {
         if (response == null || response.getStatusCode() < 200 || response.getStatusCode() >= 300) {
-            throw new IllegalStateException("Pangle short-play HTTP status was not successful");
+            throw failure(PangleShortPlayClient.FailureReason.PROVIDER_UNAVAILABLE);
         }
         byte[] body = response.getBody();
         if (body.length == 0 || body.length > MAX_RESPONSE_BYTES) {
-            throw new IllegalStateException("Pangle short-play response size is invalid");
+            throw failure(PangleShortPlayClient.FailureReason.INVALID_RESPONSE);
         }
         try {
             JsonNode root = objectMapper.readTree(body);
+            if (root == null || !root.isObject()) {
+                throw failure(PangleShortPlayClient.FailureReason.INVALID_RESPONSE);
+            }
+            JsonNode providerCodeNode = root.get("ret");
+            if (providerCodeNode == null || !providerCodeNode.canConvertToInt()) {
+                throw failure(PangleShortPlayClient.FailureReason.INVALID_RESPONSE);
+            }
+            int providerCode = providerCodeNode.intValue();
+            String providerSubCode = diagnostic(root, "sub_ret");
+            String requestId = diagnostic(root, "request_id");
+            if (providerCode != 0) {
+                throw new PangleShortPlayClient.Failure(
+                        PangleShortPlayClient.FailureReason.PROVIDER_REJECTED,
+                        providerCode, providerSubCode, requestId);
+            }
             JsonNode data = root == null ? null : root.get("data");
             JsonNode list = data == null ? null : data.get("list");
-            if (root == null || !root.isObject() || root.path("ret").asInt(Integer.MIN_VALUE) != 0
-                    || data == null || !data.isObject() || data.path("total").asInt(-1) != 1
-                    || data.path("has_more").asBoolean(true) || list == null || !list.isArray()
-                    || list.size() != 1) {
-                throw new IllegalStateException("Pangle short-play response is malformed");
+            int total = data == null ? -1 : data.path("total").asInt(-1);
+            boolean hasMore = data == null || data.path("has_more").asBoolean(true);
+            if (data != null && data.isObject() && total == 0 && !hasMore
+                    && list != null && list.isArray() && list.size() == 0) {
+                throw new PangleShortPlayClient.Failure(
+                        PangleShortPlayClient.FailureReason.CONTENT_UNAVAILABLE,
+                        0, providerSubCode, requestId);
+            }
+            if (data == null || !data.isObject() || total != 1 || hasMore
+                    || list == null || !list.isArray() || list.size() != 1) {
+                throw failure(PangleShortPlayClient.FailureReason.INVALID_RESPONSE);
             }
             JsonNode item = list.get(0);
             long dramaId = requiredPositiveLong(item, "shortplay_id");
@@ -119,7 +140,7 @@ public class PangleShortPlayHttpClient implements PangleShortPlayClient {
             int completionStatus = item.path("status").asInt(-1);
             if (dramaId != requestedDramaId || totalEpisodes > MAX_TOTAL_EPISODES
                     || (completionStatus != 0 && completionStatus != 1)) {
-                throw new IllegalStateException("Pangle short-play response crossed the requested scope");
+                throw failure(PangleShortPlayClient.FailureReason.INVALID_RESPONSE);
             }
             return new Drama(dramaId,
                     requiredText(item, "title", 255),
@@ -130,11 +151,21 @@ public class PangleShortPlayHttpClient implements PangleShortPlayClient {
                     totalEpisodes,
                     nonNegativeLong(item, "create_time"),
                     completionStatus);
-        } catch (IllegalStateException exception) {
+        } catch (PangleShortPlayClient.Failure exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new IllegalStateException("Pangle short-play response is malformed");
+            throw failure(PangleShortPlayClient.FailureReason.INVALID_RESPONSE);
         }
+    }
+
+    private static PangleShortPlayClient.Failure failure(
+            PangleShortPlayClient.FailureReason reason) {
+        return new PangleShortPlayClient.Failure(reason, -1, "", "");
+    }
+
+    private static String diagnostic(JsonNode root, String field) {
+        JsonNode value = root.get(field);
+        return value == null || value.isNull() ? "" : value.asText("");
     }
 
     static String sign(String timestamp, String siteId, String version, String nonce,

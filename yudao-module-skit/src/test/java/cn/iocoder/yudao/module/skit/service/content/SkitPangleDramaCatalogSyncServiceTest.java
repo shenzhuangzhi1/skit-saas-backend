@@ -92,7 +92,7 @@ class SkitPangleDramaCatalogSyncServiceTest {
         ServiceException failure = assertThrows(ServiceException.class,
                 () -> service.syncDrama(TENANT_ID, DRAMA_ID));
 
-        assertEquals(1_030_007_008, failure.getCode());
+        assertEquals(1_030_007_010, failure.getCode());
         verify(client, never()).fetchDrama(
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
@@ -101,6 +101,55 @@ class SkitPangleDramaCatalogSyncServiceTest {
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.any(SkitAdminRecordDO.class));
+    }
+
+    @Test
+    void dramaOutsideTheTenantContentLibraryHasADedicatedError() {
+        SkitAdAccountDO account = enabledAccount();
+        when(accountMapper.selectEnabledPangleForShare(TENANT_ID))
+                .thenReturn(Collections.singletonList(account));
+        when(client.fetchDrama("5850994", "server-key-1", DRAMA_ID))
+                .thenThrow(new PangleShortPlayClient.Failure(
+                        PangleShortPlayClient.FailureReason.CONTENT_UNAVAILABLE,
+                        0, "", "request-empty"));
+
+        ServiceException failure = assertThrows(ServiceException.class,
+                () -> service.syncDrama(TENANT_ID, DRAMA_ID));
+
+        assertEquals(1_030_007_011, failure.getCode());
+        verify(catalogStore, never()).replaceDrama(
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(SkitAdminRecordDO.class));
+    }
+
+    @Test
+    void providerCredentialRejectionHasADedicatedError() {
+        SkitAdAccountDO account = enabledAccount();
+        when(accountMapper.selectEnabledPangleForShare(TENANT_ID))
+                .thenReturn(Collections.singletonList(account));
+        when(client.fetchDrama("5850994", "server-key-1", DRAMA_ID))
+                .thenThrow(new PangleShortPlayClient.Failure(
+                        PangleShortPlayClient.FailureReason.PROVIDER_REJECTED,
+                        1004, "sign_invalid", "request-rejected"));
+
+        ServiceException failure = assertThrows(ServiceException.class,
+                () -> service.syncDrama(TENANT_ID, DRAMA_ID));
+
+        assertEquals(1_030_007_012, failure.getCode());
+        verify(catalogStore, never()).replaceDrama(
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(SkitAdminRecordDO.class));
+    }
+
+    private SkitAdAccountDO enabledAccount() {
+        SkitAdAccountDO account = SkitAdAccountDO.builder()
+                .id(71L).provider("PANGLE").appId("5850994")
+                .secret("server-key-1").status(CommonStatusEnum.ENABLE.getStatus()).build();
+        account.setTenantId(TENANT_ID);
+        account.setDeleted(false);
+        return account;
     }
 
     @Test

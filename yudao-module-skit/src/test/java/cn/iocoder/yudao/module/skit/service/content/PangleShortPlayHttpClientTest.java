@@ -71,4 +71,48 @@ class PangleShortPlayHttpClientTest {
         assertThrows(IllegalStateException.class,
                 () -> client.fetchDrama("5850994", "server-key-1", 1631L));
     }
+
+    @Test
+    void classifiesAProviderRejectionWithoutLeakingTheServerKey() {
+        String rejected = "{\"ret\":1004,\"sub_ret\":\"sign_invalid\","
+                + "\"msg\":\"signature invalid\",\"request_id\":\"request-rejected\"}";
+        PangleShortPlayHttpClient client = new PangleShortPlayHttpClient(
+                new ObjectMapper(),
+                Clock.fixed(Instant.ofEpochSecond(1_761_033_600L), ZoneOffset.UTC),
+                () -> "0123456789abcdef",
+                request -> new PangleShortPlayHttpClient.TransportResponse(
+                        200, rejected.getBytes(StandardCharsets.UTF_8)));
+
+        PangleShortPlayClient.Failure failure = assertThrows(
+                PangleShortPlayClient.Failure.class,
+                () -> client.fetchDrama("5850994", "server-key-1", 1631L));
+
+        assertEquals(PangleShortPlayClient.FailureReason.PROVIDER_REJECTED,
+                failure.getReason());
+        assertEquals(1004, failure.getProviderCode());
+        assertEquals("sign_invalid", failure.getProviderSubCode());
+        assertEquals("request-rejected", failure.getRequestId());
+        org.junit.jupiter.api.Assertions.assertFalse(failure.toString().contains("server-key-1"));
+    }
+
+    @Test
+    void classifiesADramaOutsideTheTenantContentLibrary() {
+        String empty = "{\"ret\":0,\"sub_ret\":\"\",\"msg\":\"success\","
+                + "\"request_id\":\"request-empty\",\"data\":{"
+                + "\"total\":0,\"has_more\":false,\"list\":[]}}";
+        PangleShortPlayHttpClient client = new PangleShortPlayHttpClient(
+                new ObjectMapper(),
+                Clock.fixed(Instant.ofEpochSecond(1_761_033_600L), ZoneOffset.UTC),
+                () -> "0123456789abcdef",
+                request -> new PangleShortPlayHttpClient.TransportResponse(
+                        200, empty.getBytes(StandardCharsets.UTF_8)));
+
+        PangleShortPlayClient.Failure failure = assertThrows(
+                PangleShortPlayClient.Failure.class,
+                () -> client.fetchDrama("5850994", "server-key-1", 1631L));
+
+        assertEquals(PangleShortPlayClient.FailureReason.CONTENT_UNAVAILABLE,
+                failure.getReason());
+        assertEquals("request-empty", failure.getRequestId());
+    }
 }

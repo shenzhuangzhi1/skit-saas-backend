@@ -54,6 +54,12 @@ public interface ErrorCodeConstants {
             "当前剧目同步失败，请稍后重试");
     ErrorCode AD_CONTENT_CATALOG_STALE = new ErrorCode(1_030_007_009,
             "当前代理商剧目目录需要刷新");
+    ErrorCode AD_CONTENT_CATALOG_CREDENTIAL_UNAVAILABLE = new ErrorCode(1_030_007_010,
+            "当前代理商尚未配置有效的穿山甲 App ID 和 Server Key");
+    ErrorCode AD_CONTENT_NOT_AVAILABLE_FOR_TENANT = new ErrorCode(1_030_007_011,
+            "当前剧目不在本代理商的穿山甲内容库中");
+    ErrorCode AD_CONTENT_PROVIDER_REJECTED = new ErrorCode(1_030_007_012,
+            "穿山甲内容接口拒绝当前代理商请求，请核对 Server Key");
 
     ErrorCode AD_ROLLOUT_NOT_READY = new ErrorCode(1_030_008_000, "当前租户广告接入尚未满足该发布阶段：{}");
     ErrorCode AD_ROLLOUT_STATE_INVALID = new ErrorCode(1_030_008_001, "广告发布状态迁移不合法");
