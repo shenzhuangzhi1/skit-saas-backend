@@ -171,6 +171,51 @@ for skit_schema_summary_contract in \
     exit 1
   fi
 done
+for network_capability_error_diagnostic_contract in \
+    "${activation_script}|print_network_capability_error_diagnostic" \
+    "${activation_script}|infra_api_error_log" \
+    "${activation_script}|request_method" \
+    "${activation_script}|request_url" \
+    "${activation_script}|/admin-api/skit/tenant/ad-readiness/network-capability" \
+    "${activation_script}|exception_name" \
+    "${activation_script}|exception_root_cause_message" \
+    "${activation_script}|root_cause_type" \
+    "${activation_script}|REGEXP" \
+    "${activation_script}|NOT REGEXP '[[:cntrl:]]'" \
+    "${activation_script}|<redacted>" \
+    "${activation_script}|MAX_EXECUTION_TIME(2000)" \
+    "${activation_script}|DESC LIMIT 500" \
+    "${activation_script}|metadata query failed safely" \
+    "${activation_script}|exception_class_name" \
+    "${activation_script}|exception_method_name" \
+    "${activation_script}|exception_line_number" \
+    "${activation_script}|exception_time" \
+    "${activation_script}|DESC LIMIT 1"; do
+  contract_file="${network_capability_error_diagnostic_contract%%|*}"
+  contract_text="${network_capability_error_diagnostic_contract#*|}"
+  if ! grep -Fq -- "${contract_text}" "${contract_file}"; then
+    echo "FAIL: safe network-capability error diagnostic is missing ${contract_text}" >&2
+    exit 1
+  fi
+done
+if grep -Fq -- 'if ! print_network_capability_error_diagnostic' "${activation_script}"; then
+  echo "FAIL: a best-effort error diagnostic must not gate healthy backend activation" >&2
+  exit 1
+fi
+network_capability_error_diagnostic="$({
+  sed -n '/^print_network_capability_error_diagnostic() {$/,/^}$/p' "${activation_script}"
+} || true)"
+for forbidden_error_detail in \
+    'request_params' \
+    'exception_message' \
+    'exception_stack_trace' \
+    'user_ip' \
+    'user_agent'; do
+  if grep -Fq -- "${forbidden_error_detail}" <<<"${network_capability_error_diagnostic}"; then
+    echo "FAIL: network-capability error diagnostic exposes ${forbidden_error_detail}" >&2
+    exit 1
+  fi
+done
 if grep -Fq -- 'docker_cmd logs --since' "${activation_script}"; then
   echo "FAIL: a forced-new backend must be validated from its complete startup log" >&2
   exit 1

@@ -596,6 +596,40 @@ SELECT 'TRIGGERS' AS kind,\`TRIGGER_NAME\`,\`EVENT_OBJECT_TABLE\`,\`ACTION_TIMIN
   mysql_in_container --batch --skip-column-names -e "${summary_sql}"
 }
 
+# Keep this diagnostic deliberately narrower than the error-log record: never print request data,
+# exception messages, stack traces, IP addresses, or user-agent data into the deployment log.  It
+# is also best-effort: diagnostic availability must never decide whether a healthy release stays
+# active.
+print_network_capability_error_diagnostic() {
+  local diagnostic_sql="SELECT /*+ MAX_EXECUTION_TIME(2000) */ \`exception_name\`,
+    CASE WHEN \`exception_root_cause_message\`
+      REGEXP '^[A-Za-z_$][A-Za-z0-9_$]*([.][A-Za-z_$][A-Za-z0-9_$]*)+$'
+      AND \`exception_root_cause_message\` NOT REGEXP '[[:cntrl:]]'
+      THEN \`exception_root_cause_message\` ELSE '<redacted>' END AS \`root_cause_type\`,
+    \`exception_class_name\`,\`exception_method_name\`,\`exception_line_number\`,\`exception_time\`
+  FROM (
+    SELECT \`id\`,\`request_method\`,\`request_url\`,\`deleted\`,\`exception_name\`,
+      \`exception_root_cause_message\`,\`exception_class_name\`,\`exception_method_name\`,
+      \`exception_line_number\`,\`exception_time\`
+    FROM \`infra_api_error_log\` ORDER BY \`id\` DESC LIMIT 500
+  ) AS \`recent_errors\`
+  WHERE \`request_method\`='PUT'
+    AND \`request_url\`='/admin-api/skit/tenant/ad-readiness/network-capability'
+    AND \`deleted\`=b'0'
+  ORDER BY \`id\` DESC LIMIT 1;"
+  local diagnostic_output=""
+  if ! diagnostic_output="$(mysql_in_container --batch -e "${diagnostic_sql}" 2>/dev/null)"; then
+    echo "Latest network-capability API error unavailable (metadata query failed safely)."
+    return 0
+  fi
+  echo "Latest network-capability API error (safe type/location/time metadata only):"
+  if [ -n "${diagnostic_output}" ]; then
+    printf '%s\n' "${diagnostic_output}"
+  else
+    echo "<none>"
+  fi
+}
+
 quartz_table_names="'QRTZ_BLOB_TRIGGERS','QRTZ_CALENDARS','QRTZ_CRON_TRIGGERS','QRTZ_FIRED_TRIGGERS','QRTZ_JOB_DETAILS','QRTZ_LOCKS','QRTZ_PAUSED_TRIGGER_GRPS','QRTZ_SCHEDULER_STATE','QRTZ_SIMPLE_TRIGGERS','QRTZ_SIMPROP_TRIGGERS','QRTZ_TRIGGERS'"
 quartz_schema_state_sql="SELECT CONCAT((SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND ENGINE = 'InnoDB' AND TABLE_NAME IN (${quartz_table_names})), ':', (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (${quartz_table_names})), ':', (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_NAME IN (${quartz_table_names})));"
 quartz_schema_probe_sql="SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,BLOB_DATA FROM QRTZ_BLOB_TRIGGERS LIMIT 0; SELECT SCHED_NAME,CALENDAR_NAME,CALENDAR FROM QRTZ_CALENDARS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,CRON_EXPRESSION,TIME_ZONE_ID FROM QRTZ_CRON_TRIGGERS LIMIT 0; SELECT SCHED_NAME,ENTRY_ID,TRIGGER_NAME,TRIGGER_GROUP,INSTANCE_NAME,FIRED_TIME,SCHED_TIME,PRIORITY,STATE,JOB_NAME,JOB_GROUP,IS_NONCONCURRENT,REQUESTS_RECOVERY FROM QRTZ_FIRED_TRIGGERS LIMIT 0; SELECT SCHED_NAME,JOB_NAME,JOB_GROUP,DESCRIPTION,JOB_CLASS_NAME,IS_DURABLE,IS_NONCONCURRENT,IS_UPDATE_DATA,REQUESTS_RECOVERY,JOB_DATA FROM QRTZ_JOB_DETAILS LIMIT 0; SELECT SCHED_NAME,LOCK_NAME FROM QRTZ_LOCKS LIMIT 0; SELECT SCHED_NAME,TRIGGER_GROUP FROM QRTZ_PAUSED_TRIGGER_GRPS LIMIT 0; SELECT SCHED_NAME,INSTANCE_NAME,LAST_CHECKIN_TIME,CHECKIN_INTERVAL FROM QRTZ_SCHEDULER_STATE LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,REPEAT_COUNT,REPEAT_INTERVAL,TIMES_TRIGGERED FROM QRTZ_SIMPLE_TRIGGERS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,STR_PROP_1,STR_PROP_2,STR_PROP_3,INT_PROP_1,INT_PROP_2,LONG_PROP_1,LONG_PROP_2,DEC_PROP_1,DEC_PROP_2,BOOL_PROP_1,BOOL_PROP_2 FROM QRTZ_SIMPROP_TRIGGERS LIMIT 0; SELECT SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP,JOB_NAME,JOB_GROUP,DESCRIPTION,NEXT_FIRE_TIME,PREV_FIRE_TIME,PRIORITY,TRIGGER_STATE,TRIGGER_TYPE,START_TIME,END_TIME,CALENDAR_NAME,MISFIRE_INSTR,JOB_DATA FROM QRTZ_TRIGGERS LIMIT 0;"
@@ -689,6 +723,7 @@ for _ in $(seq 1 90); do
         echo "Skit schema summary failed; refusing activation because the production database cannot be inspected safely."
         break
       fi
+      print_network_capability_error_diagnostic
       rm -f "${health_body_file}" "${backend_log_file}"
       health_body_file=""
       backend_log_file=""
