@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Arrays;
@@ -25,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ROLLOUT_NOT_READY;
@@ -41,6 +43,8 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -72,6 +76,8 @@ class SkitTenantAdCapabilityServiceImplTest {
     void setUp() {
         TenantContextHolder.setTenantId(TENANT_ID);
         lenient().when(adAccountMapper.selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID))
+                .thenReturn("unlock-placement-42");
+        lenient().when(adAccountMapper.selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID))
                 .thenReturn("unlock-placement-42");
         service = new SkitTenantAdCapabilityServiceImpl(
                 capabilityMapper, adAccountMapper, networkCapabilityMapper, evidenceReader, releaseProfileMapper,
@@ -378,11 +384,15 @@ class SkitTenantAdCapabilityServiceImplTest {
 
         assertEquals(new LinkedHashSet<>(Arrays.asList(22, 46, 66)),
                 saved.getUnlockNetworkFirmIds());
-        verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
+        verify(adAccountMapper).selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
         verify(networkCapabilityMapper).selectAllForShare(TENANT_ID, ACCOUNT_ID);
         verify(capabilityMapper).updateConfigurationCas(TENANT_ID, capability.getId(), 3,
                 ACCOUNT_ID, "unlock-placement-42", true, true, true, "[22,46,66]",
                 "[101,102]", "2.4.0", 1);
+        InOrder lockOrder = inOrder(capabilityMapper, adAccountMapper);
+        lockOrder.verify(capabilityMapper).selectByTenantForUpdate(TENANT_ID);
+        lockOrder.verify(adAccountMapper)
+                .selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
     }
 
     @Test
@@ -527,6 +537,29 @@ class SkitTenantAdCapabilityServiceImplTest {
         verify(networkCapabilityMapper).disable(TENANT_ID, ACCOUNT_ID, 46);
         verify(capabilityMapper).bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 3);
         verify(capabilityMapper).bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 4);
+        verify(adAccountMapper, times(2))
+                .selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
+        InOrder lockOrder = inOrder(capabilityMapper, adAccountMapper, networkCapabilityMapper);
+        lockOrder.verify(capabilityMapper).selectByTenantForUpdate(TENANT_ID);
+        lockOrder.verify(adAccountMapper)
+                .selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
+        lockOrder.verify(networkCapabilityMapper).selectForUpdate(TENANT_ID, ACCOUNT_ID, 46);
+    }
+
+    @Test
+    void capabilityListingUsesReadOnlyAccountLookupWithoutAcquiringWriteLock() {
+        when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID)).thenReturn(
+                Arrays.asList(networkCapability(66, true), networkCapability(8, true)));
+
+        List<SkitTenantAdCapabilityService.NetworkCapabilityView> capabilities =
+                service.listNetworkCapabilities(ACCOUNT_ID);
+
+        assertEquals(Arrays.asList(8, 66), capabilities.stream()
+                .map(SkitTenantAdCapabilityService.NetworkCapabilityView::getNetworkFirmId)
+                .collect(Collectors.toList()));
+        verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
+        verify(adAccountMapper, never())
+                .selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
     }
 
     @Test

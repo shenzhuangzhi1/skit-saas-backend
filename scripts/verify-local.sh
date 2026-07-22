@@ -22,13 +22,13 @@ export JAVA_HOME="${java_home}"
 ./deploy/test-release-security.sh
 
 mvn -B -pl yudao-module-skit -am \
-  -Dtest='cn.iocoder.yudao.module.skit.service.app.SkitAppBuildMaterialServiceImplTest,cn.iocoder.yudao.module.skit.controller.admin.tenant.SkitTenantBusinessControllerTest,cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoServiceTest,cn.iocoder.yudao.module.skit.framework.schema.SkitTenantBuildMaterialSchemaContractTest' \
+  -Dtest='cn.iocoder.yudao.module.skit.service.app.SkitAppBuildMaterialServiceImplTest,cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityServiceImplTest,cn.iocoder.yudao.module.skit.controller.admin.tenant.SkitTenantBusinessControllerTest,cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoServiceTest,cn.iocoder.yudao.module.skit.framework.schema.SkitTenantBuildMaterialSchemaContractTest' \
   -Dsurefire.failIfNoSpecifiedTests=false test
 
 if [[ "${SKIP_INTEGRATION:-0}" != "1" ]]; then
   TESTCONTAINERS_RYUK_DISABLED=true mvn -B -pl yudao-module-skit -am \
     -Dtest=__NoSurefireTests__ \
-    -Dit.test='SkitAdBootstrapSchemaMySqlIT,SkitAdSchemaCrossTenantPreflightMySqlIT,SkitCommissionPolicySnapshotMySqlIT,SkitAdCredentialVersionMySqlIT' \
+    -Dit.test='SkitAdAccountReadOnlyMySqlIT,SkitAdBootstrapSchemaMySqlIT,SkitAdSchemaCrossTenantPreflightMySqlIT,SkitCommissionPolicySnapshotMySqlIT,SkitAdCredentialVersionMySqlIT' \
     -Dsurefire.failIfNoSpecifiedTests=false \
     -Dfailsafe.failIfNoSpecifiedTests=false \
     test-compile failsafe:integration-test failsafe:verify

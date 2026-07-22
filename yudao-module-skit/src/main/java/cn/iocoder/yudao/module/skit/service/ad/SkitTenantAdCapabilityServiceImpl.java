@@ -90,11 +90,14 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public CapabilityView configure(ConfigurationCommand command) {
+        validateConfigurationInput(command);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
-        String dedicatedPlacementId = resolveDedicatedPlacementId(tenantId, command);
-        validateConfiguration(command, dedicatedPlacementId);
+        // Keep every management mutation on the same lock order as credential rotation:
+        // tenant capability -> advertising account -> network capability.
         SkitTenantAdCapabilityDO locked = lockOrCreate(tenantId);
         requireEnvelope(locked, tenantId);
+        String dedicatedPlacementId = resolveDedicatedPlacementId(tenantId, command);
+        validateDedicatedPlacement(dedicatedPlacementId);
         requireExpectedVersion(locked, command.getExpectedReadinessVersion());
         if (ENFORCED.equals(locked.getRolloutState())) {
             throw exception(AD_ROLLOUT_STATE_INVALID);
@@ -193,7 +196,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     @Transactional(readOnly = true)
     public List<NetworkCapabilityView> listNetworkCapabilities(Long adAccountId) {
         Long tenantId = TenantContextHolder.getRequiredTenantId();
-        requireAccountTarget(tenantId, adAccountId);
+        requireReadableAccountTarget(tenantId, adAccountId);
         List<SkitAdNetworkCapabilityDO> rows = networkCapabilityMapper.selectAllForShare(
                 tenantId, adAccountId);
         if (rows == null || rows.isEmpty()) {
@@ -214,7 +217,10 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     public NetworkCapabilityView verifyNetworkCapability(NetworkCapabilityCommand command) {
         validateNetworkCapabilityCommand(command);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
-        requireAccountTarget(tenantId, command.getAdAccountId());
+        // Validate the tenant/account relationship without taking a row lock first. The write lock
+        // is acquired only after the tenant capability lock below.
+        requireReadableAccountTarget(tenantId, command.getAdAccountId());
+        // Match credential rotation's capability -> account ordering before locking the network row.
         SkitTenantAdCapabilityDO locked = capabilityMapper.selectByTenantForUpdate(tenantId);
         if (locked == null) {
             throw exception(AD_ROLLOUT_STATE_INVALID);
@@ -224,6 +230,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         if (!command.getAdAccountId().equals(locked.getAdAccountId())) {
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
         }
+        requireMutableAccountTarget(tenantId, command.getAdAccountId());
         SkitAdNetworkCapabilityDO existing = networkCapabilityMapper.selectForUpdate(
                 tenantId, command.getAdAccountId(), command.getNetworkFirmId());
         if (Boolean.TRUE.equals(command.getEnabled())) {
@@ -418,10 +425,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         return view;
     }
 
-    private void validateConfiguration(ConfigurationCommand command, String dedicatedPlacementId) {
+    private void validateConfigurationInput(ConfigurationCommand command) {
         if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0
-                || StrUtil.isBlank(dedicatedPlacementId)
-                || !PLACEMENT.matcher(dedicatedPlacementId).matches()
                 || command.getExpectedReadinessVersion() == null || command.getExpectedReadinessVersion() < 0
                 || !stableVersion(command.getMinNativeVersion())
                 || command.getDedicatedPlacementVerified() == null
@@ -433,11 +438,19 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         positiveLongSet(command.getShadowTestMemberIds(), 100, "SHADOW_MEMBERS");
     }
 
+    private void validateDedicatedPlacement(String dedicatedPlacementId) {
+        if (StrUtil.isBlank(dedicatedPlacementId)
+                || !PLACEMENT.matcher(dedicatedPlacementId).matches()) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "REQUIRED_FIELD_INVALID");
+        }
+    }
+
     private String resolveDedicatedPlacementId(Long tenantId, ConfigurationCommand command) {
         if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0) {
             return "";
         }
-        String placementId = adAccountMapper.selectEnabledTakuPlacementId(tenantId, command.getAdAccountId());
+        String placementId = adAccountMapper.selectEnabledTakuPlacementIdForUpdate(
+                tenantId, command.getAdAccountId());
         return StrUtil.isBlank(placementId) ? "" : placementId.trim();
     }
 
@@ -467,9 +480,17 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         }
     }
 
-    private void requireAccountTarget(Long tenantId, Long adAccountId) {
+    private void requireReadableAccountTarget(Long tenantId, Long adAccountId) {
         if (adAccountId == null || adAccountId <= 0
                 || StrUtil.isBlank(adAccountMapper.selectEnabledTakuPlacementId(tenantId, adAccountId))) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
+        }
+    }
+
+    private void requireMutableAccountTarget(Long tenantId, Long adAccountId) {
+        if (adAccountId == null || adAccountId <= 0
+                || StrUtil.isBlank(adAccountMapper.selectEnabledTakuPlacementIdForUpdate(
+                tenantId, adAccountId))) {
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
         }
     }
