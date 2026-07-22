@@ -167,9 +167,25 @@ class SkitAdAccountServiceImplTest {
         settings.setPangleAppSecret(null);
 
         assertServiceException(() -> accountService.saveSettings(settings), AD_ACCOUNT_CONFIG_INVALID,
-                "PANGLE 启用前必须完整配置账号、App ID、广告位和凭证");
+                "PANGLE 启用前必须配置 App ID 和内容接口 Server Key");
 
         verify(accountMapper, never()).updateById(pangle);
+    }
+
+    @Test
+    void enabledPangleIgnoresLegacyAccountAndPlacementFields() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        mockAccounts(pangle, account(PROVIDER_TAKU));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleUsername(null);
+        settings.setPanglePlacementId(null);
+        settings.setTakuEnabled(false);
+
+        accountService.saveSettings(settings);
+
+        assertEquals("", pangle.getAccountName());
+        assertEquals("", objectMapper.readTree(pangle.getConfigData()).get("placementId").asText());
+        assertEquals(CommonStatusEnum.ENABLE.getStatus(), pangle.getStatus());
     }
 
     @Test
@@ -179,6 +195,7 @@ class SkitAdAccountServiceImplTest {
         mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleEnabled(false);
+        settings.setTakuUsername(null);
         settings.setTakuAppSecret(null);
 
         accountService.saveSettings(settings);

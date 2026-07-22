@@ -167,12 +167,16 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         Integer targetStatus = Boolean.TRUE.equals(enabled)
                 ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus();
         if (Boolean.TRUE.equals(enabled)) {
-            boolean credentialReady = PROVIDER_TAKU.equals(provider)
-                    ? StrUtil.isNotBlank(effectiveAppKey) : StrUtil.isNotBlank(effectiveAppSecret);
-            if (!StrUtil.isAllNotBlank(normalizedUsername, normalizedAppId, normalizedPlacementId)
-                    || !credentialReady) {
+            if (PROVIDER_PANGLE.equals(provider)
+                    && (!StrUtil.isNotBlank(normalizedAppId) || !StrUtil.isNotBlank(effectiveAppSecret))) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
-                        provider + " 启用前必须完整配置账号、App ID、广告位和凭证");
+                        "PANGLE 启用前必须配置 App ID 和内容接口 Server Key");
+            }
+            if (PROVIDER_TAKU.equals(provider)
+                    && (!StrUtil.isAllNotBlank(normalizedAppId, normalizedPlacementId)
+                    || !StrUtil.isNotBlank(effectiveAppKey))) {
+                throw exception(AD_ACCOUNT_CONFIG_INVALID,
+                        "TAKU 启用前必须配置 App ID、激励视频广告位和 App Key");
             }
         }
 
