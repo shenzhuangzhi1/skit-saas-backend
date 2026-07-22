@@ -835,6 +835,23 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void rolloutOffRejectsPendingRewardBeforeEntitlementMutation() {
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[66]").setRolloutState("OFF"));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("REWARD_ROLLOUT_INACTIVE", result.getErrorCode());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(anyLong(), anyLong(), anyLong(),
+                anyLong(), any(), anyInt(), anyInt(), anyInt(), anyString(), any(), anyInt(),
+                anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
     void infrastructureDecryptionFailurePropagatesForRetryWithoutTerminalAck() {
         when(payloadCrypto.decrypt(any(), any())).thenThrow(new IllegalStateException("kms unavailable"));
 

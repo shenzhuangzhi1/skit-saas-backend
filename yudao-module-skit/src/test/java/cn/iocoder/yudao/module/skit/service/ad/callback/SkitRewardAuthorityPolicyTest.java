@@ -65,6 +65,22 @@ class SkitRewardAuthorityPolicyTest {
     }
 
     @Test
+    void onlyShadowOrEnforcedRolloutCanAuthorizeReward() {
+        for (String activeState : new String[]{"SHADOW_TEST_USERS", "ENFORCED"}) {
+            when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                    .thenReturn(configuration("[22,46,66]").setRolloutState(activeState));
+            assertTrue(authorize(session).isAuthorized());
+        }
+        for (String inactiveState : new String[]{"OFF", "INVALID"}) {
+            when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                    .thenReturn(configuration("[22,46,66]").setRolloutState(inactiveState));
+            SkitRewardAuthorityPolicy.Decision rejected = authorize(session);
+            assertFalse(rejected.isAuthorized());
+            assertEquals("REWARD_ROLLOUT_INACTIVE", rejected.getErrorCode());
+        }
+    }
+
+    @Test
     void unverifiedCrossTenantCrossAccountOrUnselectedCapabilityIsRejected() {
         SkitAdNetworkCapabilityDO unverified = capability().setVerifiedAt(null);
         SkitAdNetworkCapabilityDO wrongTenant = capability();

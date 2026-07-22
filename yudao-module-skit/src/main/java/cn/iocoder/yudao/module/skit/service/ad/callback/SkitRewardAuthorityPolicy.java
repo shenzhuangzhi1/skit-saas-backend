@@ -25,6 +25,8 @@ public class SkitRewardAuthorityPolicy {
 
     private static final String SIGNED_REWARD = "SIGNED_REWARD";
     private static final String EPISODE_UNLOCK = "EPISODE_UNLOCK";
+    private static final String SHADOW_TEST_USERS = "SHADOW_TEST_USERS";
+    private static final String ENFORCED = "ENFORCED";
 
     private final SkitTenantAdCapabilityMapper tenantCapabilityMapper;
     private final SkitAdNetworkCapabilityMapper networkCapabilityMapper;
@@ -71,6 +73,10 @@ public class SkitRewardAuthorityPolicy {
                 || !Objects.equals(selection.getDedicatedUnlockPlacementId(),
                 context.session.getPlacementId())) {
             return Decision.rejected("REWARD_SELECTION_SCOPE_MISMATCH");
+        }
+        if (!SHADOW_TEST_USERS.equals(selection.getRolloutState())
+                && !ENFORCED.equals(selection.getRolloutState())) {
+            return Decision.rejected("REWARD_ROLLOUT_INACTIVE");
         }
         Set<Integer> selected;
         try {

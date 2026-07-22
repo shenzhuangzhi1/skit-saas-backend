@@ -302,6 +302,20 @@ class SkitCallbackIngressServiceImplTest {
     }
 
     @Test
+    void rolloutOffRejectsSignedRewardBeforeInboxOrSessionReceiptMutation() {
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[66]").setRolloutState("OFF"));
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY, signedRewardQuery(customData, REWARD_SECRET), "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
     void topLevelSpoofCannotAuthorizeADifferentSignedIlrdNetwork() {
         int signedNetwork = 46;
         when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))

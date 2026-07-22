@@ -754,6 +754,44 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
+    void rolloutOffRejectsSignedRewardBeforeInboxReceipt() {
+        SessionFixture fixture = insertSessionFixture(953451L, 953452L, 953453L, 953454L, 953455L);
+        long dramaId = 953456L;
+        int episodeNo = 15;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        insertSignedRewardCapability(fixture);
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command(dramaId, episodeNo)));
+        String sdkRequestId = "request-rollout-off";
+        String showId = "show-rollout-off";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "rollout-off-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "rollout-off-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        jdbc().update("UPDATE skit_tenant_ad_capability SET rollout_state='OFF' "
+                + "WHERE tenant_id=?", fixture.tenantId);
+
+        SkitCallbackIngressService.IngressResponse result = callbackIngressService.receiveReward(
+                callbackKey(fixture), signedRewardQuery(created, showId), "203.0.113.34");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        assertEquals(0, callbackInboxCount(fixture.tenantId));
+        assertEquals(1, callbackEdgeAttemptCount(fixture.tenantId));
+        Map<String, Object> session = jdbc().queryForMap(
+                "SELECT reward_callback_inbox_id,reward_callback_received_at,entitlement_status "
+                        + "FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, created.getSessionId());
+        assertNull(session.get("reward_callback_inbox_id"));
+        assertNull(session.get("reward_callback_received_at"));
+        assertEquals("NONE", session.get("entitlement_status"));
+    }
+
+    @Test
     void unrewardedCloseWinningRewardIngressRaceRejectsLateSignedReceipt() throws Exception {
         SessionFixture fixture = insertSessionFixture(953501L, 953502L, 953503L, 953504L, 953505L);
         long dramaId = 953506L;
@@ -1173,11 +1211,15 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         jdbc().update("INSERT INTO skit_tenant_ad_capability "
                         + "(tenant_id,ad_account_id,rollout_state,dedicated_unlock_placement_id,"
                         + "unlock_network_firm_ids_json,shadow_test_member_ids_json,min_native_version,"
-                        + "min_protocol_version,readiness_version) VALUES (?,?,'OFF',?,'[66]','[]','',1,0) "
+                        + "min_protocol_version,readiness_version) VALUES "
+                        + "(?,?,'SHADOW_TEST_USERS',?,'[66]',?,'',1,0) "
                         + "ON DUPLICATE KEY UPDATE ad_account_id=VALUES(ad_account_id),"
+                        + "rollout_state=VALUES(rollout_state),"
                         + "dedicated_unlock_placement_id=VALUES(dedicated_unlock_placement_id),"
-                        + "unlock_network_firm_ids_json=VALUES(unlock_network_firm_ids_json)",
-                fixture.tenantId, fixture.accountId, "placement-" + fixture.tenantId);
+                        + "unlock_network_firm_ids_json=VALUES(unlock_network_firm_ids_json),"
+                        + "shadow_test_member_ids_json=VALUES(shadow_test_member_ids_json)",
+                fixture.tenantId, fixture.accountId, "placement-" + fixture.tenantId,
+                "[" + fixture.memberId + "]");
         jdbc().update("INSERT INTO skit_ad_network_capability "
                         + "(tenant_id,ad_account_id,network_firm_id,reward_authority,supports_user_id,"
                         + "supports_custom_data,supports_stable_transaction,supports_impression_revenue,"
