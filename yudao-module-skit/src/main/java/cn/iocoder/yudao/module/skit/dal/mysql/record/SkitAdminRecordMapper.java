@@ -17,19 +17,6 @@ import java.util.List;
 @Mapper
 public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
 
-    @Insert({"<script>",
-            "INSERT INTO `skit_admin_record` (`tenant_id`,`page_key`,`row_key`,`record_data`,",
-            "`status`,`sort`,`creator`,`updater`) VALUES",
-            "<foreach collection='records' item='record' separator=','>",
-            "(#{tenantId},#{record.pageKey},#{record.rowKey},#{record.recordData},",
-            "#{record.status},#{record.sort},'page-seed','page-seed')",
-            "</foreach>",
-            "ON DUPLICATE KEY UPDATE `id`=`id`",
-            "</script>"})
-    @InterceptorIgnore(tenantLine = "true") // tenant_id is required and bound explicitly for every row
-    int insertSeedBatchIfAbsent(@Param("tenantId") Long tenantId,
-                                @Param("records") List<SkitAdminRecordDO> records);
-
     @Insert("INSERT INTO `skit_admin_record` (`tenant_id`,`page_key`,`row_key`,`record_data`,"
             + "`status`,`sort`,`deleted`,`creator`,`updater`) VALUES "
             + "(#{tenantId},#{record.pageKey},#{record.rowKey},#{record.recordData},"
@@ -80,13 +67,6 @@ public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
 
     default Long selectCountByPageKey(String pageKey) {
         return selectCount(SkitAdminRecordDO::getPageKey, pageKey);
-    }
-
-    default List<SkitAdminRecordDO> selectListByPageKey(String pageKey) {
-        return selectList(new LambdaQueryWrapperX<SkitAdminRecordDO>()
-                .eq(SkitAdminRecordDO::getPageKey, pageKey)
-                .orderByAsc(SkitAdminRecordDO::getSort)
-                .orderByDesc(SkitAdminRecordDO::getId));
     }
 
 }

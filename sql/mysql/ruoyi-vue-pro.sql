@@ -5999,10 +5999,16 @@ CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_
   'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_management_account` (`tenant_id`,`ad_account_id`,`create_time`,`id`)')$$
 CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_management_reward',
   'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_management_reward` (`tenant_id`,`reward_verification_status`,`create_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_consumption_time',
+  'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_consumption_time` (`tenant_id`,`create_time`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_session','idx_skit_ad_session_global_consumption_time',
+  'ALTER TABLE `skit_ad_session` ADD INDEX `idx_skit_ad_session_global_consumption_time` (`create_time`,`id`,`tenant_id`)')$$
 CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_callback_inbox_management_account',
   'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_callback_inbox_management_account` (`tenant_id`,`ad_account_id`,`received_at`,`id`)')$$
 CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_callback_inbox_management_status',
   'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_callback_inbox_management_status` (`tenant_id`,`processing_status`,`received_at`,`id`)')$$
+CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_callback_inbox_consumption_session',
+  'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_callback_inbox_consumption_session` (`tenant_id`,`ad_session_id`,`received_at`,`id`)')$$
 CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_revenue_management_time',
   'ALTER TABLE `skit_ad_revenue_event` ADD INDEX `idx_skit_revenue_management_time` (`tenant_id`,`occurred_time`,`id`)')$$
 CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_revenue_event','idx_skit_revenue_management_member',

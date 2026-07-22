@@ -117,13 +117,6 @@ public class SkitAdminRecordController {
         return success(skitAdminRecordService.getRecordPage(pageReqVO));
     }
 
-    @PostMapping("/seed")
-    @Operation(summary = "初始化页面样例数据")
-    @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")
-    public CommonResult<Integer> seedPage(@RequestParam("pageKey") String pageKey) {
-        return success(skitAdminRecordService.seedPage(pageKey));
-    }
-
     @GetMapping("/dashboard-summary")
     @Operation(summary = "获得短剧看板汇总")
     @PreAuthorize("@ss.hasAnyRoles('super_admin', 'tenant_admin')")

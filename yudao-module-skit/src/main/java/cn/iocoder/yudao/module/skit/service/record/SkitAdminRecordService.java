@@ -23,8 +23,6 @@ public interface SkitAdminRecordService {
 
     PageResult<SkitAdminRecordRespVO> getRecordPage(SkitAdminRecordPageReqVO pageReqVO);
 
-    Integer seedPage(String pageKey);
-
     SkitDashboardSummaryRespVO getDashboardSummary();
 
 }

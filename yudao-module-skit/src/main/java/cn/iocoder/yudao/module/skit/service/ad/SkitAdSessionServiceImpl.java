@@ -70,6 +70,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
     private static final String BUSINESS_TYPE = "EPISODE_UNLOCK";
     private static final String IMPRESSION_SOURCE = "TAKU_IMPRESSION";
     private static final String UNREWARDED_CLOSE_FAILURE = "CLIENT_CLOSED_UNREWARDED";
+    private static final String UNREWARDED_SHOW_FAILURE = "CLIENT_SHOW_FAILED";
     private static final int CREATE_TRANSACTION_ATTEMPTS = 3;
     private static final Duration PURE_CREATED_RECOVERY_LEASE = Duration.ofSeconds(5);
 
@@ -758,16 +759,20 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
     private void applyClientEvent(SkitAdSessionDO session, ClientEventCommand event,
                                   Long tenantId, Long memberId, String sessionId) {
+        if (event != null && validPrintableAscii(event.getClientEventId(), 128)) {
+            SkitAdClientEventDO existing = clientEventMapper.selectByClientEventId(
+                    tenantId, session.getId(), event.getClientEventId());
+            if (existing != null) {
+                byte[] replayHash = clientEventHash(event);
+                if (existing.getPayloadHash() != null
+                        && MessageDigest.isEqual(replayHash, existing.getPayloadHash())) {
+                    return;
+                }
+                throw exception(AD_SESSION_EVENT_CONFLICT);
+            }
+        }
         validateClientEvent(session, event, sessionId);
         byte[] payloadHash = clientEventHash(event);
-        SkitAdClientEventDO byId = clientEventMapper.selectByClientEventId(
-                tenantId, session.getId(), event.getClientEventId());
-        if (byId != null) {
-            if (byId.getPayloadHash() != null && MessageDigest.isEqual(payloadHash, byId.getPayloadHash())) {
-                return;
-            }
-            throw exception(AD_SESSION_EVENT_CONFLICT);
-        }
         SkitAdClientEventDO bySequence = clientEventMapper.selectBySequence(
                 tenantId, session.getId(), event.getCallbackSequence());
         if (bySequence != null) {
@@ -786,7 +791,9 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         boolean terminalPreShowFailure = isTerminalPreShowFailure(session, event, current, clientEvent);
         boolean terminalUnrewardedClose = isTerminalUnrewardedClose(
                 session, event, current, clientEvent);
-        SkitAdRevenueEventDO pendingImpression = terminalUnrewardedClose
+        boolean terminalUnrewardedFailure = isTerminalUnrewardedFailure(
+                session, event, current, clientEvent);
+        SkitAdRevenueEventDO pendingImpression = terminalUnrewardedClose || terminalUnrewardedFailure
                 ? lockPendingImpressionForUnrewardedClose(session) : null;
         LocalDateTime occurredAt = now();
         SkitAdClientEventDO evidence = new SkitAdClientEventDO()
@@ -815,6 +822,13 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                     event.getSdkRequestId(), event.getProviderShowId(), event.getNetworkFirmId(),
                     event.getAdsourceId(), session.getDramaId(), session.getEpisodeFrom(),
                     session.getEpisodeTo(), session.getActiveScopeHash(), occurredAt);
+        } else if (terminalUnrewardedFailure) {
+            updated = sessionMapper.markUnrewardedClientFailureAndReleaseScopeCas(
+                    tenantId, session.getId(), memberId, session.getVersion(),
+                    session.getLastCallbackSequence(), event.getCallbackSequence(),
+                    event.getSdkRequestId(), event.getProviderShowId(), event.getNetworkFirmId(),
+                    event.getAdsourceId(), session.getDramaId(), session.getEpisodeFrom(),
+                    session.getEpisodeTo(), session.getActiveScopeHash(), occurredAt);
         } else {
             updated = sessionMapper.updateClientLifecycleCas(tenantId, session.getId(), memberId,
                     session.getVersion(), session.getClientLifecycleStatus(), session.getLastCallbackSequence(),
@@ -833,12 +847,13 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                     .setActiveScopeHash(null).setActiveScopeReleasedAt(occurredAt)
                     .setActiveScopeReleaseReason("REWARD_REJECTED")
                     .setFailureReason("CLIENT_PRE_SHOW_FAILED");
-        } else if (terminalUnrewardedClose) {
+        } else if (terminalUnrewardedClose || terminalUnrewardedFailure) {
             session.setRewardVerificationStatus(SkitAdSessionStateMachine.RewardVerification.REJECTED.name())
                     .setRevenueStatus(pendingImpression == null ? session.getRevenueStatus() : "SUSPENSE")
                     .setActiveScopeHash(null).setActiveScopeReleasedAt(occurredAt)
                     .setActiveScopeReleaseReason("REWARD_REJECTED")
-                    .setFailureReason(UNREWARDED_CLOSE_FAILURE);
+                    .setFailureReason(terminalUnrewardedClose
+                            ? UNREWARDED_CLOSE_FAILURE : UNREWARDED_SHOW_FAILURE);
             convergePendingImpressionToNonRewardedSuspense(session, pendingImpression, occurredAt);
         }
         if (session.getSdkRequestId() == null) {
@@ -907,6 +922,28 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             SkitAdSessionStateMachine.ClientEvent clientEvent) {
         if (current != SkitAdSessionStateMachine.ClientLifecycle.SHOWN
                 || clientEvent != SkitAdSessionStateMachine.ClientEvent.CLOSED
+                || Boolean.TRUE.equals(event.getClientRewardObserved())) {
+            return false;
+        }
+        if (hasCompleteRewardCallbackReceipt(session)) {
+            return false;
+        }
+        if ("VERIFY_TIMEOUT".equals(session.getRewardVerificationStatus())
+                || "REJECTED".equals(session.getRewardVerificationStatus())
+                || "SIGNED_VERIFIED".equals(session.getRewardVerificationStatus())
+                || "GRANTED".equals(session.getEntitlementStatus())) {
+            return false;
+        }
+        requireTerminalizableUnrewardedClose(session);
+        return true;
+    }
+
+    private boolean isTerminalUnrewardedFailure(
+            SkitAdSessionDO session, ClientEventCommand event,
+            SkitAdSessionStateMachine.ClientLifecycle current,
+            SkitAdSessionStateMachine.ClientEvent clientEvent) {
+        if (current != SkitAdSessionStateMachine.ClientLifecycle.SHOWN
+                || clientEvent != SkitAdSessionStateMachine.ClientEvent.FAILED
                 || Boolean.TRUE.equals(event.getClientRewardObserved())) {
             return false;
         }
@@ -1026,12 +1063,17 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 && !session.getAdsourceId().equals(event.getAdsourceId()))) {
             throw exception(AD_SESSION_INVALID);
         }
+        boolean failedAfterShow = "FAILED".equals(event.getEventType())
+                && ("SHOWN".equals(session.getClientLifecycleStatus())
+                || "CLIENT_REWARDED".equals(session.getClientLifecycleStatus()));
         boolean showIdRequired = "SHOWN".equals(event.getEventType())
                 || "REWARD_OBSERVED".equals(event.getEventType())
-                || "CLOSED".equals(event.getEventType());
+                || "CLOSED".equals(event.getEventType()) || failedAfterShow;
         if ((showIdRequired && !validPrintableAscii(event.getProviderShowId(), 128))
                 || (!showIdRequired && event.getProviderShowId() != null)
                 || (!showIdRequired && (event.getNetworkFirmId() != null || event.getAdsourceId() != null))
+                || (failedAfterShow && (event.getNetworkFirmId() == null
+                || !validPrintableAscii(event.getAdsourceId(), 128)))
                 || !rewardObservationMatches(session.getClientLifecycleStatus(), event)
                 || ("CLOSED".equals(event.getEventType())
                 != Boolean.TRUE.equals(event.getClosed()))) {
@@ -1052,6 +1094,14 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 return !observed;
             }
             return "CLOSED".equals(currentStatus) || !observed;
+        }
+        if ("FAILED".equals(event.getEventType())) {
+            if ("CLIENT_REWARDED".equals(currentStatus)) {
+                return observed;
+            }
+            if ("SHOWN".equals(currentStatus)) {
+                return !observed;
+            }
         }
         return !observed;
     }

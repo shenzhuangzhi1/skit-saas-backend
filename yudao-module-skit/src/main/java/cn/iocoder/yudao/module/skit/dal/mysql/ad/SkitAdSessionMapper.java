@@ -197,6 +197,58 @@ public interface SkitAdSessionMapper {
             @Param("expectedActiveScopeHash") byte[] expectedActiveScopeHash,
             @Param("rejectedAt") LocalDateTime rejectedAt);
 
+    @Update("UPDATE `skit_ad_session` SET `client_lifecycle_status`='FAILED',"
+            + "`reward_verification_status`='REJECTED',"
+            + "`revenue_status`=CASE WHEN `revenue_status`='IMPRESSION_PENDING_REWARD' "
+            + "THEN 'SUSPENSE' ELSE `revenue_status` END,"
+            + "`last_callback_sequence`=#{callbackSequence},`last_client_event`='FAILED',"
+            + "`sdk_request_id`=COALESCE(`sdk_request_id`,#{sdkRequestId}),"
+            + "`provider_show_id`=COALESCE(`provider_show_id`,#{providerShowId}),"
+            + "`network_firm_id`=COALESCE(`network_firm_id`,#{networkFirmId}),"
+            + "`adsource_id`=COALESCE(`adsource_id`,#{adsourceId}),"
+            + "`active_scope_hash`=NULL,`active_scope_released_at`=#{rejectedAt},"
+            + "`active_scope_release_reason`='REWARD_REJECTED',"
+            + "`failure_reason`='CLIENT_SHOW_FAILED',`version`=`version`+1,"
+            + "`updater`='ad-client-event',`update_time`=#{rejectedAt} "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `member_id`=#{memberId} "
+            + "AND `version`=#{expectedVersion} AND `client_lifecycle_status`='SHOWN' "
+            + "AND `last_callback_sequence`=#{expectedLastCallbackSequence} "
+            + "AND #{callbackSequence} > `last_callback_sequence` "
+            + "AND `reward_verification_status`='PENDING' AND `entitlement_status`='NONE' "
+            + "AND `revenue_status` IN ('NONE','IMPRESSION_PENDING_REWARD') "
+            + "AND `reward_callback_inbox_id` IS NULL AND `reward_callback_received_at` IS NULL "
+            + "AND `provider_transaction_id` IS NULL AND `failure_reason` IS NULL "
+            + "AND `drama_id`=#{dramaId} AND `episode_from`=#{episodeFrom} "
+            + "AND `episode_to`=#{episodeTo} AND `active_scope_hash`=#{expectedActiveScopeHash} "
+            + "AND `active_scope_released_at` IS NULL AND `active_scope_release_reason` IS NULL "
+            + "AND (`sdk_request_id` IS NULL OR `sdk_request_id`=#{sdkRequestId}) "
+            + "AND (`provider_show_id` IS NULL OR `provider_show_id`=#{providerShowId}) "
+            + "AND (`network_firm_id` IS NULL OR `network_firm_id`=#{networkFirmId}) "
+            + "AND (`adsource_id` IS NULL OR `adsource_id`=#{adsourceId}) "
+            + "AND EXISTS (SELECT 1 FROM `skit_ad_client_event` `e` "
+            + "WHERE `e`.`tenant_id`=#{tenantId} AND `e`.`ad_session_id`=#{id} "
+            + "AND `e`.`callback_sequence`=#{callbackSequence} "
+            + "AND `e`.`event_type`='FAILED' AND `e`.`client_reward_observed`=b'0' "
+            + "AND `e`.`closed`=b'0' AND `e`.`provider_show_id`=#{providerShowId} "
+            + "AND `e`.`network_firm_id`=#{networkFirmId} AND `e`.`adsource_id`=#{adsourceId} "
+            + "AND `e`.`deleted`=b'0') AND `deleted`=b'0'")
+    int markUnrewardedClientFailureAndReleaseScopeCas(
+            @Param("tenantId") Long tenantId,
+            @Param("id") Long id,
+            @Param("memberId") Long memberId,
+            @Param("expectedVersion") Integer expectedVersion,
+            @Param("expectedLastCallbackSequence") Integer expectedLastCallbackSequence,
+            @Param("callbackSequence") Integer callbackSequence,
+            @Param("sdkRequestId") String sdkRequestId,
+            @Param("providerShowId") String providerShowId,
+            @Param("networkFirmId") Integer networkFirmId,
+            @Param("adsourceId") String adsourceId,
+            @Param("dramaId") Long dramaId,
+            @Param("episodeFrom") Integer episodeFrom,
+            @Param("episodeTo") Integer episodeTo,
+            @Param("expectedActiveScopeHash") byte[] expectedActiveScopeHash,
+            @Param("rejectedAt") LocalDateTime rejectedAt);
+
     @Update("UPDATE `skit_ad_session` SET `reward_verification_status`='REJECTED',"
             + "`revenue_status`=CASE WHEN `revenue_status`='IMPRESSION_PENDING_REWARD' "
             + "THEN 'SUSPENSE' ELSE `revenue_status` END,"

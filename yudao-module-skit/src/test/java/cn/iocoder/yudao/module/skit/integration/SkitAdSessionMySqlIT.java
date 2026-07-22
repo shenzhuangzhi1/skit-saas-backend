@@ -741,6 +741,132 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
+    void postShowClientFailureAtomicallyRejectsScopeAndAllowsImmediateEpisodeRetry() {
+        SessionFixture fixture = insertSessionFixture(959501L, 959502L, 959503L, 959504L, 959505L);
+        long dramaId = 959506L;
+        int episodeNo = 16;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult first = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        String sdkRequestId = "request-post-show-failure";
+        String showId = "show-post-show-failure";
+        String adsourceId = "source-post-show-failure";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(first,
+                "post-show-failure-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(first,
+                "post-show-failure-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        shown.setNetworkFirmId(66);
+        shown.setAdsourceId(adsourceId);
+        SkitAdSessionService.ClientEventCommand failed = clientEvent(first,
+                "post-show-failure-failed", 2, "FAILED", "ERROR", sdkRequestId);
+        failed.setProviderShowId(showId);
+        failed.setNetworkFirmId(66);
+        failed.setAdsourceId(adsourceId);
+
+        SkitAdSessionService.SessionView terminal = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, first.getSessionId(),
+                        Arrays.asList(loading, shown, failed),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult second = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("FAILED", terminal.getClientLifecycleStatus());
+        assertEquals("REJECTED", terminal.getRewardVerificationStatus());
+        assertEquals("NONE", terminal.getEntitlementStatus());
+        assertEquals("CREATED", second.getOutcome());
+        assertNotEquals(first.getSessionId(), second.getSessionId());
+        assertEquals(2, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        Map<String, Object> rejected = jdbc().queryForMap(
+                "SELECT reward_verification_status,entitlement_status,active_scope_hash,"
+                        + "active_scope_released_at,active_scope_release_reason,failure_reason,"
+                        + "network_firm_id,adsource_id FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, first.getSessionId());
+        assertEquals("REJECTED", rejected.get("reward_verification_status"));
+        assertEquals("NONE", rejected.get("entitlement_status"));
+        assertNull(rejected.get("active_scope_hash"));
+        assertNotNull(rejected.get("active_scope_released_at"));
+        assertEquals("REWARD_REJECTED", rejected.get("active_scope_release_reason"));
+        assertEquals("CLIENT_SHOW_FAILED", rejected.get("failure_reason"));
+        assertEquals(66, ((Number) rejected.get("network_firm_id")).intValue());
+        assertEquals(adsourceId, rejected.get("adsource_id"));
+        assertEquals(1, jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_client_event "
+                        + "WHERE tenant_id=? AND ad_session_id=(SELECT id FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?) AND event_type='FAILED' "
+                        + "AND client_reward_observed=b'0' AND closed=b'0' "
+                        + "AND provider_show_id=? AND network_firm_id=66 AND adsource_id=?",
+                Integer.class, fixture.tenantId, fixture.tenantId, first.getSessionId(),
+                showId, adsourceId));
+    }
+
+    @Test
+    void rewardedPostShowFailureKeepsScopePendingForSignedCallback() {
+        SessionFixture fixture = insertSessionFixture(959601L, 959602L, 959603L, 959604L, 959605L);
+        long dramaId = 959606L;
+        int episodeNo = 17;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        SkitAdSessionService.CreateCommand command = command(dramaId, episodeNo);
+
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+        String sdkRequestId = "request-rewarded-failure";
+        String showId = "show-rewarded-failure";
+        String adsourceId = "source-rewarded-failure";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "rewarded-failure-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "rewarded-failure-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        shown.setNetworkFirmId(66);
+        shown.setAdsourceId(adsourceId);
+        SkitAdSessionService.ClientEventCommand reward = clientEvent(created,
+                "rewarded-failure-observed", 2, "REWARD_OBSERVED", "SHOWING", sdkRequestId);
+        reward.setProviderShowId(showId);
+        reward.setNetworkFirmId(66);
+        reward.setAdsourceId(adsourceId);
+        reward.setClientRewardObserved(true);
+        SkitAdSessionService.ClientEventCommand failed = clientEvent(created,
+                "rewarded-failure-failed", 3, "FAILED", "ERROR", sdkRequestId);
+        failed.setProviderShowId(showId);
+        failed.setNetworkFirmId(66);
+        failed.setAdsourceId(adsourceId);
+        failed.setClientRewardObserved(true);
+
+        SkitAdSessionService.SessionView pending = inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown, reward, failed),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+        SkitAdSessionService.CreateResult retry = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command));
+
+        assertEquals("FAILED", pending.getClientLifecycleStatus());
+        assertEquals("PENDING", pending.getRewardVerificationStatus());
+        assertEquals("VERIFYING", retry.getOutcome());
+        assertEquals(created.getSessionId(), retry.getSessionId());
+        assertEquals(1, sessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        assertEquals(1, activeSessionCount(fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+        Map<String, Object> session = jdbc().queryForMap(
+                "SELECT active_scope_hash,active_scope_released_at,active_scope_release_reason,"
+                        + "failure_reason,reward_verification_status FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?",
+                fixture.tenantId, created.getSessionId());
+        assertNotNull(session.get("active_scope_hash"));
+        assertNull(session.get("active_scope_released_at"));
+        assertNull(session.get("active_scope_release_reason"));
+        assertNull(session.get("failure_reason"));
+        assertEquals("PENDING", session.get("reward_verification_status"));
+        assertEquals(1, jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_client_event "
+                        + "WHERE tenant_id=? AND ad_session_id=(SELECT id FROM skit_ad_session "
+                        + "WHERE tenant_id=? AND session_id=?) AND event_type='FAILED' "
+                        + "AND client_reward_observed=b'1' AND closed=b'0'",
+                Integer.class, fixture.tenantId, fixture.tenantId, created.getSessionId()));
+    }
+
+    @Test
     void rewardObservedCloseNeverUsesUnrewardedReleasePath() {
         SessionFixture fixture = insertSessionFixture(953401L, 953402L, 953403L, 953404L, 953405L);
         long dramaId = 953406L;

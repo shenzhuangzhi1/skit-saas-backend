@@ -142,6 +142,13 @@ public final class SkitAdSchemaSignature {
         TASK_11_ADDITIVE_INDEXES = immutableIndexMap(task11Indexes);
 
         Map<String, Map<String, List<String>>> releasedIndexes = copyIndexMap(task11Indexes);
+        addIndex(releasedIndexes, "skit_ad_session", "idx_skit_ad_session_consumption_time", false,
+                "tenant_id,create_time,id");
+        addIndex(releasedIndexes, "skit_ad_session", "idx_skit_ad_session_global_consumption_time", false,
+                "create_time,id,tenant_id");
+        addIndex(releasedIndexes, "skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_consumption_session", false,
+                "tenant_id,ad_session_id,received_at,id");
         addIndex(releasedIndexes, "skit_ad_report_pull", "idx_skit_report_pull_request", false,
                 "tenant_id,ad_account_id,report_date,request_hash");
         addIndex(releasedIndexes, "skit_ad_report_pull", "idx_skit_report_pull_credential", false,
@@ -323,7 +330,7 @@ public final class SkitAdSchemaSignature {
     /**
      * Projects a current table back onto the released Task 2/5/7 index envelope.
      *
-     * <p>Task 10 and Task 11 added tenant-leading query indexes without changing any released table
+     * <p>Later additive migrations added tenant-leading query indexes without changing any released table
      * contract. Only those exact, table-qualified index names are excluded here. Their definitions
      * remain mandatory and are validated independently by their owning migration validators. Unknown
      * indexes, and an allowlisted name attached to any other table, remain fingerprint-visible.</p>

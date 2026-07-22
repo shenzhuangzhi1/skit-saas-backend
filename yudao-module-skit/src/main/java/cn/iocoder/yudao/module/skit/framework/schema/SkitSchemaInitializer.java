@@ -1047,6 +1047,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     + "WHERE `ur`.`user_id`=`u`.`id` AND `ur`.`role_id`=`r`.`id` "
                     + "AND `ur`.`tenant_id`=`u`.`tenant_id` AND `ur`.`deleted`=b'0')";
     private static final int AD_ACCOUNT_TENANT_BACKFILL_MIGRATION_VERSION = 2026071601;
+    private static final int AD_CONSUMPTION_QUERY_INDEX_MIGRATION_VERSION = 2026072301;
     private static final String BACKFILL_TENANT_AD_ACCOUNTS_SQL =
             "INSERT INTO `skit_ad_account` (`tenant_id`,`provider`,`account_name`,`account_id`,`app_id`,"
                     + "`app_key`,`secret`,`config_data`,`status`,`creator`,`create_time`,`updater`,`update_time`,"
@@ -1515,6 +1516,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         result.add(migrationFromSteps(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_MIGRATION_VERSION,
                 "separate content entitlement lease activation time",
                 contentEntitlementLeaseActivationSteps()));
+        result.add(migrationFromSteps(AD_CONSUMPTION_QUERY_INDEX_MIGRATION_VERSION,
+                "add tenant-safe ad consumption query indexes", adConsumptionQueryIndexSteps()));
         return sortedMigrations(result);
     }
 
@@ -3018,6 +3021,21 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return Collections.singletonList(executeSqlStep(CREATE_TENANT_APP_BUILD_MATERIAL_TABLE_SQL));
     }
 
+    private List<SchemaStep> adConsumptionQueryIndexSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        steps.add(addIndexStep("skit_ad_session", "idx_skit_ad_session_consumption_time",
+                "`tenant_id`,`create_time`,`id`", false));
+        steps.add(addIndexStep("skit_ad_session", "idx_skit_ad_session_global_consumption_time",
+                "`create_time`,`id`,`tenant_id`", false));
+        steps.add(addIndexStep("skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_consumption_session",
+                "`tenant_id`,`ad_session_id`,`received_at`,`id`", false));
+        steps.add(schemaStep("validate-ad-consumption-query-indexes",
+                () -> validateAdConsumptionQueryIndexes(true),
+                "ad-consumption-query-indexes-v1"));
+        return steps;
+    }
+
     private List<SchemaStep> contentEntitlementLeaseActivationSteps() {
         return Arrays.asList(
                 addColumnStep("skit_content_entitlement", "lease_activated_at",
@@ -3993,6 +4011,16 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateTask5Check(TENANT_RUNTIME_UPDATE_TRUST_ROOT_CHECK_SPEC, requireAll);
         validateTask5Index("skit_app_release_profile", "uk_skit_app_release_runtime_key",
                 "active_runtime_update_key_fingerprint", true, requireAll);
+    }
+
+    void validateAdConsumptionQueryIndexes(boolean requireAll) {
+        validateTask5Index("skit_ad_session", "idx_skit_ad_session_consumption_time",
+                "tenant_id,create_time,id", false, requireAll);
+        validateTask5Index("skit_ad_session", "idx_skit_ad_session_global_consumption_time",
+                "create_time,id,tenant_id", false, requireAll);
+        validateTask5Index("skit_ad_callback_inbox",
+                "idx_skit_callback_inbox_consumption_session",
+                "tenant_id,ad_session_id,received_at,id", false, requireAll);
     }
 
     private void validateAdditiveColumnSpecs(String label, List<Task2ColumnSpec> specs,

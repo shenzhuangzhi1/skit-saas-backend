@@ -247,6 +247,40 @@ class SkitTask5PersistenceContractTest {
                 "e.callback_sequence=#{callbacksequence}", "e.event_type='closed'",
                 "e.client_reward_observed=b'0'", "e.closed=b'1'", "e.deleted=b'0'");
 
+        Method postShowFailure = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(
+                        "markUnrewardedClientFailureAndReleaseScopeCas"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String postShowFailureSql = updateSql(postShowFailure);
+        assertContainsAll(postShowFailureSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='shown'",
+                "last_callback_sequence=#{expectedlastcallbacksequence}",
+                "#{callbacksequence} > last_callback_sequence",
+                "client_lifecycle_status='failed'", "last_client_event='failed'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status in ('none','impression_pending_reward')",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "provider_transaction_id is null", "failure_reason is null",
+                "drama_id=#{dramaid}", "episode_from=#{episodefrom}",
+                "episode_to=#{episodeto}", "active_scope_hash=#{expectedactivescopehash}",
+                "active_scope_released_at is null", "active_scope_release_reason is null",
+                "sdk_request_id is null or sdk_request_id=#{sdkrequestid}",
+                "provider_show_id is null or provider_show_id=#{providershowid}",
+                "network_firm_id is null or network_firm_id=#{networkfirmid}",
+                "adsource_id is null or adsource_id=#{adsourceid}",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'",
+                "failure_reason='client_show_failed'", "version=version+1",
+                "exists (select 1 from skit_ad_client_event e",
+                "e.tenant_id=#{tenantid}", "e.ad_session_id=#{id}",
+                "e.callback_sequence=#{callbacksequence}", "e.event_type='failed'",
+                "e.client_reward_observed=b'0'", "e.closed=b'0'",
+                "e.provider_show_id=#{providershowid}",
+                "e.network_firm_id=#{networkfirmid}", "e.adsource_id=#{adsourceid}",
+                "e.deleted=b'0'");
+
         Method legacyUnrewardedClose = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
                 .filter(method -> method.getName().equals(
                         "rejectLegacyUnrewardedClosedAndReleaseScopeCas"))
