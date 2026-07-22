@@ -571,13 +571,26 @@ mysql_in_container() {
 # shape, so print the structural facts needed to diagnose write failures in the activation log.
 print_skit_schema_summary() {
   local summary_sql="SELECT 'MIGRATIONS' AS kind,\`version\`,\`description\` FROM \`skit_schema_migration\` ORDER BY \`version\`; \
-SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\` \
+SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\`,\`EXTRA\` \
   FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() \
-  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
+  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_ad_network_capability','skit_management_command_audit') \
   ORDER BY \`TABLE_NAME\`,\`ORDINAL_POSITION\`; \
+SELECT 'INDEXES' AS kind,\`TABLE_NAME\`,\`INDEX_NAME\`,\`NON_UNIQUE\`,\`SEQ_IN_INDEX\`,\`COLUMN_NAME\` \
+  FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() \
+  AND TABLE_NAME IN ('skit_ad_network_capability','skit_management_command_audit') \
+  ORDER BY \`TABLE_NAME\`,\`INDEX_NAME\`,\`SEQ_IN_INDEX\`; \
+SELECT 'CHECKS' AS kind,\`tc\`.\`TABLE_NAME\`,\`tc\`.\`CONSTRAINT_NAME\`,\`cc\`.\`CHECK_CLAUSE\` \
+  FROM information_schema.TABLE_CONSTRAINTS \`tc\` \
+  JOIN information_schema.CHECK_CONSTRAINTS \`cc\` \
+    ON \`cc\`.\`CONSTRAINT_SCHEMA\`=\`tc\`.\`CONSTRAINT_SCHEMA\` \
+   AND \`cc\`.\`CONSTRAINT_NAME\`=\`tc\`.\`CONSTRAINT_NAME\` \
+  WHERE \`tc\`.\`TABLE_SCHEMA\`=DATABASE() \
+  AND \`tc\`.\`TABLE_NAME\` IN ('skit_ad_network_capability','skit_management_command_audit') \
+  AND \`tc\`.\`CONSTRAINT_TYPE\`='CHECK' \
+  ORDER BY \`tc\`.\`TABLE_NAME\`,\`tc\`.\`CONSTRAINT_NAME\`; \
 SELECT 'TRIGGERS' AS kind,\`TRIGGER_NAME\`,\`EVENT_OBJECT_TABLE\`,\`ACTION_TIMING\`,\`EVENT_MANIPULATION\` \
   FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() \
-  AND EVENT_OBJECT_TABLE IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
+  AND EVENT_OBJECT_TABLE IN ('system_tenant','skit_agent','skit_ad_account','skit_ad_network_capability','skit_management_command_audit') \
   ORDER BY \`EVENT_OBJECT_TABLE\`,\`TRIGGER_NAME\`;"
   echo "Skit production schema summary (structure only):"
   mysql_in_container --batch --skip-column-names -e "${summary_sql}"

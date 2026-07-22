@@ -157,6 +157,20 @@ for quartz_release_contract in \
     exit 1
   fi
 done
+for skit_schema_summary_contract in \
+    "${activation_script}|skit_ad_network_capability" \
+    "${activation_script}|EXTRA" \
+    "${activation_script}|SELECT 'INDEXES' AS kind" \
+    "${activation_script}|information_schema.STATISTICS" \
+    "${activation_script}|SELECT 'CHECKS' AS kind" \
+    "${activation_script}|information_schema.CHECK_CONSTRAINTS"; do
+  contract_file="${skit_schema_summary_contract%%|*}"
+  contract_text="${skit_schema_summary_contract#*|}"
+  if ! grep -Fq -- "${contract_text}" "${contract_file}"; then
+    echo "FAIL: Skit production schema summary is missing ${contract_text}" >&2
+    exit 1
+  fi
+done
 if grep -Fq -- 'docker_cmd logs --since' "${activation_script}"; then
   echo "FAIL: a forced-new backend must be validated from its complete startup log" >&2
   exit 1
