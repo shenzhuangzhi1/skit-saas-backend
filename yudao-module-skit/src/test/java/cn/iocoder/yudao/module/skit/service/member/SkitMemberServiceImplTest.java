@@ -7,6 +7,8 @@ import cn.iocoder.yudao.framework.common.biz.system.oauth2.dto.OAuth2AccessToken
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.enums.UserTypeEnum;
 import cn.iocoder.yudao.framework.common.exception.ErrorCode;
+import cn.iocoder.yudao.framework.common.pojo.PageParam;
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberClosureDO;
@@ -18,6 +20,7 @@ import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService
 import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.OwnerType;
 import cn.iocoder.yudao.module.skit.service.invite.SkitInviteCodeRegistryService.ResolvedOwner;
 import cn.iocoder.yudao.module.system.enums.oauth2.OAuth2ClientConstants;
+import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.oauth2.OAuth2TokenService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.junit.jupiter.api.AfterEach;
@@ -571,6 +574,32 @@ class SkitMemberServiceImplTest {
         assertEquals(MEMBER_ID, result.getId());
         assertEquals("13800000000", result.getMobile());
         assertEquals(3L, result.getChildCount());
+    }
+
+    @Test
+    void platformGlobalPageKeepsEveryRowBoundToItsExplicitTenant() {
+        PageParam pageParam = new PageParam();
+        pageParam.setPageNo(1);
+        pageParam.setPageSize(20);
+        SkitMemberDO member = enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88");
+        when(memberMapper.selectPage(pageParam, "138", CommonStatusEnum.ENABLE.getStatus()))
+                .thenReturn(new PageResult<>(Collections.singletonList(member), 1L));
+        when(memberMapper.selectCountByTenantAndInviterId(TENANT_ID, MEMBER_ID)).thenReturn(3L);
+        when(tenantService.getTenant(TENANT_ID))
+                .thenReturn(new TenantDO().setId(TENANT_ID).setName("动态代理商甲"));
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(SkitAgentDO.builder()
+                .tenantId(TENANT_ID).tenantCode("AGENT42").build());
+
+        PageResult<SkitMemberService.MemberView> result = memberService.getGlobalMemberPage(
+                pageParam, "138", CommonStatusEnum.ENABLE.getStatus());
+
+        assertEquals(1L, result.getTotal());
+        assertEquals(TENANT_ID, result.getList().get(0).getTenantId());
+        assertEquals("AGENT42", result.getList().get(0).getTenantCode());
+        assertEquals("动态代理商甲", result.getList().get(0).getTenantName());
+        assertEquals(3L, result.getList().get(0).getChildCount());
+        verify(memberMapper).selectCountByTenantAndInviterId(TENANT_ID, MEMBER_ID);
+        verify(memberMapper, never()).selectCountByInviterId(MEMBER_ID);
     }
 
     @Test

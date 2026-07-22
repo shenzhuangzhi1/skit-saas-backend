@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.controller.admin.tenant;
 
 import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitAdminTenantScope;
@@ -75,6 +76,24 @@ class SkitTenantBusinessControllerTest {
         controller.getAdAccount(20L);
 
         verify(adminTenantScopeGuard).readTenant(eq(20L), eq(false), any());
+    }
+
+    @Test
+    void memberPageUsesTheGuardedPlatformGlobalBranchWhenTenantIsOmitted() {
+        SkitTenantBusinessController.MemberPageReqVO request =
+                new SkitTenantBusinessController.MemberPageReqVO();
+        request.setPageNo(1);
+        request.setPageSize(20);
+        PageResult<SkitMemberService.MemberView> expected =
+                new PageResult<>(Collections.emptyList(), 0L);
+        when(adminTenantScopeGuard.readTenantOrGlobal(eq(null), eq(true), any(), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(3)).get());
+        when(memberService.getGlobalMemberPage(request, null, null)).thenReturn(expected);
+
+        controller.getMemberPage(request);
+
+        verify(memberService).getGlobalMemberPage(request, null, null);
+        verify(adminTenantScopeGuard).readTenantOrGlobal(eq(null), eq(true), any(), any());
     }
 
     @Test
