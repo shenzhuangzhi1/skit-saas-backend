@@ -530,6 +530,26 @@ class SkitTenantAdCapabilityServiceImplTest {
     }
 
     @Test
+    void idempotentNetworkCapabilityUpsertStillAdvancesVersionAndReturnsPersistedState() {
+        SkitAdNetworkCapabilityDO network8 = networkCapability(8, true);
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(offCapability());
+        when(networkCapabilityMapper.selectForUpdate(TENANT_ID, ACCOUNT_ID, 8)).thenReturn(network8);
+        when(networkCapabilityMapper.upsertVerified(TENANT_ID, ACCOUNT_ID, 8,
+                "SIGNED_REWARD", true, true, true, true, true)).thenReturn(0);
+        when(capabilityMapper.bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 3))
+                .thenReturn(1);
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 8)).thenReturn(network8);
+
+        SkitTenantAdCapabilityService.NetworkCapabilityView saved =
+                service.verifyNetworkCapability(networkCommand(8, true));
+
+        assertEquals(8, saved.getNetworkFirmId());
+        assertTrue(saved.isEnabled());
+        verify(capabilityMapper).bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 3);
+        verify(networkCapabilityMapper).selectForShare(TENANT_ID, ACCOUNT_ID, 8);
+    }
+
+    @Test
     void capabilityMutationRejectsCrossTenantAccountAndUnsignedOrUnstableClaims() {
         when(adAccountMapper.selectEnabledTakuPlacementId(TENANT_ID, 9999L)).thenReturn(null);
         SkitTenantAdCapabilityService.NetworkCapabilityCommand crossTenant = networkCommand(22, true);

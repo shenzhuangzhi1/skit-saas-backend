@@ -227,15 +227,12 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         SkitAdNetworkCapabilityDO existing = networkCapabilityMapper.selectForUpdate(
                 tenantId, command.getAdAccountId(), command.getNetworkFirmId());
         if (Boolean.TRUE.equals(command.getEnabled())) {
-            int changed = networkCapabilityMapper.upsertVerified(tenantId,
+            networkCapabilityMapper.upsertVerified(tenantId,
                     command.getAdAccountId(), command.getNetworkFirmId(),
                     command.getRewardAuthority(),
                     command.getSupportsUserId(), command.getSupportsCustomData(),
                     command.getSupportsStableTransaction(), command.getSupportsImpressionRevenue(),
                     command.getSupportsReporting());
-            if (changed <= 0) {
-                throw new IllegalStateException("Verified network capability was not persisted");
-            }
         } else {
             if (existing == null) {
                 throw exception(AD_ROLLOUT_CONFIG_INVALID, "NETWORK_CAPABILITY_NOT_FOUND");

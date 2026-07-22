@@ -94,6 +94,7 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -263,6 +264,37 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             assertNotNull(disabled.getVerifiedAt(), "logical disable preserves verification metadata");
             return null;
         });
+    }
+
+    @Test
+    void identicalNetworkCapabilityUpsertMayReturnZeroWithAffectedRowsSemantics() {
+        SessionFixture fixture = insertSessionFixture(
+                959101L, 959102L, 959103L, 959104L, 959105L);
+        SkitAdNetworkCapabilityMapper mapper = context.getBean(SkitAdNetworkCapabilityMapper.class);
+        DriverManagerDataSource source = (DriverManagerDataSource) dataSource();
+        String originalUrl = source.getUrl();
+        source.setUrl(originalUrl + (originalUrl.contains("?") ? "&" : "?")
+                + "useAffectedRows=true");
+        try {
+            inTransaction(() -> inTenant(fixture.tenantId, () -> {
+                jdbc().execute("SET timestamp=1784685600");
+                assertEquals(1, mapper.upsertVerified(fixture.tenantId, fixture.accountId, 8,
+                        "SIGNED_REWARD", true, true, true, true, true));
+                assertEquals(0, mapper.upsertVerified(fixture.tenantId, fixture.accountId, 8,
+                        "SIGNED_REWARD", true, true, true, true, true),
+                        "affected-row mode reports an idempotent duplicate update as zero");
+
+                SkitAdNetworkCapabilityDO persisted = mapper.selectForShare(
+                        fixture.tenantId, fixture.accountId, 8);
+                assertNotNull(persisted);
+                assertEquals("SIGNED_REWARD", persisted.getRewardAuthority());
+                assertTrue(Boolean.TRUE.equals(persisted.getEnabled()));
+                assertTrue(Boolean.TRUE.equals(persisted.getSupportsStableTransaction()));
+                return null;
+            }));
+        } finally {
+            source.setUrl(originalUrl);
+        }
     }
 
     @Test
