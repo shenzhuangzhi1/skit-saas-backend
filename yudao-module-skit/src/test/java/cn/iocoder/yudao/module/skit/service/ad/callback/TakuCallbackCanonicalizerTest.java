@@ -81,6 +81,17 @@ class TakuCallbackCanonicalizerTest {
     }
 
     @Test
+    void acceptsObservedOptionalRewardVideoPlayDurationAsCanonicalTelemetry() {
+        TakuRewardCallback baseline = canonicalizer.canonicalizeReward(validRewardQuery());
+        TakuRewardCallback observed = canonicalizer.canonicalizeReward(
+                validRewardQuery() + "&rv_play_dur=30.5");
+
+        assertFalse(Arrays.equals(baseline.getCanonicalPayloadHash(), observed.getCanonicalPayloadHash()));
+        assertRejected(TakuCallbackCanonicalizer.ErrorCode.INVALID_VALUE,
+                validRewardQuery() + "&rv_play_dur=not-a-duration");
+    }
+
+    @Test
     void rejectsDuplicateSecurityFieldsInsteadOfTakingFirstOrLast() {
         assertRejected(TakuCallbackCanonicalizer.ErrorCode.DUPLICATE_PARAMETER,
                 validRewardQuery() + "&trans_id=attacker-show");

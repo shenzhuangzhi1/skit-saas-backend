@@ -4,12 +4,14 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
@@ -84,6 +86,7 @@ class SkitAdCallbackProcessorTest {
     private SkitAdCallbackInboxMapper inboxMapper;
     private SkitAdSessionMapper sessionMapper;
     private SkitAdNetworkCapabilityMapper capabilityMapper;
+    private SkitTenantAdCapabilityMapper tenantCapabilityMapper;
     private SkitContentEntitlementMapper entitlementMapper;
     private SkitEntitlementGrantMapper grantMapper;
     private SkitAdRevenueEventMapper revenueMapper;
@@ -105,6 +108,7 @@ class SkitAdCallbackProcessorTest {
         inboxMapper = mock(SkitAdCallbackInboxMapper.class);
         sessionMapper = mock(SkitAdSessionMapper.class);
         capabilityMapper = mock(SkitAdNetworkCapabilityMapper.class);
+        tenantCapabilityMapper = mock(SkitTenantAdCapabilityMapper.class);
         entitlementMapper = mock(SkitContentEntitlementMapper.class);
         grantMapper = mock(SkitEntitlementGrantMapper.class);
         revenueMapper = mock(SkitAdRevenueEventMapper.class);
@@ -122,7 +126,8 @@ class SkitAdCallbackProcessorTest {
         processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
                 entitlementMapper, grantMapper, revenueMapper, payloadCrypto, credentialService,
                 tokenService, snapshotService, projectionService, new TakuCallbackCanonicalizer(),
-                new TakuRewardSignatureVerifier(new ObjectMapper()), clock);
+                new TakuRewardSignatureVerifier(new ObjectMapper()),
+                new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), clock);
 
         SkitPolicySnapshotService.PolicySnapshot snapshot =
                 mock(SkitPolicySnapshotService.PolicySnapshot.class);
@@ -144,6 +149,8 @@ class SkitAdCallbackProcessorTest {
                 .thenAnswer(invocation -> session);
         when(capabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
                 .thenReturn(rewardCapability());
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[66]"));
         when(payloadCrypto.decrypt(any(), any())).thenAnswer(invocation ->
                 decryptedPayload.get().clone());
         when(credentialService.resolveRewardSecret(TENANT_ID, ACCOUNT_ID, 7,
@@ -167,13 +174,15 @@ class SkitAdCallbackProcessorTest {
                 TENANT_ID, ACCOUNT_ID, IMPRESSION_INBOX_ID))
                 .thenReturn(impressionAuthorityInbox(IMPRESSION_INBOX_ID, 66, ADSOURCE));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4))).thenReturn(Collections.emptyList());
+                Collections.singletonList(3))).thenReturn(Collections.emptyList());
         AtomicLong entitlementId = new AtomicLong(500);
         doAnswer(invocation -> {
             SkitContentEntitlementDO row = invocation.getArgument(0);
             row.setId(entitlementId.incrementAndGet());
             return 1;
         }).when(entitlementMapper).insertGrantedIfAbsent(any(SkitContentEntitlementDO.class));
+        when(entitlementMapper.advanceVerifiedRewardLeaseCas(anyLong(), anyLong(), anyLong(), anyLong(),
+                anyInt(), anyInt(), any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
         when(grantMapper.selectBySessionAndEpisodeForUpdate(eq(TENANT_ID), eq(SESSION_ID), anyInt()))
                 .thenReturn(null);
         when(grantMapper.insert(any(SkitEntitlementGrantDO.class))).thenReturn(1);
@@ -187,7 +196,25 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
-    void delayedRewardUsesReceivedTimeAndGrantsRangeWhileKeepingTransactionAndShowDistinct() {
+    void legacyMultiEpisodeRewardIsRejectedWithoutGrantingAnyEpisode() {
+        session.setEpisodeFrom(3).setEpisodeTo(4).setUnlockScope("range:3-4");
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("LEGACY_MULTI_EPISODE_SCOPE", result.getErrorCode());
+        verify(sessionMapper).markRewardReceiptRejectedCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, PROCESSING_AT, "LEGACY_MULTI_EPISODE_SCOPE");
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(), anyInt(), anyInt(), anyInt(),
+                anyString(), any(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void delayedRewardUsesReceivedTimeAndGrantsExactEpisodeWhileKeepingTransactionAndShowDistinct() {
         session.setClientLifecycleStatus("CLOSED");
         session.setRevenueStatus("IMPRESSION_PENDING_REWARD");
         SkitAdRevenueEventDO pendingEstimate = pendingEstimate();
@@ -211,16 +238,15 @@ class SkitAdCallbackProcessorTest {
                 PROCESSING_AT);
         ArgumentCaptor<SkitContentEntitlementDO> entitlements =
                 ArgumentCaptor.forClass(SkitContentEntitlementDO.class);
-        verify(entitlementMapper, org.mockito.Mockito.times(2))
+        verify(entitlementMapper)
                 .insertGrantedIfAbsent(entitlements.capture());
-        assertEquals(Arrays.asList(3, 4), Arrays.asList(
-                entitlements.getAllValues().get(0).getEpisodeNo(),
-                entitlements.getAllValues().get(1).getEpisodeNo()));
+        assertEquals(3, entitlements.getValue().getEpisodeNo());
+        assertEquals(PROCESSING_AT, entitlements.getValue().getGrantedAt());
+        assertEquals(PROCESSING_AT, entitlements.getValue().getLeaseActivatedAt());
         ArgumentCaptor<SkitEntitlementGrantDO> grants =
                 ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
-        verify(grantMapper, org.mockito.Mockito.times(2)).insert(grants.capture());
-        assertTrue(grants.getAllValues().stream()
-                .allMatch(row -> TRANSACTION.equals(row.getProviderTransactionId())));
+        verify(grantMapper).insert(grants.capture());
+        assertEquals(TRANSACTION, grants.getValue().getProviderTransactionId());
         verify(revenueMapper).markRewardQualifiedCas(TENANT_ID, pendingEstimate.getId(), SESSION_ID,
                 ACCOUNT_ID, pendingEstimate.getVersion(), IMPRESSION_INBOX_ID, PLACEMENT, 66,
                 ADSOURCE, TRANSACTION, SIGNED_SHOW, RECEIVED_AT);
@@ -233,6 +259,128 @@ class SkitAdCallbackProcessorTest {
         assertTrue(rewardCasSql.contains("placement_id`=#{expectedplacementid}"));
         assertTrue(rewardCasSql.contains("network_firm_id`=#{expectednetworkfirmid}"));
         assertTrue(rewardCasSql.contains("adsource_id`=#{expectedadsourceid}"));
+    }
+
+    @Test
+    void newSignedRewardCreatesANewLeaseForAnExpiredEpisodeInsteadOfReportingAlreadyOwned() {
+        SkitContentEntitlementDO expired = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(PROCESSING_AT.minusMinutes(5))
+                .setLeaseActivatedAt(PROCESSING_AT.minusMinutes(5));
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(expired));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        ArgumentCaptor<SkitEntitlementGrantDO> grants =
+                ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
+        verify(grantMapper).insert(grants.capture());
+        assertEquals("CREATED", grants.getAllValues().get(0).getGrantResult());
+        assertEquals(PROCESSING_AT, expired.getGrantedAt());
+        assertEquals(PROCESSING_AT, expired.getLeaseActivatedAt());
+        verify(entitlementMapper).advanceVerifiedRewardLeaseCas(TENANT_ID, expired.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 0, PROCESSING_AT.minusMinutes(5), PROCESSING_AT);
+    }
+
+    @Test
+    void freshSignedRewardSupersedesAnActiveOlderLeaseForExactSessionProvenance() {
+        LocalDateTime olderProof = PROCESSING_AT.minusMinutes(1);
+        SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(olderProof).setLeaseActivatedAt(olderProof).setVersion(7);
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(entitlementMapper).advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 7, olderProof, PROCESSING_AT);
+        assertEquals(PROCESSING_AT, active.getGrantedAt());
+        assertEquals(PROCESSING_AT, active.getLeaseActivatedAt());
+        ArgumentCaptor<SkitEntitlementGrantDO> grants =
+                ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
+        verify(grantMapper).insert(grants.capture());
+        assertEquals("CREATED", grants.getValue().getGrantResult());
+    }
+
+    @Test
+    void rewardWaitingBehindAnEqualLeaseAnchorSerializesOneSecondAfterIt() {
+        LocalDateTime priorProof = PROCESSING_AT.minusMinutes(10);
+        LocalDateTime serializedRewardAt = PROCESSING_AT.plusSeconds(1);
+        SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(priorProof).setLeaseActivatedAt(PROCESSING_AT).setVersion(7);
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(sessionMapper.markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                serializedRewardAt)).thenReturn(1);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                serializedRewardAt);
+        verify(entitlementMapper).advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 7, priorProof, serializedRewardAt);
+        ArgumentCaptor<SkitEntitlementGrantDO> grants =
+                ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
+        verify(grantMapper).insert(grants.capture());
+        assertEquals(serializedRewardAt, grants.getValue().getGrantedAt());
+        assertEquals(serializedRewardAt, active.getGrantedAt());
+        assertEquals(serializedRewardAt, active.getLeaseActivatedAt());
+        assertEquals(8, active.getVersion());
+    }
+
+    @Test
+    void verifiedRewardAdvanceFailsClosedWhenTheExactProofCasLoses() {
+        LocalDateTime priorProof = PROCESSING_AT.minusMinutes(1);
+        SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(priorProof).setLeaseActivatedAt(priorProof).setVersion(7);
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(entitlementMapper.advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 7, priorProof, PROCESSING_AT)).thenReturn(0);
+
+        assertThrows(IllegalStateException.class,
+                () -> processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER));
+
+        assertEquals(priorProof, active.getGrantedAt());
+        assertEquals(priorProof, active.getLeaseActivatedAt());
+        assertEquals(7, active.getVersion());
+        verify(grantMapper, never()).insert(any(SkitEntitlementGrantDO.class));
+        verify(inboxMapper, never()).markSucceededCas(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void verifiedRewardLeaseUsesTheClockAfterEntitlementLocking() {
+        ZoneId zone = ZoneId.of("Asia/Shanghai");
+        Clock stagedClock = mock(Clock.class);
+        when(stagedClock.getZone()).thenReturn(zone);
+        when(stagedClock.instant()).thenReturn(
+                PROCESSING_AT.minusMinutes(10).atZone(zone).toInstant(),
+                PROCESSING_AT.atZone(zone).toInstant());
+        processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
+                entitlementMapper, grantMapper, revenueMapper, payloadCrypto, credentialService,
+                tokenService, snapshotService, projectionService, new TakuCallbackCanonicalizer(),
+                new TakuRewardSignatureVerifier(new ObjectMapper()),
+                new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), stagedClock);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        ArgumentCaptor<SkitContentEntitlementDO> entitlements =
+                ArgumentCaptor.forClass(SkitContentEntitlementDO.class);
+        verify(entitlementMapper).insertGrantedIfAbsent(entitlements.capture());
+        assertEquals(PROCESSING_AT, entitlements.getValue().getLeaseActivatedAt(),
+                "time spent waiting for canonical locks must not consume the playback lease");
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                PROCESSING_AT);
     }
 
     @Test
@@ -348,8 +496,10 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
-    void signedRewardWithoutSignedShowPreservesIndependentClientShow() {
-        String queryWithoutShow = signedRewardQuery(customData, TRANSACTION, null);
+    void signedRewardWithoutSignedShowIsRejectedBeforeEntitlement() {
+        session.setSessionId(SESSION_PUBLIC_ID);
+        String queryWithoutShow = signedRewardQuery(
+                customData, TRANSACTION, null, SESSION_PUBLIC_ID);
         decryptedPayload.set(queryWithoutShow.getBytes(StandardCharsets.US_ASCII));
         inbox = rewardInbox(queryWithoutShow).setProviderShowId(null);
         session.setProviderShowId("client-sdk-show-id");
@@ -357,10 +507,43 @@ class SkitAdCallbackProcessorTest {
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
 
-        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
-        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
-                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, null, 66, ADSOURCE,
-                PROCESSING_AT);
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_SHOW_MISMATCH", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void matchingUnsignedExtraDataCannotReplaceMissingSignedSessionBinding() {
+        String queryWithoutSignedSession = signedRewardQuery(
+                customData, TRANSACTION, SIGNED_SHOW, null);
+        decryptedPayload.set(queryWithoutSignedSession.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(queryWithoutSignedSession);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_SHOW_CUSTOM_EXT_MISMATCH", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void missingSessionProviderShowRejectsSignedRewardBeforeEntitlement() {
+        session.setSessionId(SESSION_PUBLIC_ID).setProviderShowId(null);
+        String strictQuery = signedRewardQuery(
+                customData, TRANSACTION, SIGNED_SHOW, SESSION_PUBLIC_ID);
+        decryptedPayload.set(strictQuery.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(strictQuery);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_SHOW_MISMATCH", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
     }
 
     @Test
@@ -418,7 +601,7 @@ class SkitAdCallbackProcessorTest {
     void revokedExistingEntitlementFailsClosedAndCannotBeRegranted() {
         SkitContentEntitlementDO revoked = entitlement(3, "SECURITY_REVOKED", 301L);
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Arrays.asList(3, 4))).thenReturn(Collections.singletonList(revoked));
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(revoked));
 
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
@@ -774,6 +957,40 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void deselectedRewardIsRejectedBySharedAuthorityPolicyBeforeEntitlementMutation() {
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[22,46]"));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_NETWORK_NOT_SELECTED", result.getErrorCode());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(anyLong(), anyLong(), anyLong(),
+                anyLong(), any(), anyInt(), anyInt(), anyInt(), anyString(), any(), anyInt(),
+                anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void rolloutOffRejectsPendingRewardBeforeEntitlementMutation() {
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[66]").setRolloutState("OFF"));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("REWARD_ROLLOUT_INACTIVE", result.getErrorCode());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(anyLong(), anyLong(), anyLong(),
+                anyLong(), any(), anyInt(), anyInt(), anyInt(), anyString(), any(), anyInt(),
+                anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
     void infrastructureDecryptionFailurePropagatesForRetryWithoutTerminalAck() {
         when(payloadCrypto.decrypt(any(), any())).thenThrow(new IllegalStateException("kms unavailable"));
 
@@ -842,14 +1059,14 @@ class SkitAdCallbackProcessorTest {
 
     private SkitAdSessionDO rewardSession() {
         SkitAdSessionDO row = new SkitAdSessionDO()
-                .setId(SESSION_ID).setSessionId("server-session-public-id")
+                .setId(SESSION_ID).setSessionId(SESSION_PUBLIC_ID)
                 .setSessionTokenHash(tokenService.hashCustomData(customData))
                 .setSessionTokenKeyVersion(1).setProtocolVersion(1).setMemberId(MEMBER_ID)
                 .setAdAccountId(ACCOUNT_ID).setPolicySnapshotId(SNAPSHOT_ID)
                 .setCallbackKeyVersion(4).setRewardSecretVersion(7).setProvider("TAKU")
                 .setPlacementId(PLACEMENT).setScenarioId("drama_unlock")
-                .setBusinessType("DRAMA_EPISODE_UNLOCK").setDramaId(DRAMA_ID)
-                .setEpisodeFrom(3).setEpisodeTo(4).setUnlockScope("range:3-4")
+                .setBusinessType("EPISODE_UNLOCK").setDramaId(DRAMA_ID)
+                .setEpisodeFrom(3).setEpisodeTo(3).setUnlockScope("drama:801:episode:3")
                 .setActiveScopeHash(new byte[32]).setPseudonymousUserId(PSEUDONYMOUS_USER)
                 .setAccessMode("MEMBER_OAUTH").setClientLifecycleStatus("SHOWN")
                 .setRewardVerificationStatus("PENDING").setEntitlementStatus("NONE")
@@ -927,6 +1144,15 @@ class SkitAdCallbackProcessorTest {
         return rewardCapability();
     }
 
+    private SkitTenantAdCapabilityDO selectedNetworks(String networkIdsJson) {
+        SkitTenantAdCapabilityDO row = new SkitTenantAdCapabilityDO().setId(81L)
+                .setAdAccountId(ACCOUNT_ID).setRolloutState("SHADOW_TEST_USERS")
+                .setDedicatedUnlockPlacementId(PLACEMENT)
+                .setUnlockNetworkFirmIdsJson(networkIdsJson).setReadinessVersion(3);
+        row.setTenantId(TENANT_ID);
+        return row;
+    }
+
     private SkitAdRevenueEventDO pendingEstimate() {
         SkitAdRevenueEventDO row = new SkitAdRevenueEventDO().setId(700L).setAdAccountId(ACCOUNT_ID)
                 .setAdSessionId(SESSION_ID).setCallbackInboxId(IMPRESSION_INBOX_ID)
@@ -962,13 +1188,13 @@ class SkitAdCallbackProcessorTest {
     private SkitContentEntitlementDO entitlement(int episode, String status, long id) {
         SkitContentEntitlementDO row = new SkitContentEntitlementDO().setId(id).setMemberId(MEMBER_ID)
                 .setDramaId(DRAMA_ID).setEpisodeNo(episode).setStatus(status)
-                .setGrantedAt(PROCESSING_AT).setVersion(0);
+                .setGrantedAt(PROCESSING_AT).setLeaseActivatedAt(PROCESSING_AT).setVersion(0);
         row.setTenantId(TENANT_ID);
         return row;
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId) {
-        return signedRewardQuery(extraData, transactionId, signedShowId, null);
+        return signedRewardQuery(extraData, transactionId, signedShowId, SESSION_PUBLIC_ID);
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId,
@@ -992,7 +1218,7 @@ class SkitAdCallbackProcessorTest {
                 + "&package_name=com.example.skit&adformat=1&placement_id=" + PLACEMENT
                 + "&nw_firm_id=66&adsource_id=" + ADSOURCE + "&adsource_price=" + price
                 + "&currency=" + currency + "&timestamp=1784042400000"
-                + "&show_custom_ext=server-session-public-id";
+                + "&show_custom_ext=" + SESSION_PUBLIC_ID;
     }
 
     private static String encode(String value) {

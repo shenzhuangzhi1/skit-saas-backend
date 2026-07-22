@@ -24,6 +24,8 @@ public interface SkitMemberService {
 
     PageResult<MemberView> getMemberPage(PageParam pageParam, String keyword, Integer status);
 
+    PageResult<MemberView> getGlobalMemberPage(PageParam pageParam, String keyword, Integer status);
+
     MemberView getMember(Long memberId);
 
     void updateMemberStatus(Long memberId, Integer status);
@@ -111,5 +113,9 @@ public interface SkitMemberService {
         private Long childCount;
         private LocalDateTime createTime;
         private LocalDateTime loginTime;
+        private Long tenantId;
+        private String tenantCode;
+        private String tenantName;
+        private String agentName;
     }
 }

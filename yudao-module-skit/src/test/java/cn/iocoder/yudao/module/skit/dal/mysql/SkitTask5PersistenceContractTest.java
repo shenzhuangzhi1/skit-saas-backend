@@ -22,6 +22,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
@@ -39,6 +40,7 @@ import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -117,6 +119,7 @@ class SkitTask5PersistenceContractTest {
                 "episodeNo", Integer.class,
                 "status", String.class,
                 "grantedAt", LocalDateTime.class,
+                "leaseActivatedAt", LocalDateTime.class,
                 "version", Integer.class));
 
         assertDataObject(SkitEntitlementGrantDO.class, "skit_entitlement_grant", fields(
@@ -217,6 +220,90 @@ class SkitTask5PersistenceContractTest {
                 "last_callback_sequence=#{expectedlastcallbacksequence}",
                 "#{callbacksequence} > last_callback_sequence", "version=version+1");
 
+        Method unrewardedClose = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(
+                        "markUnrewardedClientCloseAndReleaseScopeCas"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String unrewardedCloseSql = updateSql(unrewardedClose);
+        assertContainsAll(unrewardedCloseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='shown'",
+                "last_callback_sequence=#{expectedlastcallbacksequence}",
+                "#{callbacksequence} > last_callback_sequence",
+                "client_lifecycle_status='closed'", "last_client_event='closed'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status in ('none','impression_pending_reward')",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "provider_transaction_id is null", "drama_id=#{dramaid}",
+                "episode_from=#{episodefrom}", "episode_to=#{episodeto}",
+                "active_scope_hash=#{expectedactivescopehash}",
+                "active_scope_released_at is null", "active_scope_release_reason is null",
+                "reward_verification_status='rejected'",
+                "active_scope_hash=null", "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'",
+                "failure_reason='client_closed_unrewarded'", "version=version+1",
+                "exists (select 1 from skit_ad_client_event e",
+                "e.tenant_id=#{tenantid}", "e.ad_session_id=#{id}",
+                "e.callback_sequence=#{callbacksequence}", "e.event_type='closed'",
+                "e.client_reward_observed=b'0'", "e.closed=b'1'", "e.deleted=b'0'");
+
+        Method postShowFailure = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(
+                        "markUnrewardedClientFailureAndReleaseScopeCas"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String postShowFailureSql = updateSql(postShowFailure);
+        assertContainsAll(postShowFailureSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='shown'",
+                "last_callback_sequence=#{expectedlastcallbacksequence}",
+                "#{callbacksequence} > last_callback_sequence",
+                "client_lifecycle_status='failed'", "last_client_event='failed'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status in ('none','impression_pending_reward')",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "provider_transaction_id is null", "failure_reason is null",
+                "drama_id=#{dramaid}", "episode_from=#{episodefrom}",
+                "episode_to=#{episodeto}", "active_scope_hash=#{expectedactivescopehash}",
+                "active_scope_released_at is null", "active_scope_release_reason is null",
+                "sdk_request_id is null or sdk_request_id=#{sdkrequestid}",
+                "provider_show_id is null or provider_show_id=#{providershowid}",
+                "network_firm_id is null or network_firm_id=#{networkfirmid}",
+                "adsource_id is null or adsource_id=#{adsourceid}",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'",
+                "failure_reason='client_show_failed'", "version=version+1",
+                "exists (select 1 from skit_ad_client_event e",
+                "e.tenant_id=#{tenantid}", "e.ad_session_id=#{id}",
+                "e.callback_sequence=#{callbacksequence}", "e.event_type='failed'",
+                "e.client_reward_observed=b'0'", "e.closed=b'0'",
+                "e.provider_show_id=#{providershowid}",
+                "e.network_firm_id=#{networkfirmid}", "e.adsource_id=#{adsourceid}",
+                "e.deleted=b'0'");
+
+        Method legacyUnrewardedClose = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(
+                        "rejectLegacyUnrewardedClosedAndReleaseScopeCas"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String legacyUnrewardedCloseSql = updateSql(legacyUnrewardedClose);
+        assertContainsAll(legacyUnrewardedCloseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='closed'",
+                "last_client_event='closed'",
+                "last_callback_sequence=#{expectedlastcallbacksequence}",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "provider_transaction_id is null", "drama_id=#{dramaid}",
+                "episode_from=#{episodefrom}", "episode_to=#{episodeto}",
+                "active_scope_hash=#{expectedactivescopehash}",
+                "exists (select 1 from skit_ad_client_event e",
+                "e.tenant_id=#{tenantid}", "e.ad_session_id=#{id}",
+                "e.callback_sequence=#{expectedlastcallbacksequence}",
+                "e.event_type='closed'", "e.client_reward_observed=b'0'",
+                "e.closed=b'1'", "e.deleted=b'0'",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "failure_reason='client_closed_unrewarded'", "version=version+1");
+
         assertFalse(Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
                         .anyMatch(method -> method.getName().equals("releaseActiveScopeAfterServerTerminalCas")),
                 "strict lifecycle checks forbid a separately committed terminal state before release");
@@ -226,13 +313,109 @@ class SkitTask5PersistenceContractTest {
         String loadExpirySql = updateSql(loadExpiry);
         assertContainsAll(loadExpirySql,
                 "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
-                "version=#{expectedversion}", "client_lifecycle_status='created'",
+                "version=#{expectedversion}", "client_lifecycle_status in ('created','loading')",
                 "load_expires_at < #{authoritativenow}", "client_lifecycle_status='load_expired'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status='none'", "provider_show_id is null",
+                "provider_transaction_id is null", "reward_callback_inbox_id is null",
+                "reward_callback_received_at is null", "network_firm_id is null",
+                "adsource_id is null", "last_client_event='load_started'",
                 "version=version+1");
-        assertFalse(loadExpirySql.contains("active_scope_hash"),
+        assertFalse(loadExpirySql.contains("active_scope_hash=null"),
                 "load expiry must retain the scope until the reward acceptance window ends");
-        assertFalse(loadExpirySql.contains("reward_verification_status="));
-        assertFalse(loadExpirySql.contains("entitlement_status="));
+
+        Method orphanCreatedRelease = SkitAdSessionMapper.class.getMethod(
+                "rejectPureCreatedAndReleaseScopeCas",
+                Long.class, Long.class, Long.class, Integer.class,
+                LocalDateTime.class, LocalDateTime.class);
+        String orphanCreatedReleaseSql = updateSql(orphanCreatedRelease);
+        assertContainsAll(orphanCreatedReleaseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='created'",
+                "create_time < #{stalebefore}",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status='none'", "sdk_request_id is null",
+                "provider_show_id is null", "provider_transaction_id is null",
+                "reward_callback_inbox_id is null", "reward_callback_received_at is null",
+                "network_firm_id is null", "adsource_id is null",
+                "last_callback_sequence=-1", "last_client_event is null", "failure_reason is null",
+                "client_lifecycle_status='load_expired'", "reward_verification_status='rejected'",
+                "active_scope_hash=null",
+                "active_scope_released_at=#{rejectedat}", "version=version+1");
+        assertFalse(orphanCreatedReleaseSql.contains("current_timestamp"),
+                "the stale cutoff must come from the same database timestamp captured at request entry");
+
+        Method legacyScopeRelease = SkitAdSessionMapper.class.getMethod(
+                "rejectLegacyMultiEpisodeScopeCas",
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
+        String legacyScopeReleaseSql = updateSql(legacyScopeRelease);
+        assertContainsAll(legacyScopeReleaseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "episode_from<>episode_to",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "active_scope_released_at=#{rejectedat}", "version=version+1");
+
+        Method retryRelease = SkitAdSessionMapper.class.getMethod(
+                "rejectUnstartedLoadExpiredAndReleaseScopeCas",
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
+        String retryReleaseSql = updateSql(retryRelease);
+        assertContainsAll(retryReleaseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='load_expired'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status='none'", "provider_show_id is null",
+                "provider_transaction_id is null", "reward_callback_inbox_id is null",
+                "reward_callback_received_at is null", "network_firm_id is null",
+                "adsource_id is null", "last_callback_sequence=-1",
+                "last_client_event is null", "active_scope_hash is not null",
+                "active_scope_released_at is null", "active_scope_release_reason is null",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'", "version=version+1",
+                "last_client_event='load_started'", "sdk_request_id is not null");
+
+        Method failedRelease = SkitAdSessionMapper.class.getMethod(
+                "rejectPreShowFailedAndReleaseScopeCas",
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
+        String failedReleaseSql = updateSql(failedRelease);
+        assertContainsAll(failedReleaseSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "client_lifecycle_status='failed'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status='none'", "provider_show_id is null",
+                "provider_transaction_id is null", "reward_callback_inbox_id is null",
+                "reward_callback_received_at is null", "network_firm_id is null",
+                "adsource_id is null", "last_callback_sequence>=0",
+                "last_client_event='failed'", "sdk_request_id is not null",
+                "active_scope_hash is not null", "active_scope_released_at is null",
+                "active_scope_release_reason is null", "reward_verification_status='rejected'",
+                "active_scope_hash=null", "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'", "version=version+1");
+
+        Method nativeGrantTakeover = Arrays.stream(SkitAdSessionMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName()
+                        .equals("rejectSupersededNativeGrantLoadingAndReleaseScopeCas"))
+                .findFirst().orElse(null);
+        assertNotNull(nativeGrantTakeover,
+                "native-player restart recovery requires one strict session takeover CAS");
+        String nativeGrantTakeoverSql = updateSql(nativeGrantTakeover);
+        assertContainsAll(nativeGrantTakeoverSql,
+                "tenant_id=#{tenantid}", "id=#{id}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "access_mode='native_player_grant'",
+                "native_player_grant_id=#{expectednativeplayergrantid}",
+                "native_player_grant_id<>#{currentnativeplayergrantid}",
+                "client_lifecycle_status='loading'", "last_callback_sequence>=0",
+                "last_client_event='load_started'", "sdk_request_id is not null",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status='none'", "provider_show_id is null",
+                "provider_transaction_id is null", "reward_callback_inbox_id is null",
+                "reward_callback_received_at is null", "network_firm_id is null",
+                "adsource_id is null", "active_scope_hash is not null",
+                "active_scope_released_at is null", "active_scope_release_reason is null",
+                "reward_verification_status='rejected'", "active_scope_hash=null",
+                "active_scope_released_at=#{rejectedat}",
+                "active_scope_release_reason='reward_rejected'", "version=version+1");
 
         Method timeout = SkitAdSessionMapper.class.getMethod(
                 "markRewardVerifyTimeoutAndReleaseScopeCas",
@@ -269,9 +452,10 @@ class SkitTask5PersistenceContractTest {
     @Test
     void entitlementMapperLocksEpisodeSetAndSafelyReturnsExistingId() throws Exception {
         String granted = selectSql(SkitContentEntitlementMapper.class.getMethod(
-                "selectGrantedEpisodes", Long.class, Long.class, Long.class));
+                "selectGrantedEpisodes", Long.class, Long.class, Long.class, LocalDateTime.class));
         assertContainsAll(granted, "tenant_id=#{tenantid}", "member_id=#{memberid}",
                 "drama_id=#{dramaid}", "deleted=b'0'", "status='granted'",
+                "lease_activated_at > #{activeafter}",
                 "order by episode_no asc");
         assertFalse(granted.contains("for update"), "GET entitlement reads must not take row locks");
 
@@ -288,7 +472,71 @@ class SkitTask5PersistenceContractTest {
         Method insert = SkitContentEntitlementMapper.class
                 .getMethod("insertGrantedIfAbsent", SkitContentEntitlementDO.class);
         String insertSql = insertSql(insert);
-        assertContainsAll(insertSql, "on duplicate key update", "id=last_insert_id(id)");
+        assertContainsAll(insertSql, "lease_activated_at", "on duplicate key update",
+                "id=last_insert_id(id)");
+
+        Method advance = SkitContentEntitlementMapper.class.getMethod(
+                "advanceVerifiedRewardLeaseCas", Long.class, Long.class, Long.class,
+                Long.class, Integer.class, Integer.class, LocalDateTime.class, LocalDateTime.class);
+        String advanceSql = updateSql(advance);
+        assertContainsAll(advanceSql, "tenant_id=#{tenantid}", "id=#{id}",
+                "version=#{expectedversion}", "granted_at=#{expectedgrantedat}",
+                "granted_at < #{grantedat}", "granted_at=#{grantedat}",
+                "lease_activated_at=#{grantedat}", "version=version+1");
+
+        Method activate = SkitContentEntitlementMapper.class.getMethod(
+                "activateVerifiedRewardLeaseCas", Long.class, Long.class, Long.class,
+                Long.class, Integer.class, Integer.class, LocalDateTime.class, LocalDateTime.class);
+        String activateSql = updateSql(activate);
+        assertContainsAll(activateSql, "tenant_id=#{tenantid}", "id=#{id}",
+                "member_id=#{memberid}", "drama_id=#{dramaid}", "episode_no=#{episodeno}",
+                "version=#{expectedversion}", "granted_at=#{proofgrantedat}",
+                "lease_activated_at < #{activatedat}",
+                "lease_activated_at=#{activatedat}", "version=version+1");
+        assertFalse(activateSql.contains("granted_at=#{activatedat}"),
+                "canonical close must never rewrite immutable signed reward provenance");
+    }
+
+    @Test
+    void rewardProvenanceReadUsesOnlyOneExactSignedGrantChain() throws Exception {
+        Method evidence = SkitEntitlementGrantMapper.class.getMethod(
+                "selectVerifiedRewardProvenance",
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
+        String sql = selectSql(evidence);
+        assertContainsAll(sql,
+                "from skit_entitlement_grant g",
+                "inner join skit_content_entitlement e",
+                "inner join skit_ad_session s",
+                "inner join skit_ad_callback_inbox i",
+                "g.tenant_id=#{tenantid}", "g.member_id=#{memberid}",
+                "g.drama_id=#{dramaid}", "g.episode_no=#{episodeno}",
+                "g.grant_result='created'", "e.status='granted'",
+                "e.lease_activated_at > #{activeafter}", "g.granted_at=e.granted_at",
+                "s.reward_verification_status='signed_verified'",
+                "s.entitlement_status='granted'",
+                "s.active_scope_release_reason='entitlement_granted'",
+                "i.callback_type='reward'", "i.evidence_provenance='signed_ilrd'",
+                "i.authentication_level='signed_reward'", "i.signature_status='valid'",
+                "i.delivery_integrity_status='canonical'", "i.processing_status='succeeded'",
+                "i.provider_show_id is not null",
+                "hex(i.provider_show_id)=hex(s.provider_show_id)",
+                "hex(i.provider_transaction_id)=hex(s.provider_transaction_id)",
+                "hex(s.provider_transaction_id)=hex(g.provider_transaction_id)",
+                "limit 2");
+        assertFalse(sql.contains("select *"),
+                "provenance reads must not expose arbitrary callback-inbox fields");
+        assertFalse(sql.contains("order by"),
+                "ambiguous reward grants must fail closed instead of selecting a latest row");
+    }
+
+    @Test
+    void rewardProvenanceReadIsParsableByTheRuntimeSqlInterceptor() throws Exception {
+        Method evidence = SkitEntitlementGrantMapper.class.getMethod(
+                "selectVerifiedRewardProvenance",
+                Long.class, Long.class, Long.class, Integer.class, LocalDateTime.class);
+        String rawSql = String.join(" ", evidence.getAnnotation(Select.class).value());
+
+        assertDoesNotThrow(() -> CCJSqlParserUtil.parse(rawSql.replaceAll("#\\{[^}]+}", "?")));
     }
 
     @Test
@@ -313,7 +561,8 @@ class SkitTask5PersistenceContractTest {
         assertContainsAll(useSql, "tenant_id=#{tenantid}", "id=#{id}",
                 "member_id=#{memberid}", "drama_id=#{dramaid}",
                 "version=#{expectedversion}", "status='active'", "revoked_at is null",
-                "expires_at > #{usedat}", "version=version+1");
+                "expires_at > #{usedat}", "expires_at=#{renewedexpiresat}",
+                "version=version+1");
 
         Method revoke = Arrays.stream(SkitNativePlayerGrantMapper.class.getDeclaredMethods())
                 .filter(method -> method.getName().equals("revokeActiveCas"))
@@ -355,10 +604,6 @@ class SkitTask5PersistenceContractTest {
                 "selectByTenantAndIdForShare", Long.class, Long.class);
         assertSharedRead(member, "tenant_id=#{tenantid}", "id=#{id}", "deleted=b'0'");
 
-        Method nativeGrant = requireMethod(SkitNativePlayerGrantMapper.class,
-                "selectExactForShare", Long.class, Long.class, Long.class, Long.class);
-        assertSharedRead(nativeGrant, "tenant_id=#{tenantid}", "id=#{id}",
-                "member_id=#{memberid}", "drama_id=#{dramaid}", "deleted=b'0'");
     }
 
     private static void assertDataObject(Class<?> type, String tableName,

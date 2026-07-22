@@ -7,9 +7,12 @@ import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMappe
 import cn.iocoder.yudao.module.skit.dal.mysql.record.SkitAdminRecordMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -18,6 +21,8 @@ import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_INVALID;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE;
 
 /**
  * Uses the existing tenant-scoped {@code skit_admin_record(page_key = 'drama')} directory as the
@@ -28,19 +33,28 @@ import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_SESSION_I
 public class SkitContentScopeServiceImpl implements SkitContentScopeService {
 
     private static final String DRAMA_PAGE_KEY = "drama";
-    private static final int MAX_UNLOCK_SIZE = 100;
     private static final int MAX_TOTAL_EPISODES = 100_000;
+    private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitAdminRecordMapper recordMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
 
+    @Autowired
     public SkitContentScopeServiceImpl(SkitAdminRecordMapper recordMapper,
                                        SkitContentEntitlementMapper entitlementMapper,
                                        ObjectMapper objectMapper) {
+        this(recordMapper, entitlementMapper, objectMapper, Clock.systemDefaultZone());
+    }
+
+    SkitContentScopeServiceImpl(SkitAdminRecordMapper recordMapper,
+                                SkitContentEntitlementMapper entitlementMapper,
+                                ObjectMapper objectMapper, Clock clock) {
         this.recordMapper = Objects.requireNonNull(recordMapper, "recordMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
@@ -49,8 +63,11 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         List<SkitAdminRecordDO> matches = recordMapper.selectDramaCatalogByBusinessIdForShare(
                 tenantId, Long.toString(dramaId));
-        if (matches == null || matches.size() != 1) {
-            throw exception(AD_SESSION_INVALID);
+        if (matches == null || matches.isEmpty()) {
+            throw exception(AD_CONTENT_CATALOG_MISSING);
+        }
+        if (matches.size() != 1) {
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         SkitAdminRecordDO row = matches.get(0);
         JsonNode data = readCatalog(row, tenantId);
@@ -58,17 +75,11 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 "pangleDramaId", "dramaId", "drama_id", "contentId", "nativeId", "id");
         int totalEpisodes = firstPositiveInt(data, "episodes", "totalEpisodes",
                 "episodeCount", "total", "count");
-        int freeEpisodes = firstNonNegativeInt(data,
-                "freeEpisodes", "freeSet", "free_set");
-        int unlockSize = firstPositiveInt(data,
-                "unlockSize", "lockSet", "lock_set");
         if (authoritativeDramaId != dramaId || totalEpisodes > MAX_TOTAL_EPISODES
-                || freeEpisodes > totalEpisodes || unlockSize > MAX_UNLOCK_SIZE
                 || !isPublished(publishStatus(data))) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
-        return new AccessibleDrama(tenantId, row.getId(), dramaId, totalEpisodes,
-                freeEpisodes, unlockSize);
+        return new AccessibleDrama(tenantId, row.getId(), dramaId, totalEpisodes, 0, 1);
     }
 
     @Override
@@ -77,51 +88,26 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
         requirePositive(memberId);
         requirePositive(requestedEpisodeNo);
         AccessibleDrama drama = requireAccessibleDrama(dramaId);
-        if (requestedEpisodeNo <= drama.getFreeEpisodes()
-                || requestedEpisodeNo > drama.getTotalEpisodes()) {
+        if (requestedEpisodeNo > drama.getTotalEpisodes()) {
             throw exception(AD_SESSION_INVALID);
         }
-        int lastCandidate = Math.min(drama.getTotalEpisodes(),
-                Math.addExact(requestedEpisodeNo, drama.getUnlockSize() - 1));
-        List<Integer> candidates = new ArrayList<>(lastCandidate - requestedEpisodeNo + 1);
-        for (int episode = requestedEpisodeNo; episode <= lastCandidate; episode++) {
-            candidates.add(episode);
-        }
+        List<Integer> candidates = Collections.singletonList(requestedEpisodeNo);
         List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodesForUpdate(
                 drama.getTenantId(), memberId, dramaId, candidates);
         Map<Integer, SkitContentEntitlementDO> existing = validateEntitlements(
                 rows, drama.getTenantId(), memberId, dramaId, candidates);
         SkitContentEntitlementDO requested = existing.get(requestedEpisodeNo);
+        LocalDateTime currentTime = now();
         if (requested != null) {
             if (!"GRANTED".equals(requested.getStatus())) {
                 throw exception(AD_SESSION_INVALID);
             }
-            return scope(drama, requestedEpisodeNo, requestedEpisodeNo, true);
-        }
-        requireContinuousUnlockFrontier(drama, memberId, requestedEpisodeNo);
-        int episodeTo = lastCandidate;
-        for (int episode = requestedEpisodeNo + 1; episode <= lastCandidate; episode++) {
-            if (existing.containsKey(episode)) {
-                episodeTo = episode - 1;
-                break;
+            if (isActiveEntitlement(requested, currentTime)) {
+                return scope(drama, requestedEpisodeNo, requestedEpisodeNo, true);
             }
+            return scope(drama, requestedEpisodeNo, requestedEpisodeNo, false);
         }
-        return scope(drama, requestedEpisodeNo, episodeTo, false);
-    }
-
-    private void requireContinuousUnlockFrontier(AccessibleDrama drama, Long memberId,
-                                                 int requestedEpisodeNo) {
-        int firstPaidEpisode = drama.getFreeEpisodes() + 1;
-        int priorPaidEpisodes = requestedEpisodeNo - firstPaidEpisode;
-        if (priorPaidEpisodes == 0) {
-            return;
-        }
-        Long granted = entitlementMapper.countGrantedEpisodesInRange(
-                drama.getTenantId(), memberId, drama.getDramaId(),
-                firstPaidEpisode, requestedEpisodeNo - 1);
-        if (granted == null || granted.longValue() != priorPaidEpisodes) {
-            throw exception(AD_SESSION_INVALID);
-        }
+        return scope(drama, requestedEpisodeNo, requestedEpisodeNo, false);
     }
 
     private JsonNode readCatalog(SkitAdminRecordDO row, Long tenantId) {
@@ -129,18 +115,18 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 || !tenantId.equals(row.getTenantId()) || !DRAMA_PAGE_KEY.equals(row.getPageKey())
                 || Boolean.TRUE.equals(row.getDeleted()) || !Integer.valueOf(0).equals(row.getStatus())
                 || row.getRecordData() == null || row.getRecordData().length() > 64_000) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         try {
             JsonNode data = objectMapper.readTree(row.getRecordData());
             if (data == null || !data.isObject()) {
-                throw exception(AD_SESSION_INVALID);
+                throw exception(AD_CONTENT_CATALOG_STALE);
             }
             return data;
         } catch (RuntimeException runtime) {
             throw runtime;
         } catch (Exception invalidJson) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
     }
 
@@ -158,12 +144,24 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                     || !candidates.contains(row.getEpisodeNo()) || Boolean.TRUE.equals(row.getDeleted())
                     || !("GRANTED".equals(row.getStatus())
                     || "SECURITY_REVOKED".equals(row.getStatus()))
+                    || row.getGrantedAt() == null || row.getLeaseActivatedAt() == null
                     || result.put(row.getEpisodeNo(), row) != null) {
                 throw new IllegalStateException(
                         "Content entitlement escaped the tenant/member/catalog boundary");
             }
         }
         return result;
+    }
+
+    private boolean isActiveEntitlement(SkitContentEntitlementDO entitlement, LocalDateTime now) {
+        return entitlement != null && "GRANTED".equals(entitlement.getStatus())
+                && entitlement.getLeaseActivatedAt() != null
+                && entitlement.getLeaseActivatedAt()
+                .isAfter(now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
+    }
+
+    private LocalDateTime now() {
+        return LocalDateTime.now(clock).withNano(0);
     }
 
     private UnlockScope scope(AccessibleDrama drama, int episodeFrom, int episodeTo,
@@ -211,30 +209,15 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                 }
             }
         }
-        throw exception(AD_SESSION_INVALID);
+        throw exception(AD_CONTENT_CATALOG_STALE);
     }
 
     private int firstPositiveInt(JsonNode data, String... names) {
         long value = firstPositiveLong(data, names);
         if (value > Integer.MAX_VALUE) {
-            throw exception(AD_SESSION_INVALID);
+            throw exception(AD_CONTENT_CATALOG_STALE);
         }
         return (int) value;
-    }
-
-    private int firstNonNegativeInt(JsonNode data, String... names) {
-        for (String name : names) {
-            JsonNode value = data.path(name);
-            if (value.isMissingNode() || value.isNull() || value.asText("").trim().isEmpty()) {
-                continue;
-            }
-            String lexical = value.asText("").trim();
-            if (!lexical.matches("[0-9]{1,9}")) {
-                throw exception(AD_SESSION_INVALID);
-            }
-            return Integer.parseInt(lexical);
-        }
-        throw exception(AD_SESSION_INVALID);
     }
 
     private void requirePositive(Number value) {

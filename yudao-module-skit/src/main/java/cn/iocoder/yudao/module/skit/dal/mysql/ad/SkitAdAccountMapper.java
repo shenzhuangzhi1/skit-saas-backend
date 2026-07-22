@@ -133,6 +133,14 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
             + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR SHARE")
     List<SkitAdAccountDO> selectEnabledTakuForShare(@Param("tenantId") Long tenantId);
 
+    /** Uses the MyBatis-Plus entity result map so the encrypted Server Key is decrypted by its type handler. */
+    default List<SkitAdAccountDO> selectEnabledPangleForShare(Long tenantId) {
+        return selectList(new LambdaQueryWrapperX<SkitAdAccountDO>()
+                .eq(SkitAdAccountDO::getTenantId, tenantId)
+                .eq(SkitAdAccountDO::getProvider, "PANGLE")
+                .eq(SkitAdAccountDO::getStatus, CommonStatusEnum.ENABLE.getStatus()));
+    }
+
     /** Global routing projection. Call only inside TenantUtils.executeIgnore. */
     @Select("SELECT `a`.`id`,`a`.`tenant_id`,`a`.`provider`,`a`.`account_id`,`a`.`app_id`,"
             + "`a`.`config_data`,`a`.`status`,`a`.`report_timezone`,`a`.`report_currency`,"
@@ -181,10 +189,18 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
     @Select("SELECT CASE WHEN JSON_VALID(`config_data`) THEN "
             + "JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.placementId')) ELSE '' END "
             + "FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} AND `id`=#{adAccountId} "
-            + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR UPDATE")
+            + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0'")
     @InterceptorIgnore(tenantLine = "true")
     String selectEnabledTakuPlacementId(@Param("tenantId") long tenantId,
                                         @Param("adAccountId") long adAccountId);
+
+    @Select("SELECT CASE WHEN JSON_VALID(`config_data`) THEN "
+            + "JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.placementId')) ELSE '' END "
+            + "FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} AND `id`=#{adAccountId} "
+            + "AND `provider`='TAKU' AND `status`=0 AND `deleted`=b'0' FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true")
+    String selectEnabledTakuPlacementIdForUpdate(@Param("tenantId") long tenantId,
+                                                 @Param("adAccountId") long adAccountId);
 
     @Update("UPDATE `skit_ad_account` SET `report_pull_lease_owner`=NULL,"
             + "`report_pull_lease_until`=NULL,`report_last_success_at`=CURRENT_TIMESTAMP,"

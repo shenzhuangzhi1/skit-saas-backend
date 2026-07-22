@@ -216,7 +216,13 @@ public class SkitMemberServiceImpl implements SkitMemberService {
 
     @Override
     public PageResult<MemberView> getMemberPage(PageParam pageParam, String keyword, Integer status) {
-        return convertPage(memberMapper.selectPage(pageParam, keyword, status));
+        return convertPage(memberMapper.selectPage(pageParam, keyword, status), false);
+    }
+
+    @Override
+    public PageResult<MemberView> getGlobalMemberPage(PageParam pageParam, String keyword, Integer status) {
+        return TenantUtils.executeIgnore(() ->
+                convertPage(memberMapper.selectPage(pageParam, keyword, status), true));
     }
 
     @Override
@@ -258,14 +264,22 @@ public class SkitMemberServiceImpl implements SkitMemberService {
     }
 
     private PageResult<MemberView> convertPage(PageResult<SkitMemberDO> page) {
+        return convertPage(page, false);
+    }
+
+    private PageResult<MemberView> convertPage(PageResult<SkitMemberDO> page, boolean explicitTenant) {
         List<MemberView> list = new ArrayList<>();
         for (SkitMemberDO member : page.getList()) {
-            list.add(toMemberView(member));
+            list.add(toMemberView(member, explicitTenant));
         }
         return new PageResult<>(list, page.getTotal());
     }
 
     private MemberView toMemberView(SkitMemberDO member) {
+        return toMemberView(member, false);
+    }
+
+    private MemberView toMemberView(SkitMemberDO member, boolean explicitTenant) {
         MemberView item = new MemberView();
         item.setId(member.getId());
         item.setUserId(member.getId());
@@ -277,16 +291,29 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         item.setParentId(member.getInviterId());
         item.setParentUserId(member.getInviterId());
         if (member.getInviterId() != null) {
-            SkitMemberDO parent = memberMapper.selectById(member.getInviterId());
+            SkitMemberDO parent = explicitTenant
+                    ? memberMapper.selectByTenantAndId(member.getTenantId(), member.getInviterId())
+                    : memberMapper.selectById(member.getInviterId());
             item.setParentName(parent == null ? null : parent.getNickname());
             item.setParentNickname(parent == null ? null : parent.getNickname());
         }
         item.setLevel(member.getDepth());
         item.setDepth(member.getDepth());
         item.setStatus(member.getStatus());
-        item.setChildCount(memberMapper.selectCountByInviterId(member.getId()));
+        item.setChildCount(explicitTenant
+                ? memberMapper.selectCountByTenantAndInviterId(member.getTenantId(), member.getId())
+                : memberMapper.selectCountByInviterId(member.getId()));
         item.setCreateTime(member.getCreateTime());
         item.setLoginTime(member.getLoginTime());
+        Long tenantId = member.getTenantId();
+        item.setTenantId(tenantId);
+        if (tenantId != null) {
+            TenantDO tenant = tenantService.getTenant(tenantId);
+            SkitAgentDO agent = agentMapper.selectByTenantId(tenantId);
+            item.setTenantCode(agent == null ? null : agent.getTenantCode());
+            item.setTenantName(tenant == null ? null : tenant.getName());
+            item.setAgentName(tenant == null ? null : tenant.getName());
+        }
         return item;
     }
 

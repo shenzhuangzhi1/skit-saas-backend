@@ -72,4 +72,14 @@ public interface SkitTenantAdCapabilityMapper {
                       @Param("minNativeVersion") String minNativeVersion,
                       @Param("minProtocolVersion") Integer minProtocolVersion);
 
+    @Update("UPDATE `skit_tenant_ad_capability` SET "
+            + "`readiness_version`=`readiness_version`+1,"
+            + "`updater`='network-capability-verification',`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `ad_account_id`=#{adAccountId} "
+            + "AND `readiness_version`=#{expectedReadinessVersion} AND `deleted`=b'0'")
+    int bumpNetworkCapabilityVersionCas(@Param("tenantId") Long tenantId,
+                                        @Param("id") Long id,
+                                        @Param("adAccountId") Long adAccountId,
+                                        @Param("expectedReadinessVersion") Integer expectedReadinessVersion);
+
 }

@@ -110,6 +110,36 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
+    void rotatingPangleServerKeyDoesNotRewriteUnchangedTakuAccount() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAccountName("pangle-user")
+                .setAppId("pangle-app")
+                .setSecret("old-pangle-secret")
+                .setConfigData("{\"placementId\":\"pangle-slot\",\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        SkitAdAccountDO taku = account(PROVIDER_TAKU)
+                .setAccountName("taku-user")
+                .setAppId("taku-app")
+                .setAppKey("old-taku-key")
+                .setSecret("old-taku-secret")
+                .setConfigData("{\"placementId\":\"taku-slot\",\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleAppSecret("new-pangle-secret");
+        settings.setTakuAppKey("");
+        settings.setTakuAppSecret(null);
+
+        accountService.saveSettings(settings);
+
+        assertEquals("new-pangle-secret", pangle.getSecret());
+        assertEquals("old-taku-key", taku.getAppKey());
+        assertEquals("old-taku-secret", taku.getSecret());
+        verify(accountMapper).updateById(pangle);
+        verify(accountMapper, never()).updateById(taku);
+    }
+
+    @Test
     void takuAccountWithoutHistoricalFactsMayChangeItsReportScopeAfterTheLockedGuardPasses() throws Exception {
         SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
         SkitAdAccountDO taku = account(PROVIDER_TAKU).setAppId("old-taku-app")
@@ -137,9 +167,25 @@ class SkitAdAccountServiceImplTest {
         settings.setPangleAppSecret(null);
 
         assertServiceException(() -> accountService.saveSettings(settings), AD_ACCOUNT_CONFIG_INVALID,
-                "PANGLE 启用前必须完整配置账号、App ID、广告位和凭证");
+                "PANGLE 启用前必须配置 App ID 和内容接口 Server Key");
 
         verify(accountMapper, never()).updateById(pangle);
+    }
+
+    @Test
+    void enabledPangleIgnoresLegacyAccountAndPlacementFields() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        mockAccounts(pangle, account(PROVIDER_TAKU));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleUsername(null);
+        settings.setPanglePlacementId(null);
+        settings.setTakuEnabled(false);
+
+        accountService.saveSettings(settings);
+
+        assertEquals("", pangle.getAccountName());
+        assertEquals("", objectMapper.readTree(pangle.getConfigData()).get("placementId").asText());
+        assertEquals(CommonStatusEnum.ENABLE.getStatus(), pangle.getStatus());
     }
 
     @Test
@@ -149,6 +195,7 @@ class SkitAdAccountServiceImplTest {
         mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleEnabled(false);
+        settings.setTakuUsername(null);
         settings.setTakuAppSecret(null);
 
         accountService.saveSettings(settings);

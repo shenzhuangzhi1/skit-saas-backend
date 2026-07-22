@@ -7,6 +7,8 @@ import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdCallbackKey
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdCallbackKeyRotateRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdRewardSecretRotateReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdRewardSecretRotateRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdNetworkCapabilityRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdNetworkCapabilityVerifyReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitTenantAdCapabilityConfigReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitTenantAdReadinessRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitTenantAdRolloutReqVO;
@@ -41,6 +43,7 @@ import java.util.LinkedHashSet;
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MANAGEMENT_TARGET_TENANT_REQUIRED;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MANAGEMENT_TENANT_SCOPE_FORBIDDEN;
+import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.MANAGEMENT_COMMAND_FORBIDDEN;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -106,7 +109,50 @@ class SkitTenantAdCapabilityControllerTest {
         assertEquals("unlock-placement-42", response.getData().getDedicatedUnlockPlacementId());
         assertEquals(response.getData().getReadinessVersion(),
                 response.getData().getExpectedReadinessVersion());
+        assertEquals(1, response.getData().getNetworkReadiness().size());
+        assertEquals(Collections.singletonList("012345abcdef"),
+                response.getData().getNetworkReadiness().get(0).getSourceRefs());
+        assertTrue(response.getData().getMissingSignedRewardNetworkFirmIds().isEmpty());
+        assertTrue(response.getData().getMissingImpressionNetworkFirmIds().isEmpty());
+        assertTrue(response.getData().getMissingPairedSourceNetworkFirmIds().isEmpty());
+        assertTrue(response.getData().getPairedSourceEvidenceObserved());
+        assertEquals(Collections.singletonList("012345abcdef"),
+                response.getData().getNetworkReadiness().get(0).getPairedSourceRefs());
         assertEquals(99L, TenantContextHolder.getRequiredTenantId());
+    }
+
+    @Test
+    void tenantAdminCannotSelfCertifyANetworkCapability() {
+        authenticate(42L);
+        when(platformAdminGuard.isPlatformAdmin()).thenReturn(false);
+        when(permissionService.hasAnyRoles(99L, "tenant_admin")).thenReturn(true);
+
+        assertServiceException(() -> controller.verifyNetworkCapability(
+                networkCapabilityRequest(42L, 46, true)), MANAGEMENT_COMMAND_FORBIDDEN);
+
+        verifyNoInteractions(capabilityService, commandExecutor);
+    }
+
+    @Test
+    void superAdminCapabilityVerificationUsesExactTenantAccountNetworkAuditScope() {
+        authenticate(1L);
+        when(platformAdminGuard.isPlatformAdmin()).thenReturn(true);
+        when(agentMapper.selectByTenantId(42L)).thenReturn(agent(42L));
+        when(capabilityService.listNetworkCapabilities(4201L)).thenReturn(Collections.emptyList());
+        SkitTenantAdCapabilityService.NetworkCapabilityView saved = networkCapability(46);
+        when(commandExecutor.execute(any(), eq(SkitManagementCommandType.AD_NETWORK_CAPABILITY_VERIFY),
+                anyString(), anyString(), anyString(), anyString(), anyString(), any()))
+                .thenReturn(saved);
+
+        CommonResult<SkitAdNetworkCapabilityRespVO> response = controller.verifyNetworkCapability(
+                networkCapabilityRequest(42L, 46, true));
+
+        assertEquals(46, response.getData().getNetworkFirmId());
+        assertEquals("SIGNED_REWARD", response.getData().getRewardAuthority());
+        verify(commandExecutor).execute(any(),
+                eq(SkitManagementCommandType.AD_NETWORK_CAPABILITY_VERIFY),
+                eq("AD_NETWORK_CAPABILITY"), eq("4201:46"),
+                eq("verify signed callback capability"), anyString(), anyString(), any());
     }
 
     @Test
@@ -250,6 +296,33 @@ class SkitTenantAdCapabilityControllerTest {
         result.setMinProtocolVersion(1);
         result.setCallbackKeyVersion(2);
         result.setCallbackKeyIssuedAt(LocalDateTime.of(2026, 7, 15, 4, 0));
+        result.setPairedSourceEvidenceObserved(true);
+        SkitTenantAdCapabilityService.NetworkReadinessView network =
+                new SkitTenantAdCapabilityService.NetworkReadinessView();
+        network.setNetworkFirmId(66);
+        network.setSourceRefs(Collections.singletonList("012345abcdef"));
+        network.setSignedRewardSourceRefs(Collections.singletonList("012345abcdef"));
+        network.setImpressionSourceRefs(Collections.singletonList("012345abcdef"));
+        network.setPairedSourceObserved(true);
+        network.setPairedSourceRefs(Collections.singletonList("012345abcdef"));
+        result.setNetworkReadiness(Collections.singletonList(network));
+        return result;
+    }
+
+    private SkitTenantAdCapabilityService.NetworkCapabilityView networkCapability(int networkFirmId) {
+        SkitTenantAdCapabilityService.NetworkCapabilityView result =
+                new SkitTenantAdCapabilityService.NetworkCapabilityView();
+        result.setNetworkFirmId(networkFirmId);
+        result.setRewardAuthority("SIGNED_REWARD");
+        result.setEnabled(true);
+        result.setVerified(true);
+        result.setVerifiedAt(LocalDateTime.of(2026, 7, 15, 5, 0));
+        result.setSupportsUserId(true);
+        result.setSupportsCustomData(true);
+        result.setSupportsStableTransaction(true);
+        result.setSupportsImpressionRevenue(true);
+        result.setSupportsReporting(true);
+        result.setSelectable(true);
         return result;
     }
 
@@ -309,6 +382,24 @@ class SkitTenantAdCapabilityControllerTest {
         request.setPriorAcceptanceMinutes(15);
         request.setRewardSecret("provider-super-secret".toCharArray());
         request.setReason("rotate tenant reward secret safely");
+        return request;
+    }
+
+    private SkitAdNetworkCapabilityVerifyReqVO networkCapabilityRequest(
+            Long tenantId, int networkFirmId, boolean enabled) {
+        SkitAdNetworkCapabilityVerifyReqVO request = new SkitAdNetworkCapabilityVerifyReqVO();
+        request.setTenantId(tenantId);
+        request.setAdAccountId(4201L);
+        request.setNetworkFirmId(networkFirmId);
+        request.setRewardAuthority("SIGNED_REWARD");
+        request.setEnabled(enabled);
+        request.setSupportsUserId(true);
+        request.setSupportsCustomData(true);
+        request.setSupportsStableTransaction(true);
+        request.setSupportsImpressionRevenue(true);
+        request.setSupportsReporting(true);
+        request.setExpectedReadinessVersion(7);
+        request.setReason("verify signed callback capability");
         return request;
     }
 

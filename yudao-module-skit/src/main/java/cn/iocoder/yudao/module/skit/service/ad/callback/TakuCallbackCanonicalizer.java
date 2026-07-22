@@ -45,7 +45,7 @@ public class TakuCallbackCanonicalizer {
     private static final List<String> REWARD_FIELDS = Collections.unmodifiableList(Arrays.asList(
             "user_id", "trans_id", "reward_amount", "reward_name", "placement_id", "extra_data",
             "network_firm_id", "adsource_id", "scenario_id", "package_name", "platform", "sign",
-            "ilrd", "exch_rate_c2u", "is_test"));
+            "ilrd", "exch_rate_c2u", "rv_play_dur", "is_test"));
     private static final Set<String> REWARD_ALLOW_LIST = immutableSet(REWARD_FIELDS);
     private static final List<String> REWARD_REQUIRED = Collections.unmodifiableList(Arrays.asList(
             "user_id", "trans_id", "reward_amount", "reward_name", "placement_id", "extra_data",
@@ -220,6 +220,10 @@ public class TakuCallbackCanonicalizer {
         }
         if (hasValue(values, "exch_rate_c2u")
                 && !DECIMAL.matcher(values.get("exch_rate_c2u")).matches()) {
+            throw failure(ErrorCode.INVALID_VALUE);
+        }
+        if (hasValue(values, "rv_play_dur")
+                && !DECIMAL.matcher(values.get("rv_play_dur")).matches()) {
             throw failure(ErrorCode.INVALID_VALUE);
         }
     }

@@ -101,6 +101,12 @@ public interface SkitAdCallbackInboxMapper {
                                                               @Param("id") Long id);
 
     @Select("SELECT * FROM `skit_ad_callback_inbox` WHERE `tenant_id`=#{tenantId} "
+            + "AND `ad_account_id`=#{adAccountId} AND `id`=#{id} AND `deleted`=b'0'")
+    SkitAdCallbackInboxDO selectByTenantAccountAndId(@Param("tenantId") Long tenantId,
+                                                     @Param("adAccountId") Long adAccountId,
+                                                     @Param("id") Long id);
+
+    @Select("SELECT * FROM `skit_ad_callback_inbox` WHERE `tenant_id`=#{tenantId} "
             + "AND `ad_account_id`=#{adAccountId} AND `id`=#{id} "
             + "AND `processing_status`='PROCESSING' AND `lease_owner`=#{leaseOwner} "
             + "AND `lease_until`>=CURRENT_TIMESTAMP FOR UPDATE")

@@ -4,12 +4,10 @@ import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackAttemptDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackEdgeAttemptDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
-import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackEdgeAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
-import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitCallbackPayloadCryptoService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService;
@@ -43,7 +41,6 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
     private static final String IMPRESSION = "IMPRESSION";
     private static final int PAYLOAD_RETENTION_DAYS = 90;
     private static final long SIGNED_REWARD_FIELD_MASK = 0x3fL;
-    private static final String SIGNED_REWARD_AUTHORITY = "SIGNED_REWARD";
 
     private final SkitCallbackRoutingService routingService;
     private final TakuCallbackCanonicalizer canonicalizer;
@@ -54,7 +51,7 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
     private final SkitAdCallbackInboxMapper inboxMapper;
     private final SkitAdCallbackAttemptMapper attemptMapper;
     private final SkitAdCallbackEdgeAttemptMapper edgeAttemptMapper;
-    private final SkitAdNetworkCapabilityMapper networkCapabilityMapper;
+    private final SkitRewardAuthorityPolicy rewardAuthorityPolicy;
     private final SkitCallbackPayloadCryptoService payloadCryptoService;
     private final SkitCallbackRateLimiter rateLimiter;
     private final Clock clock;
@@ -70,11 +67,11 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             SkitAdCallbackInboxMapper inboxMapper,
             SkitAdCallbackAttemptMapper attemptMapper,
             SkitAdCallbackEdgeAttemptMapper edgeAttemptMapper,
-            SkitAdNetworkCapabilityMapper networkCapabilityMapper,
+            SkitRewardAuthorityPolicy rewardAuthorityPolicy,
             SkitCallbackPayloadCryptoService payloadCryptoService,
             SkitCallbackRateLimiter rateLimiter) {
         this(routingService, canonicalizer, signatureVerifier, credentialService, tokenService,
-                sessionMapper, inboxMapper, attemptMapper, edgeAttemptMapper, networkCapabilityMapper,
+                sessionMapper, inboxMapper, attemptMapper, edgeAttemptMapper, rewardAuthorityPolicy,
                 payloadCryptoService, rateLimiter, Clock.systemDefaultZone());
     }
 
@@ -88,7 +85,7 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             SkitAdCallbackInboxMapper inboxMapper,
             SkitAdCallbackAttemptMapper attemptMapper,
             SkitAdCallbackEdgeAttemptMapper edgeAttemptMapper,
-            SkitAdNetworkCapabilityMapper networkCapabilityMapper,
+            SkitRewardAuthorityPolicy rewardAuthorityPolicy,
             SkitCallbackPayloadCryptoService payloadCryptoService,
             SkitCallbackRateLimiter rateLimiter,
             Clock clock) {
@@ -101,8 +98,8 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
         this.inboxMapper = Objects.requireNonNull(inboxMapper, "inboxMapper");
         this.attemptMapper = Objects.requireNonNull(attemptMapper, "attemptMapper");
         this.edgeAttemptMapper = Objects.requireNonNull(edgeAttemptMapper, "edgeAttemptMapper");
-        this.networkCapabilityMapper = Objects.requireNonNull(
-                networkCapabilityMapper, "networkCapabilityMapper");
+        this.rewardAuthorityPolicy = Objects.requireNonNull(
+                rewardAuthorityPolicy, "rewardAuthorityPolicy");
         this.payloadCryptoService = Objects.requireNonNull(payloadCryptoService, "payloadCryptoService");
         this.rateLimiter = Objects.requireNonNull(rateLimiter, "rateLimiter");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -208,20 +205,21 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             recordEdge(route, callbackKey, clientIp, REWARD, "INVALID_SIGNATURE", receivedAt);
             return IngressResponse.INVALID_SIGNATURE;
         }
-        if (!verification.hasSignedRewardAuthority()
-                || !signedAuthorityMatches(session, verification.getAuthority())) {
+        if (!verification.hasSignedRewardAuthority()) {
             recordEdge(route, callbackKey, clientIp, REWARD, verification.getStatus().name(), receivedAt);
             return IngressResponse.REJECTED;
         }
 
         TakuRewardSignatureVerifier.SignedRewardAuthority authority = verification.getAuthority();
-        int networkFirmId = authority.getSignedIlrdEvidence().getNetworkFirmId();
-        SkitAdNetworkCapabilityDO capability = networkCapabilityMapper.selectForShare(
-                route.getTenantId(), route.getAdAccountId(), networkFirmId);
-        if (!signedRewardCapabilityAllows(route, networkFirmId, capability, receivedAt)) {
-            recordEdge(route, callbackKey, clientIp, REWARD, "CAPABILITY_DISABLED", receivedAt);
+        SkitRewardAuthorityPolicy.Decision authorityDecision = rewardAuthorityPolicy.authorize(
+                SkitRewardAuthorityPolicy.Context.ingress(route.getTenantId(), route.getAdAccountId(),
+                        session, authority, callback.getObservedNetworkFirmId(), receivedAt));
+        if (!authorityDecision.isAuthorized()) {
+            recordEdge(route, callbackKey, clientIp, REWARD,
+                    authorityDecision.getErrorCode(), receivedAt);
             return IngressResponse.REJECTED;
         }
+        int networkFirmId = authorityDecision.getNetworkFirmId();
         SkitAdCallbackInboxDO candidate = baseInbox(route, session.getId(), session.getRewardSecretVersion(),
                 REWARD, callback.getTransactionId(), callback.getCanonicalPayloadHash(), receivedAt)
                 .setProviderUserId(callback.getUserId())
@@ -407,41 +405,6 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
                 && !receivedAt.isAfter(session.getRewardAcceptUntil())
                 && session.getRewardCallbackInboxId() == null
                 && session.getRewardCallbackReceivedAt() == null;
-    }
-
-    private boolean signedAuthorityMatches(
-            SkitAdSessionDO session, TakuRewardSignatureVerifier.SignedRewardAuthority authority) {
-        if (authority == null || authority.getSignedIlrdEvidence() == null
-                || !Objects.equals(session.getPlacementId(), authority.getPlacementId())) {
-            return false;
-        }
-        int network = authority.getSignedIlrdEvidence().getNetworkFirmId();
-        if (network != 35 && network != 66 && network != 67) {
-            return false;
-        }
-        String signedSessionId = authority.getSignedIlrdEvidence().getShowCustomExt();
-        if (signedSessionId != null && !signedSessionId.equals(session.getSessionId())) {
-            return false;
-        }
-        String signedShowId = authority.getSignedIlrdEvidence().getShowId();
-        return signedShowId == null || session.getProviderShowId() == null
-                || signedShowId.equals(session.getProviderShowId());
-    }
-
-    private boolean signedRewardCapabilityAllows(
-            SkitCallbackRoutingService.CallbackRoute route, int networkFirmId,
-            SkitAdNetworkCapabilityDO capability, LocalDateTime receivedAt) {
-        return capability != null
-                && Objects.equals(capability.getTenantId(), route.getTenantId())
-                && Objects.equals(capability.getAdAccountId(), route.getAdAccountId())
-                && Objects.equals(capability.getNetworkFirmId(), networkFirmId)
-                && SIGNED_REWARD_AUTHORITY.equals(capability.getRewardAuthority())
-                && Boolean.TRUE.equals(capability.getSupportsUserId())
-                && Boolean.TRUE.equals(capability.getSupportsCustomData())
-                && Boolean.TRUE.equals(capability.getSupportsStableTransaction())
-                && Boolean.TRUE.equals(capability.getEnabled())
-                && capability.getVerifiedAt() != null
-                && !capability.getVerifiedAt().isAfter(receivedAt);
     }
 
     private boolean impressionSessionMatches(

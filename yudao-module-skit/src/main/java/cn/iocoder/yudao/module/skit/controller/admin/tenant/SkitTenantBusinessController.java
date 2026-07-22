@@ -268,8 +268,9 @@ public class SkitTenantBusinessController {
     @GetMapping("/member/page")
     @Operation(summary = "分页查询当前代理商会员")
     public CommonResult<PageResult<SkitMemberService.MemberView>> getMemberPage(@Valid MemberPageReqVO reqVO) {
-        return success(adminTenantScopeGuard.readTenant(reqVO.getTenantId(), true,
-                scope -> memberService.getMemberPage(reqVO, reqVO.getKeyword(), reqVO.getStatus())));
+        return success(adminTenantScopeGuard.readTenantOrGlobal(reqVO.getTenantId(), true,
+                scope -> memberService.getMemberPage(reqVO, reqVO.getKeyword(), reqVO.getStatus()),
+                () -> memberService.getGlobalMemberPage(reqVO, reqVO.getKeyword(), reqVO.getStatus())));
     }
 
     @GetMapping("/member/get")

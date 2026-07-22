@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCre
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCreateRespVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionStatusRespVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitGrantedEpisodesRespVO;
+import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitRewardProvenanceRespVO;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientIpRateLimiterKeyResolver;
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
@@ -26,8 +27,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import javax.annotation.Resource;
 import javax.annotation.security.PermitAll;
+import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import javax.validation.constraints.Pattern;
+import javax.validation.constraints.Positive;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -98,6 +101,22 @@ public class SkitNativeAdSessionController {
         return success(SkitGrantedEpisodesRespVO.of(
                 entitlementService.listGrantedEpisodesForPlayerGrant(
                         grantToken, clientRuntimeResolver.resolve())));
+    }
+
+    @GetMapping("/entitlements/{episodeNo}/reward-provenance")
+    @RateLimiter(time = 60, count = 120, keyResolver = SkitClientIpRateLimiterKeyResolver.class)
+    @ApiAccessLog(requestEnable = false, responseEnable = false)
+    @Operation(summary = "使用短时播放器权限查询已验签奖励展示凭证")
+    public CommonResult<SkitRewardProvenanceRespVO> getRewardProvenance(
+            @RequestHeader("X-Skit-Player-Grant")
+            @Pattern(regexp = "[A-Za-z0-9_-]{43}", message = "播放器权限令牌格式错误") String grantToken,
+            @PathVariable("episodeNo") @Positive(message = "剧集编号必须大于 0") Integer episodeNo,
+            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Pragma", "no-cache");
+        return success(SkitRewardProvenanceRespVO.of(episodeNo,
+                entitlementService.findVerifiedRewardProvenanceForPlayerGrant(
+                        grantToken, episodeNo, clientRuntimeResolver.resolve())));
     }
 
 }

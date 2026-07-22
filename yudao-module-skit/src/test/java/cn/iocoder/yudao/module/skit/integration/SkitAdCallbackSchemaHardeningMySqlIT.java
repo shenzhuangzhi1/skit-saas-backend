@@ -191,8 +191,8 @@ class SkitAdCallbackSchemaHardeningMySqlIT extends SkitMySqlIntegrationTestBase 
 
         long entitlementId = fixture.base + 90;
         jdbc().update("INSERT INTO skit_content_entitlement "
-                        + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,version) "
-                        + "VALUES (?,?,?,?,1,'GRANTED',NOW(),0)",
+                        + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,"
+                        + "lease_activated_at,version) VALUES (?,?,?,?,1,'GRANTED',NOW(),NOW(),0)",
                 entitlementId, fixture.tenantId, fixture.memberOne, fixture.dramaOne);
         long grantId = fixture.base + 91;
         jdbc().update("INSERT INTO skit_entitlement_grant "
@@ -334,8 +334,8 @@ class SkitAdCallbackSchemaHardeningMySqlIT extends SkitMySqlIntegrationTestBase 
             long entitlementId = fixture.base + 90 + episode;
             long grantId = fixture.base + 100 + episode;
             jdbc().update("INSERT INTO skit_content_entitlement "
-                            + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,version) "
-                            + "VALUES (?,?,?,?,?,'GRANTED',NOW(),0)",
+                            + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,"
+                            + "lease_activated_at,version) VALUES (?,?,?,?,?,'GRANTED',NOW(),NOW(),0)",
                     entitlementId, fixture.tenantId, fixture.memberOne, fixture.dramaOne, episode);
             assertDoesNotThrow(() -> jdbc().update("INSERT INTO skit_entitlement_grant "
                             + "(id,tenant_id,ad_session_id,entitlement_id,member_id,drama_id,episode_no,"
@@ -350,8 +350,8 @@ class SkitAdCallbackSchemaHardeningMySqlIT extends SkitMySqlIntegrationTestBase 
 
         long outsideEntitlementId = fixture.base + 99;
         jdbc().update("INSERT INTO skit_content_entitlement "
-                        + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,version) "
-                        + "VALUES (?,?,?,?,4,'GRANTED',NOW(),0)",
+                        + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,"
+                        + "lease_activated_at,version) VALUES (?,?,?,?,4,'GRANTED',NOW(),NOW(),0)",
                 outsideEntitlementId, fixture.tenantId, fixture.memberOne, fixture.dramaOne);
         assertThrows(DataAccessException.class, () -> jdbc().update("INSERT INTO skit_entitlement_grant "
                         + "(id,tenant_id,ad_session_id,entitlement_id,member_id,drama_id,episode_no,"

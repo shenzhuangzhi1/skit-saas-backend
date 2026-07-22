@@ -30,8 +30,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +62,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private final SkitFrozenCommissionProjectionService projectionService;
     private final TakuCallbackCanonicalizer canonicalizer;
     private final TakuRewardSignatureVerifier signatureVerifier;
+    private final SkitRewardAuthorityPolicy rewardAuthorityPolicy;
     private final Clock clock;
 
     @Autowired
@@ -77,10 +78,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                        SkitPolicySnapshotService snapshotService,
                                        SkitFrozenCommissionProjectionService projectionService,
                                        TakuCallbackCanonicalizer canonicalizer,
-                                       TakuRewardSignatureVerifier signatureVerifier) {
+                                       TakuRewardSignatureVerifier signatureVerifier,
+                                       SkitRewardAuthorityPolicy rewardAuthorityPolicy) {
         this(inboxMapper, sessionMapper, capabilityMapper, entitlementMapper, grantMapper,
                 revenueMapper, payloadCrypto, credentialService, tokenService, snapshotService,
-                projectionService, canonicalizer, signatureVerifier, Clock.systemDefaultZone());
+                projectionService, canonicalizer, signatureVerifier, rewardAuthorityPolicy,
+                Clock.systemDefaultZone());
     }
 
     SkitAdCallbackProcessorImpl(SkitAdCallbackInboxMapper inboxMapper,
@@ -96,6 +99,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                 SkitFrozenCommissionProjectionService projectionService,
                                 TakuCallbackCanonicalizer canonicalizer,
                                 TakuRewardSignatureVerifier signatureVerifier,
+                                SkitRewardAuthorityPolicy rewardAuthorityPolicy,
                                 Clock clock) {
         this.inboxMapper = Objects.requireNonNull(inboxMapper, "inboxMapper");
         this.sessionMapper = Objects.requireNonNull(sessionMapper, "sessionMapper");
@@ -110,6 +114,8 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
         this.canonicalizer = Objects.requireNonNull(canonicalizer, "canonicalizer");
         this.signatureVerifier = Objects.requireNonNull(signatureVerifier, "signatureVerifier");
+        this.rewardAuthorityPolicy = Objects.requireNonNull(
+                rewardAuthorityPolicy, "rewardAuthorityPolicy");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -136,6 +142,9 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         String envelopeError = rewardEnvelopeError(inbox, session);
         if (envelopeError != null) {
             return rejectReward(inbox, session, envelopeError, processedAt);
+        }
+        if (!isExactSingleEpisodeScope(session)) {
+            return rejectReward(inbox, session, "LEGACY_MULTI_EPISODE_SCOPE", processedAt);
         }
         if (!"CANONICAL".equals(inbox.getDeliveryIntegrityStatus())) {
             return rejectReward(inbox, session, "CALLBACK_PAYLOAD_CONFLICT", processedAt);
@@ -168,17 +177,13 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             return rejectReward(inbox, session, "REWARD_REVALIDATION_FAILED", processedAt);
         }
         TakuRewardSignatureVerifier.SignedRewardAuthority authority = verification.getAuthority();
-        String authorityError = rewardAuthorityError(inbox, session, authority);
-        if (authorityError != null) {
-            return rejectReward(inbox, session, authorityError, processedAt);
+        SkitRewardAuthorityPolicy.Decision authorityDecision = rewardAuthorityPolicy.authorize(
+                SkitRewardAuthorityPolicy.Context.processing(
+                        inbox, session, authority, callback.getObservedNetworkFirmId()));
+        if (!authorityDecision.isAuthorized()) {
+            return rejectReward(inbox, session, authorityDecision.getErrorCode(), processedAt);
         }
-
-        int networkFirmId = authority.getSignedIlrdEvidence().getNetworkFirmId();
-        SkitAdNetworkCapabilityDO capability = capabilityMapper.selectForShare(
-                inbox.getTenantId(), inbox.getAdAccountId(), networkFirmId);
-        if (!rewardCapabilityAllows(inbox, capability, networkFirmId)) {
-            return rejectReward(inbox, session, "NETWORK_CAPABILITY_REJECTED", processedAt);
-        }
+        int networkFirmId = authorityDecision.getNetworkFirmId();
 
         LockedImpressionAuthority impressionAuthority = lockExistingImpressionAuthority(session);
         String sourceAuthorityError = impressionAuthorityError(impressionAuthority, authority);
@@ -187,7 +192,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                     inbox, session, sourceAuthorityError, processedAt);
         }
 
-        List<Integer> episodes = episodeRange(session);
+        List<Integer> episodes = exactEpisodeScope(session);
         Map<Integer, SkitContentEntitlementDO> existing = lockExistingEntitlements(session, episodes);
         for (SkitContentEntitlementDO row : existing.values()) {
             if ("SECURITY_REVOKED".equals(row.getStatus())) {
@@ -197,6 +202,10 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 throw new IllegalStateException("Entitlement status is outside the supported state machine");
             }
         }
+        // Capture the grant clock only after the exact entitlement projection is locked. This
+        // makes a callback that waited behind CLOSED serialize after that close instead of
+        // backdating a new lease to the beginning of callback processing.
+        LocalDateTime grantedAt = nextVerifiedRewardAt(existing);
 
         SkitAdRevenueEventDO rewardedEstimate = prepareRewardEstimate(
                 session, impressionAuthority, authority, inbox.getReceivedAt());
@@ -206,12 +215,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 inbox.getTenantId(), session.getId(), inbox.getAdAccountId(), inbox.getId(),
                 inbox.getReceivedAt(), session.getVersion(), inbox.getCallbackKeyVersion(),
                 inbox.getRewardSecretVersion(), authority.getTransactionId(), signedShowId,
-                networkFirmId, authority.getAdsourceId(), processedAt);
+                networkFirmId, authority.getAdsourceId(), grantedAt);
         if (updated != 1) {
             throw new IllegalStateException("Reward session changed before verified entitlement commit");
         }
 
-        grantEpisodes(session, episodes, existing, authority.getTransactionId(), processedAt);
+        grantEpisodes(session, episodes, existing, authority.getTransactionId(), grantedAt);
         if (rewardedEstimate != null) {
             projectionService.projectRewardedEstimate(rewardedEstimate);
         }
@@ -373,34 +382,6 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         return null;
     }
 
-    private String rewardAuthorityError(SkitAdCallbackInboxDO inbox, SkitAdSessionDO session,
-                                        TakuRewardSignatureVerifier.SignedRewardAuthority authority) {
-        TakuRewardSignatureVerifier.SignedIlrdEvidence evidence = authority.getSignedIlrdEvidence();
-        if (!Objects.equals(authority.getTransactionId(), inbox.getProviderTransactionId())
-                || !Objects.equals(authority.getPlacementId(), session.getPlacementId())
-                || !Objects.equals(authority.getPlacementId(), inbox.getPlacementId())
-                || !Objects.equals(authority.getAdsourceId(), inbox.getAdsourceId())
-                || evidence == null || !Objects.equals(evidence.getNetworkFirmId(), inbox.getNetworkFirmId())
-                || !Objects.equals(evidence.getShowId(), inbox.getProviderShowId())) {
-            return "SIGNED_REWARD_AUTHORITY_MISMATCH";
-        }
-        String signedSessionId = evidence.getShowCustomExt();
-        boolean tokenMatchesSession = sameHash(inbox.getExtraDataHash(), session.getSessionTokenHash());
-        boolean signedSessionMatches = signedSessionId != null
-                && signedSessionId.equals(session.getSessionId());
-        if (signedSessionId != null && !signedSessionMatches) {
-            return "SIGNED_SHOW_CUSTOM_EXT_MISMATCH";
-        }
-        if (!tokenMatchesSession && !signedSessionMatches) {
-            return "REWARD_SESSION_BINDING_MISMATCH";
-        }
-        if (evidence.getShowId() != null && session.getProviderShowId() != null
-                && !evidence.getShowId().equals(session.getProviderShowId())) {
-            return "SIGNED_SHOW_MISMATCH";
-        }
-        return null;
-    }
-
     private String impressionEnvelopeError(SkitAdCallbackInboxDO inbox, SkitAdSessionDO session) {
         if (!PROVIDER.equals(inbox.getProvider()) || !PROVIDER.equals(session.getProvider())
                 || !IMPRESSION.equals(inbox.getCallbackType())
@@ -465,17 +446,6 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         return null;
     }
 
-    private boolean rewardCapabilityAllows(SkitAdCallbackInboxDO inbox,
-                                           SkitAdNetworkCapabilityDO capability,
-                                           int networkFirmId) {
-        return hardAllowedRewardNetwork(networkFirmId)
-                && capabilityScopeMatches(inbox, capability, networkFirmId)
-                && SIGNED_REWARD.equals(capability.getRewardAuthority())
-                && Boolean.TRUE.equals(capability.getSupportsUserId())
-                && Boolean.TRUE.equals(capability.getSupportsCustomData())
-                && Boolean.TRUE.equals(capability.getSupportsStableTransaction());
-    }
-
     private boolean impressionCapabilityAllows(SkitAdCallbackInboxDO inbox,
                                                SkitAdNetworkCapabilityDO capability,
                                                Integer networkFirmId) {
@@ -517,11 +487,22 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                String transactionId, LocalDateTime grantedAt) {
         for (Integer episode : episodes) {
             SkitContentEntitlementDO entitlement = existing.get(episode);
+            SkitEntitlementGrantDO grant = grantMapper.selectBySessionAndEpisodeForUpdate(
+                    session.getTenantId(), session.getId(), episode);
+            // A replay of this exact signed callback must remain an idempotent no-op even if the
+            // five-minute lease has elapsed by the time it is reprocessed.
+            if (grant != null) {
+                if (entitlement == null) {
+                    throw new IllegalStateException("Existing grant has no entitlement projection");
+                }
+                validateExistingGrant(grant, session, entitlement, episode, transactionId);
+                continue;
+            }
             String grantResult;
             if (entitlement == null) {
                 entitlement = new SkitContentEntitlementDO().setMemberId(session.getMemberId())
                         .setDramaId(session.getDramaId()).setEpisodeNo(episode).setStatus("GRANTED")
-                        .setGrantedAt(grantedAt).setVersion(0);
+                        .setGrantedAt(grantedAt).setLeaseActivatedAt(grantedAt).setVersion(0);
                 entitlement.setTenantId(session.getTenantId());
                 int inserted = entitlementMapper.insertGrantedIfAbsent(entitlement);
                 if (inserted < 0 || entitlement.getId() == null || entitlement.getId() <= 0) {
@@ -529,24 +510,48 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 }
                 grantResult = "CREATED";
             } else {
-                grantResult = "ALREADY_OWNED";
-            }
-            SkitEntitlementGrantDO grant = grantMapper.selectBySessionAndEpisodeForUpdate(
-                    session.getTenantId(), session.getId(), episode);
-            if (grant == null) {
-                grant = new SkitEntitlementGrantDO().setAdSessionId(session.getId())
-                        .setEntitlementId(entitlement.getId()).setMemberId(session.getMemberId())
-                        .setDramaId(session.getDramaId()).setEpisodeNo(episode)
-                        .setProviderTransactionId(transactionId).setGrantResult(grantResult)
-                        .setGrantedAt(grantedAt);
-                grant.setTenantId(session.getTenantId());
-                if (grantMapper.insert(grant) != 1) {
-                    throw new IllegalStateException("Entitlement grant was not appended exactly once");
+                LocalDateTime expectedGrantedAt = entitlement.getGrantedAt();
+                int advanced = entitlementMapper.advanceVerifiedRewardLeaseCas(session.getTenantId(),
+                        entitlement.getId(), session.getMemberId(), session.getDramaId(), episode,
+                        entitlement.getVersion(), expectedGrantedAt,
+                        grantedAt);
+                if (advanced != 1) {
+                    throw new IllegalStateException("Entitlement proof changed before verified reward advance");
                 }
-            } else {
-                validateExistingGrant(grant, session, entitlement, episode, transactionId);
+                entitlement.setGrantedAt(grantedAt).setLeaseActivatedAt(grantedAt)
+                        .setVersion(entitlement.getVersion() + 1);
+                // Every fresh signed reward becomes the current immutable provenance anchor,
+                // including the rare case where an older close just reactivated an active lease.
+                grantResult = "CREATED";
+            }
+            grant = new SkitEntitlementGrantDO().setAdSessionId(session.getId())
+                    .setEntitlementId(entitlement.getId()).setMemberId(session.getMemberId())
+                    .setDramaId(session.getDramaId()).setEpisodeNo(episode)
+                    .setProviderTransactionId(transactionId).setGrantResult(grantResult)
+                    .setGrantedAt(grantedAt);
+            grant.setTenantId(session.getTenantId());
+            if (grantMapper.insert(grant) != 1) {
+                throw new IllegalStateException("Entitlement grant was not appended exactly once");
             }
         }
+    }
+
+    private LocalDateTime nextVerifiedRewardAt(
+            Map<Integer, SkitContentEntitlementDO> existing) {
+        LocalDateTime candidate = now();
+        for (SkitContentEntitlementDO entitlement : existing.values()) {
+            if (entitlement.getGrantedAt() == null || entitlement.getLeaseActivatedAt() == null
+                    || entitlement.getVersion() == null) {
+                throw new IllegalStateException("Granted entitlement lease is malformed");
+            }
+            LocalDateTime latest = entitlement.getGrantedAt().isAfter(
+                    entitlement.getLeaseActivatedAt())
+                    ? entitlement.getGrantedAt() : entitlement.getLeaseActivatedAt();
+            if (!candidate.isAfter(latest)) {
+                candidate = latest.plusSeconds(1);
+            }
+        }
+        return candidate;
     }
 
     private LockedImpressionAuthority lockExistingImpressionAuthority(SkitAdSessionDO session) {
@@ -867,21 +872,17 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         }
     }
 
-    private static boolean hardAllowedRewardNetwork(int networkFirmId) {
-        return networkFirmId == 35 || networkFirmId == 66 || networkFirmId == 67;
-    }
-
-    private static List<Integer> episodeRange(SkitAdSessionDO session) {
+    private static boolean isExactSingleEpisodeScope(SkitAdSessionDO session) {
         Integer first = session.getEpisodeFrom();
         Integer last = session.getEpisodeTo();
-        if (first == null || last == null || first <= 0 || last < first || last - first > 100) {
-            throw new IllegalStateException("Session episode range is invalid");
+        return first != null && first > 0 && first.equals(last);
+    }
+
+    private static List<Integer> exactEpisodeScope(SkitAdSessionDO session) {
+        if (!isExactSingleEpisodeScope(session)) {
+            throw new IllegalStateException("Reward session must target exactly one episode");
         }
-        List<Integer> episodes = new ArrayList<>(last - first + 1);
-        for (int episode = first; episode <= last; episode++) {
-            episodes.add(episode);
-        }
-        return episodes;
+        return Collections.singletonList(session.getEpisodeFrom());
     }
 
     private static String rewardQualification(SkitAdSessionDO session) {

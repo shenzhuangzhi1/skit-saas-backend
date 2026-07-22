@@ -19,6 +19,10 @@ public interface SkitTenantAdCapabilityService {
 
     CapabilityView transition(TransitionCommand command);
 
+    List<NetworkCapabilityView> listNetworkCapabilities(Long adAccountId);
+
+    NetworkCapabilityView verifyNetworkCapability(NetworkCapabilityCommand command);
+
     /** Locks the tenant singleton and verifies the credential mutation target/version. */
     void lockCredentialMutationTarget(Long adAccountId, Integer expectedReadinessVersion);
 
@@ -56,6 +60,20 @@ public interface SkitTenantAdCapabilityService {
         private String targetState;
         private String minNativeVersion;
         private Integer minProtocolVersion;
+        private Integer expectedReadinessVersion;
+    }
+
+    @Data
+    class NetworkCapabilityCommand {
+        private Long adAccountId;
+        private Integer networkFirmId;
+        private String rewardAuthority;
+        private Boolean enabled;
+        private Boolean supportsUserId;
+        private Boolean supportsCustomData;
+        private Boolean supportsStableTransaction;
+        private Boolean supportsImpressionRevenue;
+        private Boolean supportsReporting;
         private Integer expectedReadinessVersion;
     }
 
@@ -105,12 +123,18 @@ public interface SkitTenantAdCapabilityService {
         private Boolean reportFresh;
         private Boolean signedRewardCallbackObserved;
         private Boolean impressionCallbackObserved;
+        private Boolean pairedSourceEvidenceObserved;
         private Boolean nativeReleaseReady;
         private Boolean protocolReady;
         private Boolean shadowMembersValid;
         private Boolean shadowReady;
         private Boolean productionReady;
         private List<String> blockers = Collections.emptyList();
+        private List<NetworkCapabilityView> availableNetworkCapabilities = Collections.emptyList();
+        private List<NetworkReadinessView> networkReadiness = Collections.emptyList();
+        private Set<Integer> missingSignedRewardNetworkFirmIds = Collections.emptySet();
+        private Set<Integer> missingImpressionNetworkFirmIds = Collections.emptySet();
+        private Set<Integer> missingPairedSourceNetworkFirmIds = Collections.emptySet();
         private LocalDateTime lastSignedRewardCallbackAt;
         private LocalDateTime lastImpressionCallbackAt;
         private LocalDateTime lastReportSuccessAt;
@@ -138,6 +162,47 @@ public interface SkitTenantAdCapabilityService {
         public boolean isCallbackPublicUrlHttps() {
             return Boolean.TRUE.equals(callbackPublicUrlHttps);
         }
+    }
+
+    @Data
+    class NetworkCapabilityView {
+        private Integer networkFirmId;
+        private String rewardAuthority;
+        private boolean enabled;
+        private boolean verified;
+        private LocalDateTime verifiedAt;
+        private boolean supportsUserId;
+        private boolean supportsCustomData;
+        private boolean supportsStableTransaction;
+        private boolean supportsImpressionRevenue;
+        private boolean supportsReporting;
+        private boolean selectable;
+        private List<String> blockers = Collections.emptyList();
+    }
+
+    @Data
+    class NetworkReadinessView {
+        private Integer networkFirmId;
+        private String rewardAuthority;
+        private boolean enabled;
+        private boolean verified;
+        private LocalDateTime verifiedAt;
+        private boolean supportsUserId;
+        private boolean supportsCustomData;
+        private boolean supportsStableTransaction;
+        private boolean supportsImpressionRevenue;
+        private boolean supportsReporting;
+        private boolean authoritative;
+        private boolean signedRewardObserved;
+        private boolean impressionObserved;
+        private boolean pairedSourceObserved;
+        private LocalDateTime lastSignedRewardCallbackAt;
+        private LocalDateTime lastImpressionCallbackAt;
+        private List<String> sourceRefs = Collections.emptyList();
+        private List<String> signedRewardSourceRefs = Collections.emptyList();
+        private List<String> impressionSourceRefs = Collections.emptyList();
+        private List<String> pairedSourceRefs = Collections.emptyList();
+        private List<String> blockers = Collections.emptyList();
     }
 
 }

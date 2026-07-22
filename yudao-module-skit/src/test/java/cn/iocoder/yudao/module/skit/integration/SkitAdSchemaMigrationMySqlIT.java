@@ -278,8 +278,8 @@ class SkitAdSchemaMigrationMySqlIT extends SkitMySqlIntegrationTestBase {
                         + "VALUES (101,92002,1,UNHEX(REPEAT('21',32)),b'1')"));
         assertThrows(DataAccessException.class, () -> jdbc().update(
                 "INSERT INTO skit_content_entitlement "
-                        + "(tenant_id,member_id,drama_id,episode_no,status,granted_at) "
-                        + "VALUES (101,93002,1,1,'GRANTED',CURRENT_TIMESTAMP)"));
+                        + "(tenant_id,member_id,drama_id,episode_no,status,granted_at,lease_activated_at) "
+                        + "VALUES (101,93002,1,1,'GRANTED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"));
         assertThrows(DataAccessException.class, () -> jdbc().update(
                 "INSERT INTO skit_ad_revenue_event "
                         + "(tenant_id,ad_account_id,provider,placement_id,external_event_id,source_member_id,"

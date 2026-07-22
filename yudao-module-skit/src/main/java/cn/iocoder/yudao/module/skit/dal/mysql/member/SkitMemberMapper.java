@@ -22,6 +22,10 @@ public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
             + "AND `deleted`=b'0' FOR SHARE")
     SkitMemberDO selectByTenantAndIdForShare(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
+    @Select("SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `id`=#{id} "
+            + "AND `deleted`=b'0'")
+    SkitMemberDO selectByTenantAndId(@Param("tenantId") Long tenantId, @Param("id") Long id);
+
     @Select({"<script>",
             "SELECT * FROM `skit_member` WHERE `tenant_id`=#{tenantId} AND `deleted`=b'0' AND `id` IN",
             "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
@@ -70,6 +74,12 @@ public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
 
     default Long selectCountByInviterId(Long inviterId) {
         return selectCount(SkitMemberDO::getInviterId, inviterId);
+    }
+
+    default Long selectCountByTenantAndInviterId(Long tenantId, Long inviterId) {
+        return selectCount(new LambdaQueryWrapperX<SkitMemberDO>()
+                .eq(SkitMemberDO::getTenantId, tenantId)
+                .eq(SkitMemberDO::getInviterId, inviterId));
     }
 
 }

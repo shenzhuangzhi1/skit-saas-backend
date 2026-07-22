@@ -21,7 +21,58 @@ public interface SkitContentEntitlementService {
     List<Integer> listGrantedEpisodesForPlayerGrant(
             String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime);
 
+    /**
+     * Returns the immutable signed reward provenance for one already-granted episode, or
+     * {@code null} when no single valid proof can be established.
+     */
+    VerifiedRewardProvenance findVerifiedRewardProvenanceForPlayerGrant(
+            String grantToken, Integer episodeNo,
+            SkitTenantAdCapabilityService.ClientRuntime runtime);
+
     boolean ownsEpisodeForUpdate(Long memberId, Long dramaId, Integer episodeNo);
+
+    /** Activates one exact signed reward lease after its canonical rewarded close is committed. */
+    void activateVerifiedRewardLeaseOnClose(Long memberId, Long adSessionId, Long dramaId,
+                                            Integer episodeNo, LocalDateTime closedAt);
+
+    final class VerifiedRewardProvenance {
+
+        private final Integer episodeNo;
+        private final String sessionId;
+        private final String provider;
+        private final String providerShowId;
+
+        public VerifiedRewardProvenance(Integer episodeNo, String sessionId, String provider,
+                                        String providerShowId) {
+            this.episodeNo = episodeNo;
+            this.sessionId = sessionId;
+            this.provider = provider;
+            this.providerShowId = providerShowId;
+        }
+
+        public Integer getEpisodeNo() {
+            return episodeNo;
+        }
+
+        public String getSessionId() {
+            return sessionId;
+        }
+
+        public String getProvider() {
+            return provider;
+        }
+
+        public String getProviderShowId() {
+            return providerShowId;
+        }
+
+        @Override
+        public String toString() {
+            return "VerifiedRewardProvenance{episodeNo=" + episodeNo
+                    + ", sessionId=<redacted>, provider=" + provider
+                    + ", providerShowId=<redacted>}";
+        }
+    }
 
     final class PlayerGrantIssue {
 

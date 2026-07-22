@@ -5,10 +5,12 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitMemberMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitNativePlayerGrantMapper;
 import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
@@ -44,10 +46,15 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
 
     private static final int PLAYER_GRANT_BYTES = 32;
     private static final int PLAYER_GRANT_RETRIES = 8;
-    private static final int PLAYER_GRANT_MINUTES = 5;
+    // A player grant is a short-lived bearer for the native ad flow, not content ownership.
+    // Each legitimate use renews this idle window so continuous playback does not fail while
+    // an abandoned player grant still expires promptly.
+    private static final int PLAYER_GRANT_IDLE_MINUTES = 30;
+    private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitNativePlayerGrantMapper nativeGrantMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
+    private final SkitEntitlementGrantMapper entitlementGrantMapper;
     private final SkitContentScopeService contentScopeService;
     private final SkitMemberMapper memberMapper;
     private final SkitAgentMapper agentMapper;
@@ -59,17 +66,20 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     @Autowired
     public SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
                                              SkitContentEntitlementMapper entitlementMapper,
+                                             SkitEntitlementGrantMapper entitlementGrantMapper,
                                              SkitContentScopeService contentScopeService,
                                              SkitMemberMapper memberMapper,
                                              SkitAgentMapper agentMapper,
                                              TenantService tenantService,
                                              SkitTenantAdCapabilityService capabilityService) {
-        this(nativeGrantMapper, entitlementMapper, contentScopeService, memberMapper, agentMapper,
-                tenantService, Clock.systemDefaultZone(), new SecureRandom(), capabilityService);
+        this(nativeGrantMapper, entitlementMapper, entitlementGrantMapper, contentScopeService,
+                memberMapper, agentMapper, tenantService, Clock.systemDefaultZone(),
+                new SecureRandom(), capabilityService);
     }
 
     SkitContentEntitlementServiceImpl(SkitNativePlayerGrantMapper nativeGrantMapper,
                                       SkitContentEntitlementMapper entitlementMapper,
+                                      SkitEntitlementGrantMapper entitlementGrantMapper,
                                       SkitContentScopeService contentScopeService,
                                       SkitMemberMapper memberMapper,
                                       SkitAgentMapper agentMapper,
@@ -79,6 +89,8 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                                       SkitTenantAdCapabilityService capabilityService) {
         this.nativeGrantMapper = Objects.requireNonNull(nativeGrantMapper, "nativeGrantMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
+        this.entitlementGrantMapper = Objects.requireNonNull(
+                entitlementGrantMapper, "entitlementGrantMapper");
         this.contentScopeService = Objects.requireNonNull(contentScopeService, "contentScopeService");
         this.memberMapper = Objects.requireNonNull(memberMapper, "memberMapper");
         this.agentMapper = Objects.requireNonNull(agentMapper, "agentMapper");
@@ -104,7 +116,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                 || drama.getCatalogRecordId() <= 0) {
             throw exception(AD_PLAYER_GRANT_INVALID);
         }
-        LocalDateTime expiresAt = now().plusMinutes(PLAYER_GRANT_MINUTES);
+        LocalDateTime expiresAt = now().plusMinutes(PLAYER_GRANT_IDLE_MINUTES);
         for (int attempt = 0; attempt < PLAYER_GRANT_RETRIES; attempt++) {
             byte[] random = new byte[PLAYER_GRANT_BYTES];
             secureRandom.nextBytes(random);
@@ -166,14 +178,20 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         requireEnabledAgent(tenantId, agentMapper.selectByTenantId(tenantId));
         requireEnabledMember(tenantId, reference.getMemberId(),
                 memberMapper.selectByTenantAndIdForShare(tenantId, reference.getMemberId()));
-        SkitNativePlayerGrantDO row = nativeGrantMapper.selectExactForShare(tenantId,
+        SkitNativePlayerGrantDO row = nativeGrantMapper.selectExactForUpdate(tenantId,
                 reference.getGrantId(), reference.getMemberId(), reference.getDramaId());
         if (!sameGrant(reference, row)) {
             throw exception(AD_PLAYER_GRANT_INVALID);
         }
         LocalDateTime now = now();
         if (!"ACTIVE".equals(row.getStatus()) || row.getRevokedAt() != null
-                || row.getExpiresAt() == null || !row.getExpiresAt().isAfter(now)) {
+                || row.getExpiresAt() == null || !row.getExpiresAt().isAfter(now)
+                || row.getVersion() == null || row.getVersion() < 0) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        LocalDateTime renewedExpiresAt = now.plusMinutes(PLAYER_GRANT_IDLE_MINUTES);
+        if (nativeGrantMapper.recordActiveUseCas(tenantId, row.getId(), row.getMemberId(),
+                row.getDramaId(), row.getVersion(), now, renewedExpiresAt) != 1) {
             throw exception(AD_PLAYER_GRANT_INVALID);
         }
         return new PlayerGrantScope(tenantId, row.getId(), row.getMemberId(), row.getDramaId());
@@ -184,14 +202,17 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         requirePositive(dramaId, "dramaId");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
         List<SkitContentEntitlementDO> rows = entitlementMapper.selectGrantedEpisodes(
-                tenantId, memberId, dramaId);
+                tenantId, memberId, dramaId,
+                now().minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
         if (rows == null || rows.isEmpty()) {
             return Collections.emptyList();
         }
         List<Integer> episodes = new ArrayList<>(rows.size());
         for (SkitContentEntitlementDO row : rows) {
             validateEntitlementScope(row, tenantId, memberId, dramaId);
-            episodes.add(row.getEpisodeNo());
+            if (isActiveGrantedEntitlement(row, now())) {
+                episodes.add(row.getEpisodeNo());
+            }
         }
         return episodes;
     }
@@ -206,7 +227,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     }
 
     @Override
-    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public List<Integer> listGrantedEpisodesForPlayerGrant(
             String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         PlayerGrantReference reference = resolvePlayerGrant(grantToken);
@@ -216,6 +237,31 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                     SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
             PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
             result.set(listGrantedEpisodesInsideTenant(scope.getMemberId(), scope.getDramaId()));
+        });
+        return result.get();
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public VerifiedRewardProvenance findVerifiedRewardProvenanceForPlayerGrant(
+            String grantToken, Integer episodeNo,
+            SkitTenantAdCapabilityService.ClientRuntime runtime) {
+        requirePositive(episodeNo, "episodeNo");
+        PlayerGrantReference reference = resolvePlayerGrant(grantToken);
+        AtomicReference<VerifiedRewardProvenance> result = new AtomicReference<>();
+        TenantUtils.execute(reference.getTenantId(), () -> {
+            requireClientAccess(reference.getMemberId(), runtime,
+                    SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+            PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
+            List<SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow> rows =
+                    entitlementGrantMapper.selectVerifiedRewardProvenance(
+                            scope.getTenantId(), scope.getMemberId(), scope.getDramaId(), episodeNo,
+                            now().minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
+            if (rows == null || rows.size() != 1) {
+                return;
+            }
+            result.set(validateVerifiedRewardProvenance(
+                    rows.get(0), scope, episodeNo));
         });
         return result.get();
     }
@@ -236,7 +282,58 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         }
         SkitContentEntitlementDO row = rows.get(0);
         validateEntitlementEnvelope(row, tenantId, memberId, dramaId, episodeNo);
-        return "GRANTED".equals(row.getStatus());
+        return isActiveGrantedEntitlement(row, now());
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public void activateVerifiedRewardLeaseOnClose(Long memberId, Long adSessionId, Long dramaId,
+                                                   Integer episodeNo, LocalDateTime closedAt) {
+        requirePositive(memberId, "memberId");
+        requirePositive(adSessionId, "adSessionId");
+        requirePositive(dramaId, "dramaId");
+        requirePositive(episodeNo, "episodeNo");
+        Objects.requireNonNull(closedAt, "closedAt");
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodesForUpdate(
+                tenantId, memberId, dramaId, Collections.singletonList(episodeNo));
+        if (rows == null || rows.size() != 1) {
+            throw new IllegalStateException("Verified reward has no exact entitlement projection");
+        }
+        SkitContentEntitlementDO entitlement = rows.get(0);
+        validateEntitlementEnvelope(entitlement, tenantId, memberId, dramaId, episodeNo);
+        SkitEntitlementGrantDO grant = entitlementGrantMapper
+                .selectBySessionAndEpisodeForUpdate(tenantId, adSessionId, episodeNo);
+        if (grant == null || !tenantId.equals(grant.getTenantId())
+                || !adSessionId.equals(grant.getAdSessionId())
+                || !entitlement.getId().equals(grant.getEntitlementId())
+                || !memberId.equals(grant.getMemberId()) || !dramaId.equals(grant.getDramaId())
+                || !episodeNo.equals(grant.getEpisodeNo()) || grant.getGrantedAt() == null
+                || entitlement.getGrantedAt() == null || entitlement.getLeaseActivatedAt() == null
+                || entitlement.getVersion() == null || closedAt.isBefore(grant.getGrantedAt())) {
+            throw new IllegalStateException("Rewarded close is not bound to the current signed grant");
+        }
+        if (!"CREATED".equals(grant.getGrantResult())) {
+            return;
+        }
+        if (!grant.getGrantedAt().equals(entitlement.getGrantedAt())) {
+            if (entitlement.getGrantedAt().isAfter(grant.getGrantedAt())) {
+                // A newer verified reward won the projection. The old CLOSED evidence remains
+                // canonical, but it must not extend or roll back the new session's lease.
+                return;
+            }
+            throw new IllegalStateException("Rewarded close proof is newer than the entitlement projection");
+        }
+        if (!entitlement.getLeaseActivatedAt().isBefore(closedAt)) {
+            return;
+        }
+        int expectedVersion = entitlement.getVersion();
+        if (entitlementMapper.activateVerifiedRewardLeaseCas(
+                tenantId, entitlement.getId(), memberId, dramaId, episodeNo, expectedVersion,
+                grant.getGrantedAt(), closedAt) != 1) {
+            throw new IllegalStateException("Verified reward lease changed before close settlement");
+        }
+        entitlement.setLeaseActivatedAt(closedAt).setVersion(expectedVersion + 1);
     }
 
     private boolean sameGrant(PlayerGrantReference reference, SkitNativePlayerGrantDO row) {
@@ -246,6 +343,24 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                 && reference.getDramaId().equals(row.getDramaId())
                 && row.getGrantTokenHash() != null
                 && MessageDigest.isEqual(reference.getGrantTokenHash(), row.getGrantTokenHash());
+    }
+
+    private VerifiedRewardProvenance validateVerifiedRewardProvenance(
+            SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow row,
+            PlayerGrantScope scope, Integer episodeNo) {
+        if (row == null || !scope.getTenantId().equals(row.getTenantId())
+                || !scope.getMemberId().equals(row.getMemberId())
+                || !scope.getDramaId().equals(row.getDramaId())
+                || !episodeNo.equals(row.getEpisodeNo())
+                || !"TAKU".equals(row.getProvider())
+                || row.getSessionId() == null
+                || !row.getSessionId().matches("[A-Za-z0-9_-]{22}")
+                || row.getProviderShowId() == null
+                || !row.getProviderShowId().matches("[A-Za-z0-9._:/-]{1,128}")) {
+            return null;
+        }
+        return new VerifiedRewardProvenance(
+                episodeNo, row.getSessionId(), row.getProvider(), row.getProviderShowId());
     }
 
     private void requireEnabledAgent(Long tenantId, SkitAgentDO agent) {
@@ -278,6 +393,13 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
             throw new IllegalStateException("Granted entitlement row is malformed");
         }
         validateEntitlementEnvelope(row, tenantId, memberId, dramaId, row.getEpisodeNo());
+    }
+
+    private boolean isActiveGrantedEntitlement(SkitContentEntitlementDO row, LocalDateTime now) {
+        return "GRANTED".equals(row.getStatus()) && row.getGrantedAt() != null
+                && row.getLeaseActivatedAt() != null
+                && row.getLeaseActivatedAt().isAfter(
+                now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
     }
 
     private void validateEntitlementEnvelope(SkitContentEntitlementDO row, Long tenantId,

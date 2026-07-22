@@ -22,7 +22,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -134,6 +133,80 @@ class SkitAdRewardVerificationExpiryServiceTest {
     }
 
     @Test
+    void terminalReceiptCandidateDelegatesToSharedCompensationInsideItsTenantTransaction() {
+        SkitAdSessionMapper sessionMapper = mock(SkitAdSessionMapper.class);
+        SkitAdRevenueEventMapper eventMapper = mock(SkitAdRevenueEventMapper.class);
+        SkitAdRewardReceiptResolutionService resolver =
+                mock(SkitAdRewardReceiptResolutionService.class);
+        SkitFrozenCommissionProjectionService projection =
+                mock(SkitFrozenCommissionProjectionService.class);
+        SkitAdRewardExpiryClaimDO claim = claim(7351L, 7361L, 7371L);
+        SkitAdSessionDO session = pendingSession(claim, 7381L, 7391L, "NONE", 2)
+                .setRewardCallbackInboxId(7401L)
+                .setRewardCallbackReceivedAt(FIXTURE_TIME.minusMinutes(2));
+        when(sessionMapper.selectExpiredRewardClaims(1))
+                .thenReturn(Collections.singletonList(claim));
+        when(sessionMapper.selectByTenantAccountAndIdForUpdate(7351L, 7361L, 7371L))
+                .thenReturn(session);
+        when(sessionMapper.selectDatabaseNow()).thenReturn(FIXTURE_TIME);
+        when(resolver.resolveTerminalReceipt(session, FIXTURE_TIME)).thenAnswer(invocation -> {
+            assertEquals(7351L, TenantContextHolder.getRequiredTenantId());
+            return true;
+        });
+
+        assertEquals(1, service(sessionMapper, eventMapper, resolver, projection,
+                new RecordingTransactionManager(), 1).sweepOnce());
+
+        verify(resolver).resolveTerminalReceipt(session, FIXTURE_TIME);
+        verify(eventMapper, never()).selectByTenantSessionAndSourceForUpdate(
+                anyLong(), anyLong(), any(String.class));
+        verify(sessionMapper, never()).markRewardVerifyTimeoutByAccountCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(Integer.class),
+                any(String.class), any(String.class));
+    }
+
+    @Test
+    void malformedTerminalReceiptCannotStarveALaterClaim() {
+        SkitAdSessionMapper sessionMapper = mock(SkitAdSessionMapper.class);
+        SkitAdRevenueEventMapper eventMapper = mock(SkitAdRevenueEventMapper.class);
+        SkitAdRewardReceiptResolutionService resolver =
+                mock(SkitAdRewardReceiptResolutionService.class);
+        SkitFrozenCommissionProjectionService projection =
+                mock(SkitFrozenCommissionProjectionService.class);
+        RecordingTransactionManager transactions = new RecordingTransactionManager();
+        SkitAdRewardExpiryClaimDO malformed = claim(7361L, 7371L, 7381L);
+        SkitAdRewardExpiryClaimDO healthy = claim(7391L, 7401L, 7411L);
+        SkitAdSessionDO malformedSession = pendingSession(
+                malformed, 7421L, 7431L, "NONE", 2)
+                .setRewardCallbackInboxId(7441L)
+                .setRewardCallbackReceivedAt(FIXTURE_TIME.minusMinutes(2));
+        SkitAdSessionDO healthySession = pendingSession(
+                healthy, 7451L, 7461L, "NONE", 3)
+                .setRewardCallbackInboxId(7471L)
+                .setRewardCallbackReceivedAt(FIXTURE_TIME.minusMinutes(2));
+        when(sessionMapper.selectExpiredRewardClaims(2))
+                .thenReturn(Arrays.asList(malformed, healthy));
+        when(sessionMapper.selectByTenantAccountAndIdForUpdate(7361L, 7371L, 7381L))
+                .thenReturn(malformedSession);
+        when(sessionMapper.selectByTenantAccountAndIdForUpdate(7391L, 7401L, 7411L))
+                .thenReturn(healthySession);
+        when(sessionMapper.selectDatabaseNow()).thenReturn(FIXTURE_TIME);
+        when(resolver.resolveTerminalReceipt(malformedSession, FIXTURE_TIME))
+                .thenThrow(new IllegalStateException("malformed terminal receipt"));
+        when(resolver.resolveTerminalReceipt(healthySession, FIXTURE_TIME)).thenReturn(true);
+
+        assertEquals(1, service(sessionMapper, eventMapper, resolver, projection,
+                transactions, 2).sweepOnce());
+
+        verify(resolver).resolveTerminalReceipt(malformedSession, FIXTURE_TIME);
+        verify(resolver).resolveTerminalReceipt(healthySession, FIXTURE_TIME);
+        assertEquals(3, transactions.definitions.size(),
+                "the route projection and both claims use independent transactions");
+        assertEquals(2, transactions.commits);
+        assertEquals(1, transactions.rollbacks);
+    }
+
+    @Test
     void anImpressionMustRemainPendingAndBoundToTheSameImmutableEnvelope() {
         SkitAdSessionMapper sessionMapper = mock(SkitAdSessionMapper.class);
         SkitAdRevenueEventMapper eventMapper = mock(SkitAdRevenueEventMapper.class);
@@ -147,13 +220,16 @@ class SkitAdRewardVerificationExpiryServiceTest {
         when(eventMapper.selectByTenantSessionAndSourceForUpdate(7401L, 7421L, "TAKU_IMPRESSION"))
                 .thenReturn(forged);
 
-        assertThrows(IllegalStateException.class, () -> service(sessionMapper, eventMapper, projection,
-                new RecordingTransactionManager(), 1).sweepOnce());
+        RecordingTransactionManager transactions = new RecordingTransactionManager();
+        assertEquals(0, service(sessionMapper, eventMapper, projection,
+                transactions, 1).sweepOnce());
 
         verify(sessionMapper, never()).markRewardVerifyTimeoutByAccountCas(
                 anyLong(), anyLong(), anyLong(), anyLong(), any(Integer.class),
                 any(String.class), any(String.class));
         verify(projection, never()).projectNonRewardedEstimate(any());
+        assertEquals(1, transactions.commits);
+        assertEquals(1, transactions.rollbacks);
     }
 
     @Test
@@ -175,18 +251,33 @@ class SkitAdRewardVerificationExpiryServiceTest {
                 7501L, 7521L, 7511L, 7531L, 5,
                 "IMPRESSION_PENDING_REWARD", "FROZEN")).thenReturn(0);
 
-        assertThrows(IllegalStateException.class, () -> service(sessionMapper, eventMapper, projection,
-                new RecordingTransactionManager(), 1).sweepOnce());
+        RecordingTransactionManager transactions = new RecordingTransactionManager();
+        assertEquals(0, service(sessionMapper, eventMapper, projection,
+                transactions, 1).sweepOnce());
 
         verify(projection, never()).projectNonRewardedEstimate(any());
+        assertEquals(1, transactions.commits);
+        assertEquals(1, transactions.rollbacks);
     }
 
     private static SkitAdRewardVerificationExpiryServiceImpl service(
             SkitAdSessionMapper sessionMapper, SkitAdRevenueEventMapper eventMapper,
             SkitFrozenCommissionProjectionService projection,
             PlatformTransactionManager transactionManager, int batchSize) {
+        SkitAdRewardReceiptResolutionService resolver =
+                mock(SkitAdRewardReceiptResolutionService.class);
+        when(sessionMapper.selectDatabaseNow()).thenReturn(FIXTURE_TIME);
+        return service(sessionMapper, eventMapper, resolver, projection,
+                transactionManager, batchSize);
+    }
+
+    private static SkitAdRewardVerificationExpiryServiceImpl service(
+            SkitAdSessionMapper sessionMapper, SkitAdRevenueEventMapper eventMapper,
+            SkitAdRewardReceiptResolutionService resolver,
+            SkitFrozenCommissionProjectionService projection,
+            PlatformTransactionManager transactionManager, int batchSize) {
         return new SkitAdRewardVerificationExpiryServiceImpl(sessionMapper, eventMapper,
-                projection, transactionManager, batchSize);
+                resolver, projection, transactionManager, batchSize);
     }
 
     private static SkitAdRewardExpiryClaimDO claim(long tenantId, long accountId, long sessionId) {
@@ -230,6 +321,8 @@ class SkitAdRewardVerificationExpiryServiceTest {
     private static final class RecordingTransactionManager implements PlatformTransactionManager {
 
         private final List<TransactionDefinition> definitions = new ArrayList<>();
+        private int commits;
+        private int rollbacks;
 
         @Override
         public TransactionStatus getTransaction(TransactionDefinition definition) {
@@ -239,10 +332,12 @@ class SkitAdRewardVerificationExpiryServiceTest {
 
         @Override
         public void commit(TransactionStatus status) {
+            commits++;
         }
 
         @Override
         public void rollback(TransactionStatus status) {
+            rollbacks++;
         }
     }
 

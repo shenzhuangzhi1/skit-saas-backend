@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.validation.ValidationUtils;
 import cn.iocoder.yudao.framework.ratelimiter.core.annotation.RateLimiter;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdClientEventBatchReqVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdClientEventReqVO;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitAdSessionCreateReqVO;
@@ -17,6 +18,7 @@ import cn.iocoder.yudao.module.skit.framework.security.SkitMemberRateLimiterKeyR
 import cn.iocoder.yudao.module.skit.framework.security.SkitClientRuntimeResolver;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
+import cn.iocoder.yudao.module.skit.service.content.SkitPangleDramaCatalogSyncService;
 import cn.iocoder.yudao.module.skit.service.member.SkitContentEntitlementService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,6 +71,8 @@ class SkitMemberAdSessionControllerTest {
     private SkitContentEntitlementService entitlementService;
     @Mock
     private SkitClientRuntimeResolver clientRuntimeResolver;
+    @Mock
+    private SkitPangleDramaCatalogSyncService catalogSyncService;
 
     private final SkitTenantAdCapabilityService.ClientRuntime runtime =
             new SkitTenantAdCapabilityService.ClientRuntime("2.4.0", 1);
@@ -81,6 +85,7 @@ class SkitMemberAdSessionControllerTest {
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+        TenantContextHolder.clear();
     }
 
     @Test
@@ -149,6 +154,50 @@ class SkitMemberAdSessionControllerTest {
         assertTrue(result.getData().toString().contains("<write-only>"));
         verify(entitlementService).issuePlayerGrant(81L, 901L, runtime);
         assertThrows(IllegalStateException.class, issue::consumeGrantToken);
+    }
+
+    @Test
+    void issuePlayerGrantRefreshesStaleCatalogOnlyAfterTheFailedGrantTransactionReturns() throws Exception {
+        authenticate(81L);
+        TenantContextHolder.setTenantId(162L);
+        SkitPlayerGrantCreateReqVO request = new SkitPlayerGrantCreateReqVO();
+        request.setDramaId(1631L);
+        SkitContentEntitlementService.PlayerGrantIssue issue = playerGrantIssue(
+                72L, 1631L, LocalDateTime.of(2026, 7, 22, 1, 5), grantToken());
+        when(entitlementService.issuePlayerGrant(81L, 1631L, runtime))
+                .thenThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE))
+                .thenReturn(issue);
+
+        CommonResult<SkitPlayerGrantRespVO> result = controller.issuePlayerGrant(request);
+
+        assertTrue(result.isSuccess());
+        assertEquals(1631L, result.getData().getDramaId());
+        verify(catalogSyncService).syncDrama(162L, 1631L);
+        verify(entitlementService, org.mockito.Mockito.times(2))
+                .issuePlayerGrant(81L, 1631L, runtime);
+    }
+
+    @Test
+    void issuePlayerGrantSyncsMissingCatalogOnlyAfterTheFailedGrantTransactionReturns() throws Exception {
+        authenticate(81L);
+        TenantContextHolder.setTenantId(162L);
+        SkitPlayerGrantCreateReqVO request = new SkitPlayerGrantCreateReqVO();
+        request.setDramaId(1632L);
+        SkitContentEntitlementService.PlayerGrantIssue issue = playerGrantIssue(
+                73L, 1632L, LocalDateTime.of(2026, 7, 22, 1, 5), grantToken());
+        when(entitlementService.issuePlayerGrant(81L, 1632L, runtime))
+                .thenThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
+                        cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_MISSING))
+                .thenReturn(issue);
+
+        CommonResult<SkitPlayerGrantRespVO> result = controller.issuePlayerGrant(request);
+
+        assertTrue(result.isSuccess());
+        assertEquals(1632L, result.getData().getDramaId());
+        verify(catalogSyncService).syncDrama(162L, 1632L);
+        verify(entitlementService, org.mockito.Mockito.times(2))
+                .issuePlayerGrant(81L, 1632L, runtime);
     }
 
     @Test

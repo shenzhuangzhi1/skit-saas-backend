@@ -26,10 +26,52 @@ class SkitAdExpiryRetentionPersistenceContractTest {
 
         assertContains(sql, "select tenant_id,ad_account_id,id", "reward_verification_status='pending'",
                 "reward_accept_until<current_timestamp", "reward_callback_inbox_id is null",
-                "reward_callback_received_at is null", "active_scope_hash is not null",
-                "active_scope_released_at is null", "order by reward_accept_until,id", "limit #{limit}");
+                "reward_callback_received_at is null", "reward_callback_inbox_id is not null",
+                "reward_callback_received_at is not null", "exists (select 1 from skit_ad_callback_inbox i",
+                "i.tenant_id=s.tenant_id", "i.ad_account_id=s.ad_account_id",
+                "i.id=s.reward_callback_inbox_id", "i.ad_session_id=s.id",
+                "i.received_at=s.reward_callback_received_at",
+                "i.processing_status in ('rejected','dead_letter')",
+                "active_scope_hash is not null", "active_scope_released_at is null",
+                "order by case when s.reward_callback_inbox_id is not null then 0 else 1 end",
+                "limit #{limit}");
         assertFalse(sql.contains("select *"));
         assertFalse(sql.contains("session_token_hash"));
+    }
+
+    @Test
+    void terminalReceiptCompensationCasRechecksInboxAndExactEpisodeScope() throws Exception {
+        String sql = sql(SkitAdSessionMapper.class.getMethod(
+                "markTerminalRewardReceiptRejectedAndReleaseScopeCas",
+                Long.class, Long.class, Long.class, Long.class, Long.class,
+                java.time.LocalDateTime.class, Integer.class, Integer.class,
+                Long.class, Integer.class, byte[].class, Integer.class,
+                String.class, String.class, java.time.LocalDateTime.class), Update.class);
+
+        assertContains(sql, "reward_verification_status='rejected'",
+                "revenue_status=case when revenue_status='impression_pending_reward' then 'suspense'",
+                "active_scope_hash=null", "active_scope_release_reason='reward_rejected'",
+                "failure_reason=#{failurereason}", "tenant_id=#{tenantid}", "id=#{id}",
+                "ad_account_id=#{adaccountid}", "member_id=#{memberid}",
+                "version=#{expectedversion}", "provider='taku'",
+                "reward_verification_status='pending'", "entitlement_status='none'",
+                "revenue_status in ('none','impression_pending_reward')",
+                "provider_transaction_id is null", "failure_reason is null",
+                "reward_callback_inbox_id=#{callbackinboxid}",
+                "reward_callback_received_at=#{callbackreceivedat}",
+                "callback_key_version=#{callbackkeyversion}",
+                "reward_secret_version=#{rewardsecretversion}", "drama_id=#{dramaid}",
+                "episode_from=#{episodeno}", "episode_to=#{episodeno}",
+                "active_scope_hash=#{expectedactivescopehash}",
+                "exists (select 1 from skit_ad_callback_inbox i",
+                "i.ad_session_id=#{id}", "i.received_at=#{callbackreceivedat}",
+                "i.callback_type='reward'", "i.signed_field_mask=63",
+                "i.evidence_provenance='signed_ilrd'", "i.authentication_level='signed_reward'",
+                "i.signature_status='valid'", "i.delivery_integrity_status='canonical'",
+                "#{failurereason}='callback_dead_letter'",
+                "i.delivery_integrity_status='payload_conflict'",
+                "#{failurereason}='callback_payload_conflict'",
+                "i.processing_status=#{expectedinboxstatus}", "i.deleted=b'0'");
     }
 
     @Test

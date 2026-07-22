@@ -13,6 +13,7 @@ import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdCallbackEvidenceRe
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdCallbackEvidenceRetentionServiceImpl;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardVerificationExpiryService;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardVerificationExpiryServiceImpl;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardReceiptResolutionService;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -158,12 +159,10 @@ class SkitAdExpiryRetentionMySqlIT extends SkitMySqlIntegrationTestBase {
     void receiptAndTimeoutRaceHasExactlyOneWinnerAndPreservesTheReceiptFact() throws Exception {
         SessionFixture fixture = installExpiredSession(98703L, false, "NONE");
         long rewardInboxId = fixture.base + 20;
-        insertInbox(rewardInboxId, fixture.tenantId, fixture.accountId, fixture.sessionId,
-                "REWARD", "race-reward-" + fixture.tenantId, "PENDING", false, 0, 0);
+        insertPendingSignedRewardInbox(rewardInboxId, fixture);
         LocalDateTime receivedAt = jdbc().queryForObject(
-                "SELECT DATE_SUB(reward_accept_until,INTERVAL 1 MINUTE) FROM skit_ad_session "
-                        + "WHERE tenant_id=? AND id=?", LocalDateTime.class,
-                fixture.tenantId, fixture.sessionId);
+                "SELECT received_at FROM skit_ad_callback_inbox WHERE tenant_id=? AND id=?",
+                LocalDateTime.class, fixture.tenantId, rewardInboxId);
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService workers = Executors.newFixedThreadPool(2);
@@ -244,6 +243,72 @@ class SkitAdExpiryRetentionMySqlIT extends SkitMySqlIntegrationTestBase {
 
     @Test
     @Order(5)
+    void scheduledSweepCompensatesDeadLetterReceiptAndSuspendsItsPendingImpression() {
+        SessionFixture fixture = installExpiredSession(98709L, true, "IMPRESSION_PENDING_REWARD");
+        long rewardInboxId = fixture.base + 20;
+        insertPendingSignedRewardInbox(rewardInboxId, fixture);
+        LocalDateTime receivedAt = jdbc().queryForObject(
+                "SELECT received_at FROM skit_ad_callback_inbox WHERE tenant_id=? AND id=?",
+                LocalDateTime.class, fixture.tenantId, rewardInboxId);
+        assertEquals(1, TenantUtils.execute(fixture.tenantId,
+                () -> sessionMapper.markRewardCallbackReceivedCas(
+                        fixture.tenantId, fixture.sessionId, fixture.accountId,
+                        rewardInboxId, receivedAt)));
+        SkitAdCallbackInboxMapper inboxMapper = context.getBean(SkitAdCallbackInboxMapper.class);
+        assertEquals(1, TenantUtils.execute(fixture.tenantId,
+                () -> inboxMapper.claimForProcessingCas(fixture.tenantId, fixture.accountId,
+                        rewardInboxId, "expiry-dead-letter", 60)));
+        assertEquals(1, TenantUtils.execute(fixture.tenantId,
+                () -> inboxMapper.markDeadLetterCas(fixture.tenantId, fixture.accountId,
+                        rewardInboxId, "expiry-dead-letter", "PROCESSING_RETRIES_EXHAUSTED", 1)));
+        assertEquals(1, TenantUtils.execute(fixture.tenantId,
+                () -> inboxMapper.markPayloadConflict(fixture.tenantId, fixture.accountId,
+                        rewardInboxId, LocalDateTime.now().withNano(0))));
+        Map<String, Object> pending = jdbc().queryForMap(
+                "SELECT member_id,callback_key_version,reward_secret_version,drama_id,episode_from,"
+                        + "active_scope_hash,version FROM skit_ad_session WHERE tenant_id=? AND id=?",
+                fixture.tenantId, fixture.sessionId);
+        assertEquals(0, TenantUtils.execute(fixture.tenantId,
+                () -> sessionMapper.markTerminalRewardReceiptRejectedAndReleaseScopeCas(
+                        fixture.tenantId, fixture.sessionId, fixture.accountId, fixture.memberId,
+                        rewardInboxId, receivedAt,
+                        ((Number) pending.get("callback_key_version")).intValue(),
+                        ((Number) pending.get("reward_secret_version")).intValue(),
+                        ((Number) pending.get("drama_id")).longValue(),
+                        ((Number) pending.get("episode_from")).intValue(),
+                        (byte[]) pending.get("active_scope_hash"),
+                        ((Number) pending.get("version")).intValue(), "DEAD_LETTER",
+                        "CALLBACK_DEAD_LETTER", LocalDateTime.now().withNano(0))),
+                "PAYLOAD_CONFLICT cannot be compensated with the canonical dead-letter reason");
+
+        assertTrue(expiryService.sweepOnce() >= 1);
+
+        Map<String, Object> session = jdbc().queryForMap(
+                "SELECT reward_verification_status,entitlement_status,revenue_status,"
+                        + "active_scope_hash,active_scope_released_at,active_scope_release_reason,"
+                        + "failure_reason FROM skit_ad_session WHERE tenant_id=? AND id=?",
+                fixture.tenantId, fixture.sessionId);
+        assertEquals("REJECTED", session.get("reward_verification_status"));
+        assertEquals("NONE", session.get("entitlement_status"));
+        assertEquals("SUSPENSE", session.get("revenue_status"));
+        assertNull(session.get("active_scope_hash"));
+        assertNotNull(session.get("active_scope_released_at"));
+        assertEquals("REWARD_REJECTED", session.get("active_scope_release_reason"));
+        assertEquals("CALLBACK_PAYLOAD_CONFLICT", session.get("failure_reason"));
+        Map<String, Object> event = jdbc().queryForMap(
+                "SELECT reward_qualification_status,reconciliation_status,version "
+                        + "FROM skit_ad_revenue_event WHERE tenant_id=? AND id=?",
+                fixture.tenantId, fixture.eventId);
+        assertEquals("NON_REWARDED", event.get("reward_qualification_status"));
+        assertEquals("SUSPENSE", event.get("reconciliation_status"));
+        assertEquals(1, ((Number) event.get("version")).intValue());
+        assertEquals(0, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM skit_commission_ledger WHERE tenant_id=? AND event_id=?",
+                Integer.class, fixture.tenantId, fixture.eventId));
+    }
+
+    @Test
+    @Order(6)
     void retentionErasesOnlyExpiredTerminalPayloadAndDeletesOnlyOldAttemptsAndEdges() {
         long tenantId = 98708L;
         AccountFixture account = installAccountOnly(tenantId);
@@ -390,6 +455,24 @@ class SkitAdExpiryRetentionMySqlIT extends SkitMySqlIntegrationTestBase {
                 id, tenantId, accountId, sessionId, callbackType, idempotencyKey,
                 hash("inbox-" + tenantId + "-" + id), processingStatus,
                 "PENDING".equals(processingStatus) ? 0 : 1);
+    }
+
+    private void insertPendingSignedRewardInbox(long id, SessionFixture fixture) {
+        jdbc().update("INSERT INTO skit_ad_callback_inbox "
+                        + "(id,tenant_id,ad_account_id,ad_session_id,callback_key_version,"
+                        + "reward_secret_version,provider,callback_type,idempotency_key,"
+                        + "provider_transaction_id,provider_show_id,placement_id,adsource_id,network_firm_id,"
+                        + "signed_field_mask,evidence_provenance,canonical_payload_hash,authentication_level,"
+                        + "signature_status,delivery_integrity_status,processing_status,processing_attempt_count,"
+                        + "received_at,ingress_response_code) SELECT ?,tenant_id,ad_account_id,id,"
+                        + "callback_key_version,reward_secret_version,'TAKU','REWARD',?,?,'dead-letter-show',"
+                        + "placement_id,'7',66,63,'SIGNED_ILRD',?,'SIGNED_REWARD','VALID','CANONICAL',"
+                        + "'PENDING',0,DATE_SUB(reward_accept_until,INTERVAL 1 MINUTE),200 "
+                        + "FROM skit_ad_session WHERE tenant_id=? AND id=?",
+                id, "dead-letter-reward-" + fixture.tenantId,
+                "dead-letter-transaction-" + fixture.tenantId,
+                hash("dead-letter-payload-" + fixture.tenantId),
+                fixture.tenantId, fixture.sessionId);
     }
 
     private void insertAttempt(long id, long tenantId, long accountId, long inboxId, int daysAgo) {
@@ -547,13 +630,23 @@ class SkitAdExpiryRetentionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Bean
+        SkitAdRewardReceiptResolutionService rewardReceiptResolutionService(
+                SkitAdCallbackInboxMapper inboxMapper,
+                SkitAdSessionMapper sessionMapper,
+                SkitAdRevenueEventMapper eventMapper) {
+            return new SkitAdRewardReceiptResolutionService(inboxMapper, sessionMapper, eventMapper);
+        }
+
+        @Bean
         SkitAdRewardVerificationExpiryService rewardExpiryService(
                 SkitAdSessionMapper sessionMapper,
                 SkitAdRevenueEventMapper eventMapper,
+                SkitAdRewardReceiptResolutionService rewardReceiptResolutionService,
                 SkitFrozenCommissionProjectionService projectionService,
                 PlatformTransactionManager transactionManager) {
             return new SkitAdRewardVerificationExpiryServiceImpl(
-                    sessionMapper, eventMapper, projectionService, transactionManager, 100);
+                    sessionMapper, eventMapper, rewardReceiptResolutionService,
+                    projectionService, transactionManager, 100);
         }
 
         @Bean

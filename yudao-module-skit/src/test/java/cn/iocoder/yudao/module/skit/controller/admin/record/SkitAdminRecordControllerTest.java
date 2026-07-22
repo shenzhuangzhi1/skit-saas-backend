@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Arrays;
@@ -20,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -117,6 +119,17 @@ class SkitAdminRecordControllerTest {
                 eq(SkitManagementCommandType.ADMIN_RECORD_WRITE),
                 eq("删除目标租户短剧目录记录"), any());
         verify(recordService).deleteRecordList(Arrays.asList(901L, 902L));
+    }
+
+    @Test
+    void productionControllerDoesNotExposeDemoSeedRoute() {
+        boolean exposesSeedRoute = Arrays.stream(SkitAdminRecordController.class.getDeclaredMethods())
+                .map(method -> method.getAnnotation(PostMapping.class))
+                .filter(mapping -> mapping != null)
+                .anyMatch(mapping -> Arrays.asList(mapping.value()).contains("/seed")
+                        || Arrays.asList(mapping.path()).contains("/seed"));
+
+        assertFalse(exposesSeedRoute, "production controller must not expose /skit/admin-record/seed");
     }
 
     @SuppressWarnings("unchecked")

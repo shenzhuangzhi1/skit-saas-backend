@@ -571,16 +571,63 @@ mysql_in_container() {
 # shape, so print the structural facts needed to diagnose write failures in the activation log.
 print_skit_schema_summary() {
   local summary_sql="SELECT 'MIGRATIONS' AS kind,\`version\`,\`description\` FROM \`skit_schema_migration\` ORDER BY \`version\`; \
-SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\` \
+SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\`,\`EXTRA\` \
   FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() \
-  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
+  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_ad_network_capability','skit_content_entitlement','skit_management_command_audit') \
   ORDER BY \`TABLE_NAME\`,\`ORDINAL_POSITION\`; \
+SELECT 'INDEXES' AS kind,\`TABLE_NAME\`,\`INDEX_NAME\`,\`NON_UNIQUE\`,\`SEQ_IN_INDEX\`,\`COLUMN_NAME\` \
+  FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() \
+  AND TABLE_NAME IN ('skit_ad_network_capability','skit_management_command_audit') \
+  ORDER BY \`TABLE_NAME\`,\`INDEX_NAME\`,\`SEQ_IN_INDEX\`; \
+SELECT 'CHECKS' AS kind,\`tc\`.\`TABLE_NAME\`,\`tc\`.\`CONSTRAINT_NAME\`,\`cc\`.\`CHECK_CLAUSE\` \
+  FROM information_schema.TABLE_CONSTRAINTS \`tc\` \
+  JOIN information_schema.CHECK_CONSTRAINTS \`cc\` \
+    ON \`cc\`.\`CONSTRAINT_SCHEMA\`=\`tc\`.\`CONSTRAINT_SCHEMA\` \
+   AND \`cc\`.\`CONSTRAINT_NAME\`=\`tc\`.\`CONSTRAINT_NAME\` \
+  WHERE \`tc\`.\`TABLE_SCHEMA\`=DATABASE() \
+  AND \`tc\`.\`TABLE_NAME\` IN ('skit_ad_network_capability','skit_management_command_audit') \
+  AND \`tc\`.\`CONSTRAINT_TYPE\`='CHECK' \
+  ORDER BY \`tc\`.\`TABLE_NAME\`,\`tc\`.\`CONSTRAINT_NAME\`; \
 SELECT 'TRIGGERS' AS kind,\`TRIGGER_NAME\`,\`EVENT_OBJECT_TABLE\`,\`ACTION_TIMING\`,\`EVENT_MANIPULATION\` \
   FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() \
-  AND EVENT_OBJECT_TABLE IN ('system_tenant','skit_agent','skit_ad_account','skit_management_command_audit') \
+  AND EVENT_OBJECT_TABLE IN ('system_tenant','skit_agent','skit_ad_account','skit_ad_network_capability','skit_management_command_audit') \
   ORDER BY \`EVENT_OBJECT_TABLE\`,\`TRIGGER_NAME\`;"
   echo "Skit production schema summary (structure only):"
   mysql_in_container --batch --skip-column-names -e "${summary_sql}"
+}
+
+# Keep this diagnostic deliberately narrower than the error-log record: never print request data,
+# exception messages, stack traces, IP addresses, or user-agent data into the deployment log.  It
+# is also best-effort: diagnostic availability must never decide whether a healthy release stays
+# active.
+print_network_capability_error_diagnostic() {
+  local diagnostic_sql="SELECT /*+ MAX_EXECUTION_TIME(2000) */ \`exception_name\`,
+    CASE WHEN \`exception_root_cause_message\`
+      REGEXP '^[A-Za-z_$][A-Za-z0-9_$]*([.][A-Za-z_$][A-Za-z0-9_$]*)+$'
+      AND \`exception_root_cause_message\` NOT REGEXP '[[:cntrl:]]'
+      THEN \`exception_root_cause_message\` ELSE '<redacted>' END AS \`root_cause_type\`,
+    \`exception_class_name\`,\`exception_method_name\`,\`exception_line_number\`,\`exception_time\`
+  FROM (
+    SELECT \`id\`,\`request_method\`,\`request_url\`,\`deleted\`,\`exception_name\`,
+      \`exception_root_cause_message\`,\`exception_class_name\`,\`exception_method_name\`,
+      \`exception_line_number\`,\`exception_time\`
+    FROM \`infra_api_error_log\` ORDER BY \`id\` DESC LIMIT 500
+  ) AS \`recent_errors\`
+  WHERE \`request_method\`='PUT'
+    AND \`request_url\`='/admin-api/skit/tenant/ad-readiness/network-capability'
+    AND \`deleted\`=b'0'
+  ORDER BY \`id\` DESC LIMIT 1;"
+  local diagnostic_output=""
+  if ! diagnostic_output="$(mysql_in_container --batch -e "${diagnostic_sql}" 2>/dev/null)"; then
+    echo "Latest network-capability API error unavailable (metadata query failed safely)."
+    return 0
+  fi
+  echo "Latest network-capability API error (safe type/location/time metadata only):"
+  if [ -n "${diagnostic_output}" ]; then
+    printf '%s\n' "${diagnostic_output}"
+  else
+    echo "<none>"
+  fi
 }
 
 quartz_table_names="'QRTZ_BLOB_TRIGGERS','QRTZ_CALENDARS','QRTZ_CRON_TRIGGERS','QRTZ_FIRED_TRIGGERS','QRTZ_JOB_DETAILS','QRTZ_LOCKS','QRTZ_PAUSED_TRIGGER_GRPS','QRTZ_SCHEDULER_STATE','QRTZ_SIMPLE_TRIGGERS','QRTZ_SIMPROP_TRIGGERS','QRTZ_TRIGGERS'"
@@ -676,6 +723,7 @@ for _ in $(seq 1 90); do
         echo "Skit schema summary failed; refusing activation because the production database cannot be inspected safely."
         break
       fi
+      print_network_capability_error_diagnostic
       rm -f "${health_body_file}" "${backend_log_file}"
       health_body_file=""
       backend_log_file=""

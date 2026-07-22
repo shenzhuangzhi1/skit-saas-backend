@@ -161,27 +161,40 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         String normalizedAppId = trimToEmpty(appId);
         String normalizedPlacementId = trimToEmpty(placementId);
         guardTakuReportScopeMutation(account, normalizedAppId, normalizedPlacementId);
-        account.setAccountName(normalizedUsername);
-        account.setAppId(normalizedAppId);
-        account.setConfigData(writePlacementId(normalizedPlacementId));
         // 空值表示保留已经配置的凭证，避免编辑页面回显凭证。
-        if (StrUtil.isNotBlank(appKey)) {
-            account.setAppKey(appKey);
-        }
-        if (StrUtil.isNotBlank(appSecret)) {
-            account.setSecret(appSecret);
-        }
+        String effectiveAppKey = StrUtil.isNotBlank(appKey) ? appKey : account.getAppKey();
+        String effectiveAppSecret = StrUtil.isNotBlank(appSecret) ? appSecret : account.getSecret();
+        Integer targetStatus = Boolean.TRUE.equals(enabled)
+                ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus();
         if (Boolean.TRUE.equals(enabled)) {
-            boolean credentialReady = PROVIDER_TAKU.equals(provider)
-                    ? StrUtil.isNotBlank(account.getAppKey()) : StrUtil.isNotBlank(account.getSecret());
-            if (!StrUtil.isAllNotBlank(account.getAccountName(), account.getAppId(), normalizedPlacementId)
-                    || !credentialReady) {
+            if (PROVIDER_PANGLE.equals(provider)
+                    && (!StrUtil.isNotBlank(normalizedAppId) || !StrUtil.isNotBlank(effectiveAppSecret))) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
-                        provider + " 启用前必须完整配置账号、App ID、广告位和凭证");
+                        "PANGLE 启用前必须配置 App ID 和内容接口 Server Key");
+            }
+            if (PROVIDER_TAKU.equals(provider)
+                    && (!StrUtil.isAllNotBlank(normalizedAppId, normalizedPlacementId)
+                    || !StrUtil.isNotBlank(effectiveAppKey))) {
+                throw exception(AD_ACCOUNT_CONFIG_INVALID,
+                        "TAKU 启用前必须配置 App ID、激励视频广告位和 App Key");
             }
         }
-        account.setStatus(Boolean.TRUE.equals(enabled)
-                ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus());
+
+        boolean changed = !Objects.equals(account.getAccountName(), normalizedUsername)
+                || !Objects.equals(account.getAppId(), normalizedAppId)
+                || !Objects.equals(readPlacementId(account.getConfigData()), normalizedPlacementId)
+                || !Objects.equals(account.getAppKey(), effectiveAppKey)
+                || !Objects.equals(account.getSecret(), effectiveAppSecret)
+                || !Objects.equals(account.getStatus(), targetStatus);
+        if (!changed) {
+            return;
+        }
+        account.setAccountName(normalizedUsername);
+        account.setAppId(normalizedAppId);
+        account.setAppKey(effectiveAppKey);
+        account.setSecret(effectiveAppSecret);
+        account.setConfigData(writePlacementId(normalizedPlacementId));
+        account.setStatus(targetStatus);
         accountMapper.updateById(account);
     }
 
@@ -221,7 +234,8 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         }
         validateLength(settings.getPangleUsername(), 128, "PANGLE 账号最长 128 个字符");
         validateLength(settings.getPangleAppId(), 128, "PANGLE App ID 最长 128 个字符");
-        validateLength(settings.getPangleAppSecret(), 2048, "PANGLE 密钥最长 2048 个字符");
+        validateLength(settings.getPangleAppSecret(), 2048,
+                "PANGLE 内容接口 Server Key 最长 2048 个字符");
         validateLength(settings.getPanglePlacementId(), 128, "PANGLE 广告位最长 128 个字符");
         validateLength(settings.getTakuUsername(), 128, "TAKU 账号最长 128 个字符");
         validateLength(settings.getTakuAppId(), 128, "TAKU App ID 最长 128 个字符");

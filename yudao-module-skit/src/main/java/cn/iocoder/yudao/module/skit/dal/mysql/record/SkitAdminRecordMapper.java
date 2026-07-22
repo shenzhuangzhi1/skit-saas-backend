@@ -10,24 +10,38 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
 @Mapper
 public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
 
-    @Insert({"<script>",
-            "INSERT INTO `skit_admin_record` (`tenant_id`,`page_key`,`row_key`,`record_data`,",
-            "`status`,`sort`,`creator`,`updater`) VALUES",
-            "<foreach collection='records' item='record' separator=','>",
-            "(#{tenantId},#{record.pageKey},#{record.rowKey},#{record.recordData},",
-            "#{record.status},#{record.sort},'page-seed','page-seed')",
-            "</foreach>",
-            "ON DUPLICATE KEY UPDATE `id`=`id`",
-            "</script>"})
-    @InterceptorIgnore(tenantLine = "true") // tenant_id is required and bound explicitly for every row
-    int insertSeedBatchIfAbsent(@Param("tenantId") Long tenantId,
-                                @Param("records") List<SkitAdminRecordDO> records);
+    @Insert("INSERT INTO `skit_admin_record` (`tenant_id`,`page_key`,`row_key`,`record_data`,"
+            + "`status`,`sort`,`deleted`,`creator`,`updater`) VALUES "
+            + "(#{tenantId},#{record.pageKey},#{record.rowKey},#{record.recordData},"
+            + "#{record.status},#{record.sort},b'0','pangle-catalog-sync','pangle-catalog-sync') "
+            + "ON DUPLICATE KEY UPDATE `record_data`=VALUES(`record_data`),"
+            + "`status`=VALUES(`status`),`sort`=VALUES(`sort`),`deleted`=b'0',"
+            + "`updater`='pangle-catalog-sync',`update_time`=CURRENT_TIMESTAMP")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit and row_key is deterministic per provider drama
+    int upsertPangleDramaCatalog(@Param("tenantId") Long tenantId,
+                                 @Param("record") SkitAdminRecordDO record);
+
+    @Update("UPDATE `skit_admin_record` SET `deleted`=b'1',`status`=2,"
+            + "`updater`='pangle-catalog-sync',`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `page_key`='drama' AND `deleted`=b'0' "
+            + "AND (`row_key` IS NULL OR `row_key`<>#{canonicalRowKey}) AND JSON_VALID(`record_data`) "
+            + "AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.pangleDramaId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.dramaId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.drama_id')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.contentId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.nativeId')),''),"
+            + "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(`record_data`,'$.id')),''))=#{businessId}")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit and aliases never cross tenants
+    int retirePangleDramaCatalogAliases(@Param("tenantId") Long tenantId,
+                                        @Param("businessId") String businessId,
+                                        @Param("canonicalRowKey") String canonicalRowKey);
 
     @Select("SELECT * FROM `skit_admin_record` WHERE `tenant_id`=#{tenantId} "
             + "AND `page_key`='drama' AND `deleted`=b'0' AND JSON_VALID(`record_data`) "
@@ -53,13 +67,6 @@ public interface SkitAdminRecordMapper extends BaseMapperX<SkitAdminRecordDO> {
 
     default Long selectCountByPageKey(String pageKey) {
         return selectCount(SkitAdminRecordDO::getPageKey, pageKey);
-    }
-
-    default List<SkitAdminRecordDO> selectListByPageKey(String pageKey) {
-        return selectList(new LambdaQueryWrapperX<SkitAdminRecordDO>()
-                .eq(SkitAdminRecordDO::getPageKey, pageKey)
-                .orderByAsc(SkitAdminRecordDO::getSort)
-                .orderByDesc(SkitAdminRecordDO::getId));
     }
 
 }

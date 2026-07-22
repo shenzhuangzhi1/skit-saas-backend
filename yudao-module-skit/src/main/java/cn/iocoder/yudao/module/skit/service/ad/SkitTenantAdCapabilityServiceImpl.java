@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
@@ -45,9 +46,6 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     private static final Pattern RUNTIME_VERSION = Pattern.compile(
             "[0-9]{1,9}(\\.[0-9]{1,9}){1,3}([-.][A-Za-z0-9._-]{1,32})?");
     private static final Pattern PLACEMENT = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
-    private static final Set<Integer> TAKU_ADX_AUTHORITATIVE_NETWORKS =
-            Collections.singleton(66);
-
     private final SkitTenantAdCapabilityMapper capabilityMapper;
     private final SkitAdAccountMapper adAccountMapper;
     private final SkitAdNetworkCapabilityMapper networkCapabilityMapper;
@@ -92,14 +90,22 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     @Override
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public CapabilityView configure(ConfigurationCommand command) {
+        validateConfigurationInput(command);
         Long tenantId = TenantContextHolder.getRequiredTenantId();
-        String dedicatedPlacementId = resolveDedicatedPlacementId(tenantId, command);
-        validateConfiguration(command, dedicatedPlacementId);
+        // Keep every management mutation on the same lock order as credential rotation:
+        // tenant capability -> advertising account -> network capability.
         SkitTenantAdCapabilityDO locked = lockOrCreate(tenantId);
         requireEnvelope(locked, tenantId);
+        String dedicatedPlacementId = resolveDedicatedPlacementId(tenantId, command);
+        validateDedicatedPlacement(dedicatedPlacementId);
         requireExpectedVersion(locked, command.getExpectedReadinessVersion());
         if (ENFORCED.equals(locked.getRolloutState())) {
             throw exception(AD_ROLLOUT_STATE_INVALID);
+        }
+        Set<Integer> unlockNetworkFirmIds = positiveIntegerSet(
+                command.getUnlockNetworkFirmIds(), 16, "UNLOCK_NETWORKS");
+        if (!OFF.equals(locked.getRolloutState()) && unlockNetworkFirmIds.isEmpty()) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "UNLOCK_NETWORKS");
         }
 
         SkitTenantAdCapabilityDO prospective = copy(locked)
@@ -108,17 +114,23 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 .setDedicatedPlacementVerifiedAt(marker(command.getDedicatedPlacementVerified()))
                 .setRewardCallbackTemplateVerifiedAt(marker(command.getRewardCallbackTemplateVerified()))
                 .setImpressionCallbackTemplateVerifiedAt(marker(command.getImpressionCallbackTemplateVerified()))
-                .setUnlockNetworkFirmIdsJson(integerJson(TAKU_ADX_AUTHORITATIVE_NETWORKS))
+                .setUnlockNetworkFirmIdsJson(integerJson(unlockNetworkFirmIds))
                 .setShadowTestMemberIdsJson(longJson(command.getShadowTestMemberIds()))
                 .setMinNativeVersion(command.getMinNativeVersion().trim())
                 .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION);
-        networkCapabilityMapper.upsertTakuAdxAuthority(tenantId, command.getAdAccountId());
         SkitTenantAdReadinessEvidence evidence = evidenceReader.read(tenantId, prospective);
         if (evidence == null || !evidence.isAccountBelongsToTenant()) {
             throw exception(AD_ROLLOUT_NOT_READY, "CROSS_TENANT_CONFIGURATION");
         }
         if (!evidence.isShadowMembersBelongToTenant()) {
             throw exception(AD_ROLLOUT_NOT_READY, "SHADOW_MEMBER_TENANT_MISMATCH");
+        }
+        if (!unlockNetworkFirmIds.isEmpty()
+                && (!evidence.isUnlockNetworksAuthoritative()
+                || !selectedNetworkCapabilitiesAuthoritative(
+                tenantId, command.getAdAccountId(), unlockNetworkFirmIds))) {
+            throw exception(AD_ROLLOUT_NOT_READY,
+                    "UNLOCK_NETWORK_CAPABILITY_NOT_AUTHORITATIVE");
         }
 
         int updated = capabilityMapper.updateConfigurationCas(tenantId, locked.getId(),
@@ -178,6 +190,74 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
             throw exception(AD_ROLLOUT_VERSION_CONFLICT);
         }
         return requireCurrentView(tenantId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<NetworkCapabilityView> listNetworkCapabilities(Long adAccountId) {
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        requireReadableAccountTarget(tenantId, adAccountId);
+        List<SkitAdNetworkCapabilityDO> rows = networkCapabilityMapper.selectAllForShare(
+                tenantId, adAccountId);
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<NetworkCapabilityView> result = new ArrayList<>(rows.size());
+        for (SkitAdNetworkCapabilityDO row : rows) {
+            requireNetworkCapabilityEnvelope(row, tenantId, adAccountId);
+            result.add(toNetworkCapabilityView(row));
+        }
+        result.sort((left, right) -> Integer.compare(
+                left.getNetworkFirmId(), right.getNetworkFirmId()));
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
+    public NetworkCapabilityView verifyNetworkCapability(NetworkCapabilityCommand command) {
+        validateNetworkCapabilityCommand(command);
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        // Validate the tenant/account relationship without taking a row lock first. The write lock
+        // is acquired only after the tenant capability lock below.
+        requireReadableAccountTarget(tenantId, command.getAdAccountId());
+        // Match credential rotation's capability -> account ordering before locking the network row.
+        SkitTenantAdCapabilityDO locked = capabilityMapper.selectByTenantForUpdate(tenantId);
+        if (locked == null) {
+            throw exception(AD_ROLLOUT_STATE_INVALID);
+        }
+        requireEnvelope(locked, tenantId);
+        requireExpectedVersion(locked, command.getExpectedReadinessVersion());
+        if (!command.getAdAccountId().equals(locked.getAdAccountId())) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
+        }
+        requireMutableAccountTarget(tenantId, command.getAdAccountId());
+        SkitAdNetworkCapabilityDO existing = networkCapabilityMapper.selectForUpdate(
+                tenantId, command.getAdAccountId(), command.getNetworkFirmId());
+        if (Boolean.TRUE.equals(command.getEnabled())) {
+            networkCapabilityMapper.upsertVerified(tenantId,
+                    command.getAdAccountId(), command.getNetworkFirmId(),
+                    command.getRewardAuthority(),
+                    command.getSupportsUserId(), command.getSupportsCustomData(),
+                    command.getSupportsStableTransaction(), command.getSupportsImpressionRevenue(),
+                    command.getSupportsReporting());
+        } else {
+            if (existing == null) {
+                throw exception(AD_ROLLOUT_CONFIG_INVALID, "NETWORK_CAPABILITY_NOT_FOUND");
+            }
+            requireNetworkCapabilityEnvelope(existing, tenantId, command.getAdAccountId());
+            if (networkCapabilityMapper.disable(tenantId, command.getAdAccountId(),
+                    command.getNetworkFirmId()) != 1) {
+                throw new IllegalStateException("Network capability was not disabled exactly once");
+            }
+        }
+        if (capabilityMapper.bumpNetworkCapabilityVersionCas(tenantId, locked.getId(),
+                command.getAdAccountId(), command.getExpectedReadinessVersion()) != 1) {
+            throw exception(AD_ROLLOUT_VERSION_CONFLICT);
+        }
+        SkitAdNetworkCapabilityDO current = networkCapabilityMapper.selectForShare(
+                tenantId, command.getAdAccountId(), command.getNetworkFirmId());
+        requireNetworkCapabilityEnvelope(current, tenantId, command.getAdAccountId());
+        return toNetworkCapabilityView(current);
     }
 
     @Override
@@ -287,6 +367,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 "REAL_SIGNED_REWARD_CALLBACK_MISSING");
         require(productionBlockers, evidence.isImpressionCallbackObserved(),
                 "REAL_IMPRESSION_CALLBACK_MISSING");
+        require(productionBlockers, evidence.isPairedSourceEvidenceObserved(),
+                "PAIRED_SOURCE_EVIDENCE_MISSING");
         require(productionBlockers, evidence.isCallbackPublicUrlHttps(),
                 "CALLBACK_PUBLIC_URL_HTTPS_REQUIRED");
 
@@ -321,22 +403,30 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         view.setReportFresh(evidence.isReportFresh());
         view.setSignedRewardCallbackObserved(evidence.isSignedRewardCallbackObserved());
         view.setImpressionCallbackObserved(evidence.isImpressionCallbackObserved());
+        view.setPairedSourceEvidenceObserved(evidence.isPairedSourceEvidenceObserved());
         view.setNativeReleaseReady(evidence.isNativeReleaseReady());
         view.setProtocolReady(evidence.isProtocolReady());
         view.setShadowMembersValid(evidence.isShadowMembersValid());
         view.setShadowReady(shadowBlockers.isEmpty());
         view.setProductionReady(productionBlockers.isEmpty());
         view.setBlockers(Collections.unmodifiableList(productionBlockers));
+        view.setAvailableNetworkCapabilities(toCapabilityViews(
+                evidence.getAvailableNetworkCapabilities()));
+        view.setNetworkReadiness(toNetworkReadinessViews(evidence.getNetworkReadiness()));
+        view.setMissingSignedRewardNetworkFirmIds(immutableIntegers(
+                evidence.getMissingSignedRewardNetworkFirmIds()));
+        view.setMissingImpressionNetworkFirmIds(immutableIntegers(
+                evidence.getMissingImpressionNetworkFirmIds()));
+        view.setMissingPairedSourceNetworkFirmIds(immutableIntegers(
+                evidence.getMissingPairedSourceNetworkFirmIds()));
         view.setLastSignedRewardCallbackAt(evidence.getLastSignedRewardCallbackAt());
         view.setLastImpressionCallbackAt(evidence.getLastImpressionCallbackAt());
         view.setLastReportSuccessAt(evidence.getLastReportSuccessAt());
         return view;
     }
 
-    private void validateConfiguration(ConfigurationCommand command, String dedicatedPlacementId) {
+    private void validateConfigurationInput(ConfigurationCommand command) {
         if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0
-                || StrUtil.isBlank(dedicatedPlacementId)
-                || !PLACEMENT.matcher(dedicatedPlacementId).matches()
                 || command.getExpectedReadinessVersion() == null || command.getExpectedReadinessVersion() < 0
                 || !stableVersion(command.getMinNativeVersion())
                 || command.getDedicatedPlacementVerified() == null
@@ -344,15 +434,108 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 || command.getImpressionCallbackTemplateVerified() == null) {
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "REQUIRED_FIELD_INVALID");
         }
+        positiveIntegerSet(command.getUnlockNetworkFirmIds(), 16, "UNLOCK_NETWORKS");
         positiveLongSet(command.getShadowTestMemberIds(), 100, "SHADOW_MEMBERS");
+    }
+
+    private void validateDedicatedPlacement(String dedicatedPlacementId) {
+        if (StrUtil.isBlank(dedicatedPlacementId)
+                || !PLACEMENT.matcher(dedicatedPlacementId).matches()) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "REQUIRED_FIELD_INVALID");
+        }
     }
 
     private String resolveDedicatedPlacementId(Long tenantId, ConfigurationCommand command) {
         if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0) {
             return "";
         }
-        String placementId = adAccountMapper.selectEnabledTakuPlacementId(tenantId, command.getAdAccountId());
+        String placementId = adAccountMapper.selectEnabledTakuPlacementIdForUpdate(
+                tenantId, command.getAdAccountId());
         return StrUtil.isBlank(placementId) ? "" : placementId.trim();
+    }
+
+    private void validateNetworkCapabilityCommand(NetworkCapabilityCommand command) {
+        if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0
+                || command.getNetworkFirmId() == null || command.getNetworkFirmId() <= 0
+                || !("SIGNED_REWARD".equals(command.getRewardAuthority())
+                || "NONE".equals(command.getRewardAuthority()))
+                || command.getEnabled() == null || command.getExpectedReadinessVersion() == null
+                || command.getExpectedReadinessVersion() < 0) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "NETWORK_CAPABILITY_FIELD_INVALID");
+        }
+        if (Boolean.TRUE.equals(command.getEnabled())
+                && (command.getSupportsUserId() == null
+                || command.getSupportsCustomData() == null
+                || command.getSupportsStableTransaction() == null
+                || command.getSupportsImpressionRevenue() == null
+                || command.getSupportsReporting() == null)) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "NETWORK_CAPABILITY_FIELD_INVALID");
+        }
+        if (Boolean.TRUE.equals(command.getEnabled())
+                && "SIGNED_REWARD".equals(command.getRewardAuthority())
+                && (!Boolean.TRUE.equals(command.getSupportsUserId())
+                || !Boolean.TRUE.equals(command.getSupportsCustomData())
+                || !Boolean.TRUE.equals(command.getSupportsStableTransaction()))) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "SIGNED_REWARD_CAPABILITY_INVALID");
+        }
+    }
+
+    private void requireReadableAccountTarget(Long tenantId, Long adAccountId) {
+        if (adAccountId == null || adAccountId <= 0
+                || StrUtil.isBlank(adAccountMapper.selectEnabledTakuPlacementId(tenantId, adAccountId))) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
+        }
+    }
+
+    private void requireMutableAccountTarget(Long tenantId, Long adAccountId) {
+        if (adAccountId == null || adAccountId <= 0
+                || StrUtil.isBlank(adAccountMapper.selectEnabledTakuPlacementIdForUpdate(
+                tenantId, adAccountId))) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
+        }
+    }
+
+    private void requireNetworkCapabilityEnvelope(SkitAdNetworkCapabilityDO row,
+                                                   Long tenantId, Long adAccountId) {
+        if (row == null || row.getId() == null || row.getId() <= 0
+                || !tenantId.equals(row.getTenantId())
+                || !adAccountId.equals(row.getAdAccountId())
+                || row.getNetworkFirmId() == null || row.getNetworkFirmId() <= 0) {
+            throw new IllegalStateException("Network capability escaped its tenant/account envelope");
+        }
+    }
+
+    private boolean selectedNetworkCapabilitiesAuthoritative(
+            Long tenantId, Long adAccountId, Set<Integer> selectedNetworkFirmIds) {
+        if (selectedNetworkFirmIds == null || selectedNetworkFirmIds.isEmpty()) {
+            return true;
+        }
+        List<SkitAdNetworkCapabilityDO> rows = networkCapabilityMapper.selectAllForShare(
+                tenantId, adAccountId);
+        if (rows == null || rows.isEmpty()) {
+            return false;
+        }
+        Set<Integer> authoritative = new LinkedHashSet<>();
+        for (SkitAdNetworkCapabilityDO row : rows) {
+            if (row == null || row.getId() == null || row.getId() <= 0
+                    || !tenantId.equals(row.getTenantId())
+                    || !adAccountId.equals(row.getAdAccountId())
+                    || !selectedNetworkFirmIds.contains(row.getNetworkFirmId())) {
+                continue;
+            }
+            if (!"SIGNED_REWARD".equals(row.getRewardAuthority())
+                    || !Boolean.TRUE.equals(row.getEnabled())
+                    || row.getVerifiedAt() == null
+                    || !Boolean.TRUE.equals(row.getSupportsUserId())
+                    || !Boolean.TRUE.equals(row.getSupportsCustomData())
+                    || !Boolean.TRUE.equals(row.getSupportsStableTransaction())) {
+                return false;
+            }
+            if (!authoritative.add(row.getNetworkFirmId())) {
+                return false;
+            }
+        }
+        return authoritative.equals(selectedNetworkFirmIds);
     }
 
     private void validateTransition(TransitionCommand command) {
@@ -487,7 +670,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         result.setTenantId(tenantId);
         return result.setRolloutState(OFF)
                 .setDedicatedUnlockPlacementId("")
-                .setUnlockNetworkFirmIdsJson(integerJson(TAKU_ADX_AUTHORITATIVE_NETWORKS))
+                .setUnlockNetworkFirmIdsJson("[]")
                 .setShadowTestMemberIdsJson("[]").setMinNativeVersion("")
                 .setMinProtocolVersion(CURRENT_PROTOCOL_VERSION).setReadinessVersion(0);
     }
@@ -519,6 +702,118 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         view.setMinProtocolVersion(source.getMinProtocolVersion());
         view.setReadinessVersion(source.getReadinessVersion());
         view.setEnforcedAt(source.getEnforcedAt());
+        return view;
+    }
+
+    private static List<NetworkCapabilityView> toCapabilityViews(
+            List<SkitTenantAdReadinessEvidence.NetworkEvidence> evidence) {
+        if (evidence == null || evidence.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<NetworkCapabilityView> result = new ArrayList<>(evidence.size());
+        for (SkitTenantAdReadinessEvidence.NetworkEvidence source : evidence) {
+            if (source == null) {
+                continue;
+            }
+            NetworkCapabilityView view = new NetworkCapabilityView();
+            copyCapability(source, view);
+            view.setSelectable(source.isSelectable());
+            view.setBlockers(immutableStrings(source.getCapabilityBlockers()));
+            result.add(view);
+        }
+        return result.isEmpty() ? Collections.emptyList() : Collections.unmodifiableList(result);
+    }
+
+    private static List<NetworkReadinessView> toNetworkReadinessViews(
+            List<SkitTenantAdReadinessEvidence.NetworkEvidence> evidence) {
+        if (evidence == null || evidence.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<NetworkReadinessView> result = new ArrayList<>(evidence.size());
+        for (SkitTenantAdReadinessEvidence.NetworkEvidence source : evidence) {
+            if (source == null) {
+                continue;
+            }
+            NetworkReadinessView view = new NetworkReadinessView();
+            copyCapability(source, view);
+            view.setAuthoritative(source.isAuthoritative());
+            view.setSignedRewardObserved(source.isSignedRewardObserved());
+            view.setImpressionObserved(source.isImpressionObserved());
+            view.setPairedSourceObserved(source.isPairedSourceObserved());
+            view.setLastSignedRewardCallbackAt(source.getLastSignedRewardCallbackAt());
+            view.setLastImpressionCallbackAt(source.getLastImpressionCallbackAt());
+            view.setSourceRefs(immutableStrings(source.getSourceRefs()));
+            view.setSignedRewardSourceRefs(immutableStrings(source.getSignedRewardSourceRefs()));
+            view.setImpressionSourceRefs(immutableStrings(source.getImpressionSourceRefs()));
+            view.setPairedSourceRefs(immutableStrings(source.getPairedSourceRefs()));
+            view.setBlockers(immutableStrings(source.getBlockers()));
+            result.add(view);
+        }
+        return result.isEmpty() ? Collections.emptyList() : Collections.unmodifiableList(result);
+    }
+
+    private static void copyCapability(SkitTenantAdReadinessEvidence.NetworkEvidence source,
+                                       NetworkCapabilityView target) {
+        target.setNetworkFirmId(source.getNetworkFirmId());
+        target.setRewardAuthority(source.getRewardAuthority());
+        target.setEnabled(source.isEnabled());
+        target.setVerified(source.isVerified());
+        target.setVerifiedAt(source.getVerifiedAt());
+        target.setSupportsUserId(source.isSupportsUserId());
+        target.setSupportsCustomData(source.isSupportsCustomData());
+        target.setSupportsStableTransaction(source.isSupportsStableTransaction());
+        target.setSupportsImpressionRevenue(source.isSupportsImpressionRevenue());
+        target.setSupportsReporting(source.isSupportsReporting());
+    }
+
+    private static void copyCapability(SkitTenantAdReadinessEvidence.NetworkEvidence source,
+                                       NetworkReadinessView target) {
+        target.setNetworkFirmId(source.getNetworkFirmId());
+        target.setRewardAuthority(source.getRewardAuthority());
+        target.setEnabled(source.isEnabled());
+        target.setVerified(source.isVerified());
+        target.setVerifiedAt(source.getVerifiedAt());
+        target.setSupportsUserId(source.isSupportsUserId());
+        target.setSupportsCustomData(source.isSupportsCustomData());
+        target.setSupportsStableTransaction(source.isSupportsStableTransaction());
+        target.setSupportsImpressionRevenue(source.isSupportsImpressionRevenue());
+        target.setSupportsReporting(source.isSupportsReporting());
+    }
+
+    private static List<String> immutableStrings(List<String> values) {
+        return values == null || values.isEmpty()
+                ? Collections.emptyList()
+                : Collections.unmodifiableList(new ArrayList<>(values));
+    }
+
+    private static Set<Integer> immutableIntegers(Set<Integer> values) {
+        return values == null || values.isEmpty() ? Collections.emptySet()
+                : Collections.unmodifiableSet(new LinkedHashSet<>(new TreeSet<>(values)));
+    }
+
+    private static NetworkCapabilityView toNetworkCapabilityView(SkitAdNetworkCapabilityDO source) {
+        NetworkCapabilityView view = new NetworkCapabilityView();
+        view.setNetworkFirmId(source.getNetworkFirmId());
+        view.setRewardAuthority(source.getRewardAuthority());
+        view.setEnabled(Boolean.TRUE.equals(source.getEnabled()));
+        view.setVerified(source.getVerifiedAt() != null);
+        view.setVerifiedAt(source.getVerifiedAt());
+        view.setSupportsUserId(Boolean.TRUE.equals(source.getSupportsUserId()));
+        view.setSupportsCustomData(Boolean.TRUE.equals(source.getSupportsCustomData()));
+        view.setSupportsStableTransaction(Boolean.TRUE.equals(source.getSupportsStableTransaction()));
+        view.setSupportsImpressionRevenue(Boolean.TRUE.equals(source.getSupportsImpressionRevenue()));
+        view.setSupportsReporting(Boolean.TRUE.equals(source.getSupportsReporting()));
+        List<String> blockers = new ArrayList<>();
+        require(blockers, view.isEnabled(), "NETWORK_CAPABILITY_DISABLED");
+        require(blockers, view.isVerified(), "NETWORK_CAPABILITY_UNVERIFIED");
+        require(blockers, "SIGNED_REWARD".equals(view.getRewardAuthority()),
+                "SIGNED_REWARD_AUTHORITY_MISSING");
+        require(blockers, view.isSupportsUserId(), "STABLE_USER_ID_UNSUPPORTED");
+        require(blockers, view.isSupportsCustomData(), "STABLE_CUSTOM_DATA_UNSUPPORTED");
+        require(blockers, view.isSupportsStableTransaction(), "STABLE_TRANSACTION_UNSUPPORTED");
+        view.setSelectable(blockers.isEmpty());
+        view.setBlockers(blockers.isEmpty() ? Collections.emptyList()
+                : Collections.unmodifiableList(blockers));
         return view;
     }
 

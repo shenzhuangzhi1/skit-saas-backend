@@ -92,6 +92,41 @@ class SkitAdSchemaSignatureTest {
     }
 
     @Test
+    void shouldProjectOnlyTheExactRewardLeaseActivationColumnShapes() {
+        String finalShape = "0008|lease_activated_at|datetime|NO|<NULL>||<NULL>";
+        String interruptedPrefix = "0008|lease_activated_at|datetime|YES|<NULL>||<NULL>";
+
+        assertEquals(Collections.emptyList(), SkitAdSchemaSignature.releasedColumnRows(
+                "skit_content_entitlement", Collections.singletonList(finalShape)));
+        assertEquals(Collections.emptyList(), SkitAdSchemaSignature.releasedColumnRows(
+                "skit_content_entitlement", Collections.singletonList(interruptedPrefix)));
+        assertEquals(Collections.singletonList(finalShape), SkitAdSchemaSignature.releasedColumnRows(
+                "skit_entitlement_grant", Collections.singletonList(finalShape)),
+                "the additive column projection must remain table-qualified");
+        assertThrows(IllegalStateException.class, () -> SkitAdSchemaSignature.releasedColumnRows(
+                "skit_content_entitlement", Collections.singletonList(
+                        "0008|lease_activated_at|varchar(32)|NO|<NULL>||<NULL>")));
+        assertThrows(IllegalStateException.class, () -> SkitAdSchemaSignature.releasedColumnRows(
+                "skit_content_entitlement", Collections.singletonList(
+                        "0008|lease_activated_at|datetime|NO|CURRENT_TIMESTAMP||<NULL>")));
+    }
+
+    @Test
+    void shouldRestoreReleasedOrdinalsWhenProjectedColumnWasInsertedInTheMiddle() {
+        List<String> current = Arrays.asList(
+                "0007|granted_at|datetime|NO|<NULL>||<NULL>",
+                "0008|lease_activated_at|datetime|NO|<NULL>||<NULL>",
+                "0009|version|int|NO|0||<NULL>",
+                "0010|creator|varchar(64)|YES|||<NULL>");
+
+        assertEquals(Arrays.asList(
+                        "0001|granted_at|datetime|NO|<NULL>||<NULL>",
+                        "0002|version|int|NO|0||<NULL>",
+                        "0003|creator|varchar(64)|YES|||<NULL>"),
+                SkitAdSchemaSignature.releasedColumnRows("skit_content_entitlement", current));
+    }
+
+    @Test
     void shouldAcceptMySqlEmptyGenerationExpressionForLegalNullableTask10PrefixColumns() {
         List<String> nullablePrefix = Arrays.asList(
                 "0030|report_date|date|YES|<NULL>||",
