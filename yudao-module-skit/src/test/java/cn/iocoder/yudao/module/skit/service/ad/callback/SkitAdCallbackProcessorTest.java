@@ -181,7 +181,7 @@ class SkitAdCallbackProcessorTest {
             row.setId(entitlementId.incrementAndGet());
             return 1;
         }).when(entitlementMapper).insertGrantedIfAbsent(any(SkitContentEntitlementDO.class));
-        when(entitlementMapper.renewExpiredLeaseCas(anyLong(), anyLong(), anyLong(), anyLong(),
+        when(entitlementMapper.advanceVerifiedRewardLeaseCas(anyLong(), anyLong(), anyLong(), anyLong(),
                 anyInt(), anyInt(), any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
         when(grantMapper.selectBySessionAndEpisodeForUpdate(eq(TENANT_ID), eq(SESSION_ID), anyInt()))
                 .thenReturn(null);
@@ -241,6 +241,8 @@ class SkitAdCallbackProcessorTest {
         verify(entitlementMapper)
                 .insertGrantedIfAbsent(entitlements.capture());
         assertEquals(3, entitlements.getValue().getEpisodeNo());
+        assertEquals(PROCESSING_AT, entitlements.getValue().getGrantedAt());
+        assertEquals(PROCESSING_AT, entitlements.getValue().getLeaseActivatedAt());
         ArgumentCaptor<SkitEntitlementGrantDO> grants =
                 ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
         verify(grantMapper).insert(grants.capture());
@@ -262,7 +264,8 @@ class SkitAdCallbackProcessorTest {
     @Test
     void newSignedRewardCreatesANewLeaseForAnExpiredEpisodeInsteadOfReportingAlreadyOwned() {
         SkitContentEntitlementDO expired = entitlement(3, "GRANTED", 503L)
-                .setGrantedAt(PROCESSING_AT.minusMinutes(5));
+                .setGrantedAt(PROCESSING_AT.minusMinutes(5))
+                .setLeaseActivatedAt(PROCESSING_AT.minusMinutes(5));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Collections.singletonList(3))).thenReturn(Collections.singletonList(expired));
 
@@ -275,8 +278,109 @@ class SkitAdCallbackProcessorTest {
         verify(grantMapper).insert(grants.capture());
         assertEquals("CREATED", grants.getAllValues().get(0).getGrantResult());
         assertEquals(PROCESSING_AT, expired.getGrantedAt());
-        verify(entitlementMapper).renewExpiredLeaseCas(TENANT_ID, expired.getId(), MEMBER_ID,
+        assertEquals(PROCESSING_AT, expired.getLeaseActivatedAt());
+        verify(entitlementMapper).advanceVerifiedRewardLeaseCas(TENANT_ID, expired.getId(), MEMBER_ID,
                 DRAMA_ID, 3, 0, PROCESSING_AT.minusMinutes(5), PROCESSING_AT);
+    }
+
+    @Test
+    void freshSignedRewardSupersedesAnActiveOlderLeaseForExactSessionProvenance() {
+        LocalDateTime olderProof = PROCESSING_AT.minusMinutes(1);
+        SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(olderProof).setLeaseActivatedAt(olderProof).setVersion(7);
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(entitlementMapper).advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 7, olderProof, PROCESSING_AT);
+        assertEquals(PROCESSING_AT, active.getGrantedAt());
+        assertEquals(PROCESSING_AT, active.getLeaseActivatedAt());
+        ArgumentCaptor<SkitEntitlementGrantDO> grants =
+                ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
+        verify(grantMapper).insert(grants.capture());
+        assertEquals("CREATED", grants.getValue().getGrantResult());
+    }
+
+    @Test
+    void rewardWaitingBehindAnEqualLeaseAnchorSerializesOneSecondAfterIt() {
+        LocalDateTime priorProof = PROCESSING_AT.minusMinutes(10);
+        LocalDateTime serializedRewardAt = PROCESSING_AT.plusSeconds(1);
+        SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(priorProof).setLeaseActivatedAt(PROCESSING_AT).setVersion(7);
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(sessionMapper.markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                serializedRewardAt)).thenReturn(1);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                serializedRewardAt);
+        verify(entitlementMapper).advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 7, priorProof, serializedRewardAt);
+        ArgumentCaptor<SkitEntitlementGrantDO> grants =
+                ArgumentCaptor.forClass(SkitEntitlementGrantDO.class);
+        verify(grantMapper).insert(grants.capture());
+        assertEquals(serializedRewardAt, grants.getValue().getGrantedAt());
+        assertEquals(serializedRewardAt, active.getGrantedAt());
+        assertEquals(serializedRewardAt, active.getLeaseActivatedAt());
+        assertEquals(8, active.getVersion());
+    }
+
+    @Test
+    void verifiedRewardAdvanceFailsClosedWhenTheExactProofCasLoses() {
+        LocalDateTime priorProof = PROCESSING_AT.minusMinutes(1);
+        SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
+                .setGrantedAt(priorProof).setLeaseActivatedAt(priorProof).setVersion(7);
+        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
+                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(entitlementMapper.advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
+                DRAMA_ID, 3, 7, priorProof, PROCESSING_AT)).thenReturn(0);
+
+        assertThrows(IllegalStateException.class,
+                () -> processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER));
+
+        assertEquals(priorProof, active.getGrantedAt());
+        assertEquals(priorProof, active.getLeaseActivatedAt());
+        assertEquals(7, active.getVersion());
+        verify(grantMapper, never()).insert(any(SkitEntitlementGrantDO.class));
+        verify(inboxMapper, never()).markSucceededCas(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void verifiedRewardLeaseUsesTheClockAfterEntitlementLocking() {
+        ZoneId zone = ZoneId.of("Asia/Shanghai");
+        Clock stagedClock = mock(Clock.class);
+        when(stagedClock.getZone()).thenReturn(zone);
+        when(stagedClock.instant()).thenReturn(
+                PROCESSING_AT.minusMinutes(10).atZone(zone).toInstant(),
+                PROCESSING_AT.atZone(zone).toInstant());
+        processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
+                entitlementMapper, grantMapper, revenueMapper, payloadCrypto, credentialService,
+                tokenService, snapshotService, projectionService, new TakuCallbackCanonicalizer(),
+                new TakuRewardSignatureVerifier(new ObjectMapper()),
+                new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), stagedClock);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        ArgumentCaptor<SkitContentEntitlementDO> entitlements =
+                ArgumentCaptor.forClass(SkitContentEntitlementDO.class);
+        verify(entitlementMapper).insertGrantedIfAbsent(entitlements.capture());
+        assertEquals(PROCESSING_AT, entitlements.getValue().getLeaseActivatedAt(),
+                "time spent waiting for canonical locks must not consume the playback lease");
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                PROCESSING_AT);
     }
 
     @Test
@@ -1084,7 +1188,7 @@ class SkitAdCallbackProcessorTest {
     private SkitContentEntitlementDO entitlement(int episode, String status, long id) {
         SkitContentEntitlementDO row = new SkitContentEntitlementDO().setId(id).setMemberId(MEMBER_ID)
                 .setDramaId(DRAMA_ID).setEpisodeNo(episode).setStatus(status)
-                .setGrantedAt(PROCESSING_AT).setVersion(0);
+                .setGrantedAt(PROCESSING_AT).setLeaseActivatedAt(PROCESSING_AT).setVersion(0);
         row.setTenantId(TENANT_ID);
         return row;
     }

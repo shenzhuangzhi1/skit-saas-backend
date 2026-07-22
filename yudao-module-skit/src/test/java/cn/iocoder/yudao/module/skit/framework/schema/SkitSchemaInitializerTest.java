@@ -100,6 +100,35 @@ class SkitSchemaInitializerTest {
     }
 
     @Test
+    void shouldDeclareRewardLeaseActivationAsARecoverableAdditiveMigration() throws Exception {
+        SkitSchemaInitializer initializer = new SkitSchemaInitializer(jdbcTemplate);
+        Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<SkitSchemaInitializer.Migration> migrations =
+                (List<SkitSchemaInitializer.Migration>) field.get(initializer);
+        SkitSchemaInitializer.Migration rewardLease = migrations.stream()
+                .filter(migration -> migration.getVersion() == 2026072201)
+                .findFirst().orElse(null);
+
+        assertNotNull(rewardLease);
+        assertEquals("separate content entitlement lease activation time",
+                rewardLease.getDescription());
+        assertEquals(4, rewardLease.getManifest().size());
+        assertTrue(rewardLease.getManifest().get(0).contains("add-column-if-missing"));
+        assertTrue(rewardLease.getManifest().get(0).contains("lease_activated_at"));
+        assertTrue(rewardLease.getManifest().get(0).contains("datetime DEFAULT NULL"));
+        assertTrue(rewardLease.getManifest().get(1).contains("update-sql"));
+        assertTrue(rewardLease.getManifest().get(1).contains("lease_activated_at`=`granted_at"));
+        assertTrue(rewardLease.getManifest().get(2).contains("ensure-task2-column"));
+        assertTrue(rewardLease.getManifest().get(2).contains("datetime NOT NULL"));
+        assertTrue(rewardLease.getManifest().get(3)
+                .contains("validate-content-entitlement-lease-activation-schema"));
+        assertEquals("428ec8aa5895fe47d0eaac676c574e6bf1d8d84ce62de11b9e1e4be3d3ea3deb",
+                rewardLease.getChecksum());
+    }
+
+    @Test
     void shouldNormalizeOnlyMySqlParenthesesAroundAtomicNullPredicates() throws Exception {
         Method normalizer = SkitSchemaInitializer.class.getDeclaredMethod(
                 "normalizeCheckExpression", String.class);

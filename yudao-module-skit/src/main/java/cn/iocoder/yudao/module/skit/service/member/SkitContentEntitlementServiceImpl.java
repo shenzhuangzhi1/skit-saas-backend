@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
@@ -284,6 +285,57 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         return isActiveGrantedEntitlement(row, now());
     }
 
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public void activateVerifiedRewardLeaseOnClose(Long memberId, Long adSessionId, Long dramaId,
+                                                   Integer episodeNo, LocalDateTime closedAt) {
+        requirePositive(memberId, "memberId");
+        requirePositive(adSessionId, "adSessionId");
+        requirePositive(dramaId, "dramaId");
+        requirePositive(episodeNo, "episodeNo");
+        Objects.requireNonNull(closedAt, "closedAt");
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodesForUpdate(
+                tenantId, memberId, dramaId, Collections.singletonList(episodeNo));
+        if (rows == null || rows.size() != 1) {
+            throw new IllegalStateException("Verified reward has no exact entitlement projection");
+        }
+        SkitContentEntitlementDO entitlement = rows.get(0);
+        validateEntitlementEnvelope(entitlement, tenantId, memberId, dramaId, episodeNo);
+        SkitEntitlementGrantDO grant = entitlementGrantMapper
+                .selectBySessionAndEpisodeForUpdate(tenantId, adSessionId, episodeNo);
+        if (grant == null || !tenantId.equals(grant.getTenantId())
+                || !adSessionId.equals(grant.getAdSessionId())
+                || !entitlement.getId().equals(grant.getEntitlementId())
+                || !memberId.equals(grant.getMemberId()) || !dramaId.equals(grant.getDramaId())
+                || !episodeNo.equals(grant.getEpisodeNo()) || grant.getGrantedAt() == null
+                || entitlement.getGrantedAt() == null || entitlement.getLeaseActivatedAt() == null
+                || entitlement.getVersion() == null || closedAt.isBefore(grant.getGrantedAt())) {
+            throw new IllegalStateException("Rewarded close is not bound to the current signed grant");
+        }
+        if (!"CREATED".equals(grant.getGrantResult())) {
+            return;
+        }
+        if (!grant.getGrantedAt().equals(entitlement.getGrantedAt())) {
+            if (entitlement.getGrantedAt().isAfter(grant.getGrantedAt())) {
+                // A newer verified reward won the projection. The old CLOSED evidence remains
+                // canonical, but it must not extend or roll back the new session's lease.
+                return;
+            }
+            throw new IllegalStateException("Rewarded close proof is newer than the entitlement projection");
+        }
+        if (!entitlement.getLeaseActivatedAt().isBefore(closedAt)) {
+            return;
+        }
+        int expectedVersion = entitlement.getVersion();
+        if (entitlementMapper.activateVerifiedRewardLeaseCas(
+                tenantId, entitlement.getId(), memberId, dramaId, episodeNo, expectedVersion,
+                grant.getGrantedAt(), closedAt) != 1) {
+            throw new IllegalStateException("Verified reward lease changed before close settlement");
+        }
+        entitlement.setLeaseActivatedAt(closedAt).setVersion(expectedVersion + 1);
+    }
+
     private boolean sameGrant(PlayerGrantReference reference, SkitNativePlayerGrantDO row) {
         return row != null && reference.getTenantId().equals(row.getTenantId())
                 && reference.getGrantId().equals(row.getId())
@@ -345,7 +397,9 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
 
     private boolean isActiveGrantedEntitlement(SkitContentEntitlementDO row, LocalDateTime now) {
         return "GRANTED".equals(row.getStatus()) && row.getGrantedAt() != null
-                && row.getGrantedAt().isAfter(now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
+                && row.getLeaseActivatedAt() != null
+                && row.getLeaseActivatedAt().isAfter(
+                now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
     }
 
     private void validateEntitlementEnvelope(SkitContentEntitlementDO row, Long tenantId,

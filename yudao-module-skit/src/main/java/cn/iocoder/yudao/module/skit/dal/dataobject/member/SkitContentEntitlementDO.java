@@ -22,6 +22,7 @@ public class SkitContentEntitlementDO extends TenantBaseDO {
     private Integer episodeNo;
     private String status;
     private LocalDateTime grantedAt;
+    private LocalDateTime leaseActivatedAt;
     private Integer version;
 
 }

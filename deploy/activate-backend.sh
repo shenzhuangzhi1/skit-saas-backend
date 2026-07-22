@@ -573,7 +573,7 @@ print_skit_schema_summary() {
   local summary_sql="SELECT 'MIGRATIONS' AS kind,\`version\`,\`description\` FROM \`skit_schema_migration\` ORDER BY \`version\`; \
 SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\`,\`EXTRA\` \
   FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() \
-  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_ad_network_capability','skit_management_command_audit') \
+  AND TABLE_NAME IN ('system_tenant','skit_agent','skit_ad_account','skit_ad_network_capability','skit_content_entitlement','skit_management_command_audit') \
   ORDER BY \`TABLE_NAME\`,\`ORDINAL_POSITION\`; \
 SELECT 'INDEXES' AS kind,\`TABLE_NAME\`,\`INDEX_NAME\`,\`NON_UNIQUE\`,\`SEQ_IN_INDEX\`,\`COLUMN_NAME\` \
   FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() \

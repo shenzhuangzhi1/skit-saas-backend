@@ -319,8 +319,9 @@ class SkitAdSessionSchemaHardeningMySqlIT extends SkitMySqlIntegrationTestBase {
 
     private void insertEntitlement(long id, long tenantId, long memberId, long dramaId, int episodeNo) {
         jdbc().update("INSERT INTO skit_content_entitlement "
-                        + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at) "
-                        + "VALUES (?,?,?,?,?,\'GRANTED\',CURRENT_TIMESTAMP)",
+                        + "(id,tenant_id,member_id,drama_id,episode_no,status,granted_at,"
+                        + "lease_activated_at) VALUES (?,?,?,?,?,\'GRANTED\',CURRENT_TIMESTAMP,"
+                        + "CURRENT_TIMESTAMP)",
                 id, tenantId, memberId, dramaId, episodeNo);
     }
 

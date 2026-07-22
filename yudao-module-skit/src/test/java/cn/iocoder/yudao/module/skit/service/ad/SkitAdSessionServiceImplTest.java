@@ -1422,6 +1422,120 @@ class SkitAdSessionServiceImplTest {
     }
 
     @Test
+    void canonicalRewardedCloseActivatesTheExactSignedRewardLease() {
+        SkitAdSessionDO session = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLIENT_REWARDED")
+                .setRewardVerificationStatus("SIGNED_VERIFIED")
+                .setEntitlementStatus("GRANTED")
+                .setProviderShowId("show-1")
+                .setSdkRequestId("request-1")
+                .setLastCallbackSequence(2)
+                .setVersion(7);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(
+                TENANT_ID, MEMBER_ID, SESSION_ID)).thenReturn(session);
+        stubFreshClientEvent(3);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 7,
+                "CLIENT_REWARDED", 2, 3, "CLOSED", "CLOSED", "request-1", "show-1",
+                null, null)).thenReturn(1);
+        SkitAdSessionService.ClientEventCommand closed = baseEvent(3, "CLOSED", "CLOSED");
+        closed.setProviderShowId("show-1");
+        closed.setClientRewardObserved(true);
+        closed.setClosed(true);
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(closed), RUNTIME);
+
+        assertEquals("CLOSED", result.getClientLifecycleStatus());
+        verify(entitlementService).activateVerifiedRewardLeaseOnClose(
+                MEMBER_ID, 92L, DRAMA_ID, 3, now());
+    }
+
+    @Test
+    void unsignedOrDuplicateCloseCannotExtendARewardLease() {
+        SkitAdSessionDO unsigned = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLIENT_REWARDED")
+                .setProviderShowId("show-1")
+                .setSdkRequestId("request-1")
+                .setLastCallbackSequence(2)
+                .setVersion(7);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(
+                TENANT_ID, MEMBER_ID, SESSION_ID)).thenReturn(unsigned);
+        stubFreshClientEvent(3);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 7,
+                "CLIENT_REWARDED", 2, 3, "CLOSED", "CLOSED", "request-1", "show-1",
+                null, null)).thenReturn(1);
+        SkitAdSessionService.ClientEventCommand closed = baseEvent(3, "CLOSED", "CLOSED");
+        closed.setProviderShowId("show-1");
+        closed.setClientRewardObserved(true);
+        closed.setClosed(true);
+
+        service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(closed), RUNTIME);
+
+        verify(entitlementService, never()).activateVerifiedRewardLeaseOnClose(
+                anyLong(), anyLong(), anyLong(), anyInt(), any());
+    }
+
+    @Test
+    void secondCanonicalCloseWithANewEventIdCannotExtendTheLease() {
+        SkitAdSessionDO settled = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLOSED")
+                .setRewardVerificationStatus("SIGNED_VERIFIED")
+                .setEntitlementStatus("GRANTED")
+                .setProviderShowId("show-1")
+                .setSdkRequestId("request-1")
+                .setLastCallbackSequence(3)
+                .setLastClientEvent("CLOSED")
+                .setVersion(8);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(
+                TENANT_ID, MEMBER_ID, SESSION_ID)).thenReturn(settled);
+        stubFreshClientEvent(4);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 8,
+                "CLOSED", 3, 4, "CLOSED", "CLOSED", "request-1", "show-1",
+                null, null)).thenReturn(1);
+        SkitAdSessionService.ClientEventCommand duplicate = baseEvent(4, "CLOSED", "CLOSED");
+        duplicate.setProviderShowId("show-1");
+        duplicate.setClientRewardObserved(true);
+        duplicate.setClosed(true);
+
+        service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(duplicate), RUNTIME);
+
+        verify(entitlementService, never()).activateVerifiedRewardLeaseOnClose(
+                anyLong(), anyLong(), anyLong(), anyInt(), any());
+    }
+
+    @Test
+    void rewardedCloseAfterTheSignedRewardWindowCannotStartANewLease() {
+        SkitAdSessionDO expired = activeSession(TENANT_ID, MEMBER_ID)
+                .setClientLifecycleStatus("CLIENT_REWARDED")
+                .setRewardVerificationStatus("SIGNED_VERIFIED")
+                .setEntitlementStatus("GRANTED")
+                .setRewardAcceptUntil(now().minusSeconds(1))
+                .setProviderShowId("show-1")
+                .setSdkRequestId("request-1")
+                .setLastCallbackSequence(2)
+                .setVersion(7);
+        when(sessionMapper.selectByTenantMemberAndSessionIdForUpdate(
+                TENANT_ID, MEMBER_ID, SESSION_ID)).thenReturn(expired);
+        stubFreshClientEvent(3);
+        when(sessionMapper.updateClientLifecycleCas(TENANT_ID, 92L, MEMBER_ID, 7,
+                "CLIENT_REWARDED", 2, 3, "CLOSED", "CLOSED", "request-1", "show-1",
+                null, null)).thenReturn(1);
+        SkitAdSessionService.ClientEventCommand closed = baseEvent(3, "CLOSED", "CLOSED");
+        closed.setProviderShowId("show-1");
+        closed.setClientRewardObserved(true);
+        closed.setClosed(true);
+
+        SkitAdSessionService.SessionView result = service.recordClientEvents(
+                MEMBER_ID, SESSION_ID, Collections.singletonList(closed), RUNTIME);
+
+        assertEquals("CLOSED", result.getClientLifecycleStatus());
+        verify(entitlementService, never()).activateVerifiedRewardLeaseOnClose(
+                anyLong(), anyLong(), anyLong(), anyInt(), any());
+    }
+
+    @Test
     void missingOrAmbiguousTakuAccountFailsClosed() {
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent(TENANT_ID));
         when(accountMapper.selectEnabledTakuForShare(TENANT_ID)).thenReturn(Collections.emptyList());

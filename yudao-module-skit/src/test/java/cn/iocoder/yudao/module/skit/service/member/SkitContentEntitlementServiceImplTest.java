@@ -6,6 +6,7 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.controller.app.member.vo.ad.SkitPlayerGrantRespVO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitNativePlayerGrantDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
@@ -328,7 +329,8 @@ class SkitContentEntitlementServiceImplTest {
         SkitContentEntitlementDO existing = new SkitContentEntitlementDO()
                 .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
                 .setStatus("GRANTED")
-                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+                .setGrantedAt(LocalDateTime.ofInstant(NOW.minusSeconds(700), ZoneOffset.UTC))
+                .setLeaseActivatedAt(LocalDateTime.ofInstant(NOW.minusSeconds(10), ZoneOffset.UTC));
         existing.setTenantId(TENANT_ID);
         when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
@@ -346,7 +348,8 @@ class SkitContentEntitlementServiceImplTest {
         SkitContentEntitlementDO expired = new SkitContentEntitlementDO()
                 .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
                 .setStatus("GRANTED")
-                .setGrantedAt(LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC));
+                .setGrantedAt(LocalDateTime.ofInstant(NOW.minusSeconds(10), ZoneOffset.UTC))
+                .setLeaseActivatedAt(LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC));
         expired.setTenantId(TENANT_ID);
         when(entitlementMapper.selectGrantedEpisodes(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 LocalDateTime.ofInstant(NOW.minusSeconds(300), ZoneOffset.UTC)))
@@ -357,13 +360,114 @@ class SkitContentEntitlementServiceImplTest {
     }
 
     @Test
+    void canonicalSignedCloseMovesOnlyTheMutableLeaseAnchor() {
+        LocalDateTime grantedAt = LocalDateTime.ofInstant(
+                NOW.minusSeconds(700), ZoneOffset.UTC);
+        LocalDateTime closedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        SkitContentEntitlementDO entitlement = new SkitContentEntitlementDO()
+                .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setStatus("GRANTED").setGrantedAt(grantedAt)
+                .setLeaseActivatedAt(grantedAt).setVersion(4);
+        entitlement.setTenantId(TENANT_ID);
+        SkitEntitlementGrantDO grant = new SkitEntitlementGrantDO()
+                .setId(91L).setAdSessionId(92L).setEntitlementId(81L)
+                .setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setProviderTransactionId("transaction-1").setGrantResult("CREATED")
+                .setGrantedAt(grantedAt);
+        grant.setTenantId(TENANT_ID);
+        when(entitlementMapper.selectEpisodesForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, Collections.singletonList(3)))
+                .thenReturn(Collections.singletonList(entitlement));
+        when(entitlementGrantMapper.selectBySessionAndEpisodeForUpdate(
+                TENANT_ID, 92L, 3)).thenReturn(grant);
+        when(entitlementMapper.activateVerifiedRewardLeaseCas(
+                TENANT_ID, 81L, MEMBER_ID, DRAMA_ID, 3, 4, grantedAt, closedAt))
+                .thenReturn(1);
+
+        service.activateVerifiedRewardLeaseOnClose(
+                MEMBER_ID, 92L, DRAMA_ID, 3, closedAt);
+
+        assertEquals(grantedAt, entitlement.getGrantedAt(),
+                "canonical close must never rewrite immutable signed reward provenance");
+        assertEquals(closedAt, entitlement.getLeaseActivatedAt());
+        assertEquals(5, entitlement.getVersion());
+        verify(entitlementMapper).activateVerifiedRewardLeaseCas(
+                TENANT_ID, 81L, MEMBER_ID, DRAMA_ID, 3, 4, grantedAt, closedAt);
+    }
+
+    @Test
+    void closeLeaseActivationFailsClosedWhenTheExactProofCasLoses() {
+        LocalDateTime grantedAt = LocalDateTime.ofInstant(NOW.minusSeconds(700), ZoneOffset.UTC);
+        LocalDateTime closedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        SkitContentEntitlementDO entitlement = new SkitContentEntitlementDO()
+                .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setStatus("GRANTED").setGrantedAt(grantedAt)
+                .setLeaseActivatedAt(grantedAt).setVersion(4);
+        entitlement.setTenantId(TENANT_ID);
+        SkitEntitlementGrantDO grant = new SkitEntitlementGrantDO()
+                .setId(91L).setAdSessionId(92L).setEntitlementId(81L)
+                .setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setProviderTransactionId("transaction-1").setGrantResult("CREATED")
+                .setGrantedAt(grantedAt);
+        grant.setTenantId(TENANT_ID);
+        when(entitlementMapper.selectEpisodesForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, Collections.singletonList(3)))
+                .thenReturn(Collections.singletonList(entitlement));
+        when(entitlementGrantMapper.selectBySessionAndEpisodeForUpdate(
+                TENANT_ID, 92L, 3)).thenReturn(grant);
+        when(entitlementMapper.activateVerifiedRewardLeaseCas(
+                TENANT_ID, 81L, MEMBER_ID, DRAMA_ID, 3, 4, grantedAt, closedAt))
+                .thenReturn(0);
+
+        assertThrows(IllegalStateException.class, () -> service.activateVerifiedRewardLeaseOnClose(
+                MEMBER_ID, 92L, DRAMA_ID, 3, closedAt));
+
+        assertEquals(grantedAt, entitlement.getGrantedAt());
+        assertEquals(grantedAt, entitlement.getLeaseActivatedAt());
+        assertEquals(4, entitlement.getVersion());
+    }
+
+    @Test
+    void lateCloseFromSupersededSessionCannotExtendTheNewSignedReward() {
+        LocalDateTime oldGrantAt = LocalDateTime.ofInstant(NOW.minusSeconds(700), ZoneOffset.UTC);
+        LocalDateTime newGrantAt = LocalDateTime.ofInstant(NOW.minusSeconds(20), ZoneOffset.UTC);
+        LocalDateTime oldClosedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        SkitContentEntitlementDO entitlement = new SkitContentEntitlementDO()
+                .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setStatus("GRANTED").setGrantedAt(newGrantAt)
+                .setLeaseActivatedAt(newGrantAt).setVersion(5);
+        entitlement.setTenantId(TENANT_ID);
+        SkitEntitlementGrantDO oldGrant = new SkitEntitlementGrantDO()
+                .setId(91L).setAdSessionId(92L).setEntitlementId(81L)
+                .setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
+                .setProviderTransactionId("old-transaction").setGrantResult("CREATED")
+                .setGrantedAt(oldGrantAt);
+        oldGrant.setTenantId(TENANT_ID);
+        when(entitlementMapper.selectEpisodesForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, Collections.singletonList(3)))
+                .thenReturn(Collections.singletonList(entitlement));
+        when(entitlementGrantMapper.selectBySessionAndEpisodeForUpdate(
+                TENANT_ID, 92L, 3)).thenReturn(oldGrant);
+
+        service.activateVerifiedRewardLeaseOnClose(
+                MEMBER_ID, 92L, DRAMA_ID, 3, oldClosedAt);
+
+        assertEquals(newGrantAt, entitlement.getGrantedAt());
+        assertEquals(newGrantAt, entitlement.getLeaseActivatedAt());
+        assertEquals(5, entitlement.getVersion());
+        verify(entitlementMapper, never()).activateVerifiedRewardLeaseCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
     void nativeEntitlementReadDerivesEveryScopeFieldFromGrant() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
         SkitContentEntitlementDO episode = new SkitContentEntitlementDO()
                 .setId(81L).setMemberId(MEMBER_ID).setDramaId(DRAMA_ID).setEpisodeNo(3)
                 .setStatus("GRANTED")
-                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC))
+                .setLeaseActivatedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
         episode.setTenantId(TENANT_ID);
         when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());

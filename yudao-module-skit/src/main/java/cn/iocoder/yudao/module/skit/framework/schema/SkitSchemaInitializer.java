@@ -883,6 +883,15 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     + "(`secret_ciphertext` IS NOT NULL AND `secret_nonce` IS NOT NULL AND "
                     + "`encryption_key_id` IS NOT NULL AND `envelope_version` > 0))"
                     + ")" + tableOptions();
+    private static final int CONTENT_ENTITLEMENT_LEASE_ACTIVATION_MIGRATION_VERSION = 2026072201;
+    private static final Task2ColumnSpec CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC =
+            new Task2ColumnSpec("skit_content_entitlement", "lease_activated_at",
+                    "datetime NOT NULL", "datetime DEFAULT NULL");
+    private static final String BACKFILL_CONTENT_ENTITLEMENT_LEASE_ACTIVATION_SQL =
+            "UPDATE `skit_content_entitlement` SET `lease_activated_at`=`granted_at` "
+                    + "WHERE `lease_activated_at` IS NULL";
+    private static final String COUNT_NULL_CONTENT_ENTITLEMENT_LEASE_ACTIVATION_SQL =
+            "SELECT COUNT(*) FROM `skit_content_entitlement` WHERE `lease_activated_at` IS NULL";
     private static final int LEGACY_ADMIN_RECORD_REPAIR_MIGRATION_VERSION = 2026071502;
     private static final String LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM =
             "rekey-legacy-admin-singletons-v1";
@@ -1151,6 +1160,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             validateTask12ReadinessSchema(true);
         } else {
             validateTask12MigrationPrefix();
+        }
+        if (appliedMigrations.containsKey(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_MIGRATION_VERSION)) {
+            validateContentEntitlementLeaseActivationSchema(true);
+        } else {
+            validateContentEntitlementLeaseActivationPrefix();
         }
     }
 
@@ -1498,6 +1512,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 Collections.singletonList(updateSqlStep(BACKFILL_TENANT_AD_ACCOUNTS_SQL))));
         result.add(migrationFromSteps(TENANT_APP_BUILD_MATERIAL_MIGRATION_VERSION,
                 "add tenant app build material versions", tenantAppBuildMaterialSteps()));
+        result.add(migrationFromSteps(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_MIGRATION_VERSION,
+                "separate content entitlement lease activation time",
+                contentEntitlementLeaseActivationSteps()));
         return sortedMigrations(result);
     }
 
@@ -3001,6 +3018,17 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return Collections.singletonList(executeSqlStep(CREATE_TENANT_APP_BUILD_MATERIAL_TABLE_SQL));
     }
 
+    private List<SchemaStep> contentEntitlementLeaseActivationSteps() {
+        return Arrays.asList(
+                addColumnStep("skit_content_entitlement", "lease_activated_at",
+                        "datetime DEFAULT NULL AFTER `granted_at`"),
+                updateSqlStep(BACKFILL_CONTENT_ENTITLEMENT_LEASE_ACTIVATION_SQL),
+                task2ColumnStep(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC),
+                schemaStep("validate-content-entitlement-lease-activation-schema",
+                        () -> validateContentEntitlementLeaseActivationSchema(true),
+                        "content-entitlement-lease-activation-v1"));
+    }
+
     private List<SchemaStep> legacyAdminRecordRepairSteps() {
         return Arrays.asList(executeSqlStep(CREATE_ADMIN_RECORD_MIGRATION_AUDIT_TABLE_SQL),
                 schemaStep(LEGACY_ADMIN_RECORD_REPAIR_ALGORITHM,
@@ -3984,6 +4012,56 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 continue;
             }
             validateColumnDefinition(spec.table, spec.column, spec.definition);
+        }
+    }
+
+    /**
+     * Accepts only the two recoverable physical states of the additive migration. MySQL DDL
+     * auto-commits, so a restart may observe the nullable column after ADD or the final column
+     * before the migration ledger row is appended.
+     */
+    private void validateContentEntitlementLeaseActivationPrefix() {
+        if (!tableExists(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.table)
+                || !columnExists(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.table,
+                CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.column)) {
+            return;
+        }
+        if (columnDefinitionMatches(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.table,
+                CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.column,
+                CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.definition)
+                || columnDefinitionMatches(CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.table,
+                CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.column,
+                CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.compatibleLegacyDefinition)) {
+            return;
+        }
+        throw new IllegalStateException("Content entitlement lease activation migration has an "
+                + "incompatible column skit_content_entitlement.lease_activated_at");
+    }
+
+    void validateContentEntitlementLeaseActivationSchema(boolean requireAll) {
+        String table = CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.table;
+        String column = CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.column;
+        if (!tableExists(table)) {
+            if (requireAll) {
+                throw new IllegalStateException("Content entitlement lease activation schema is missing table "
+                        + table);
+            }
+            return;
+        }
+        if (!columnExists(table, column)) {
+            if (requireAll) {
+                throw new IllegalStateException("Content entitlement lease activation schema is missing column "
+                        + table + "." + column);
+            }
+            return;
+        }
+        validateColumnDefinition(table, column,
+                CONTENT_ENTITLEMENT_LEASE_ACTIVATION_COLUMN_SPEC.definition);
+        Long nullRows = jdbcTemplate.queryForObject(
+                COUNT_NULL_CONTENT_ENTITLEMENT_LEASE_ACTIVATION_SQL, Long.class);
+        if (nullRows == null || nullRows != 0L) {
+            throw new IllegalStateException("Content entitlement lease activation backfill is incomplete: "
+                    + nullRows + " rows remain NULL");
         }
     }
 

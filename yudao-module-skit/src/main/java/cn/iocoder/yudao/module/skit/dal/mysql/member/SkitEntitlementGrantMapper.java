@@ -48,7 +48,7 @@ public interface SkitEntitlementGrantMapper {
             + "WHERE `g`.`tenant_id`=#{tenantId} AND `g`.`member_id`=#{memberId} "
             + "AND `g`.`drama_id`=#{dramaId} AND `g`.`episode_no`=#{episodeNo} "
             + "AND `g`.`grant_result`='CREATED' AND `g`.`deleted`=b'0' "
-            + "AND `e`.`status`='GRANTED' AND `e`.`granted_at` > #{activeAfter} "
+            + "AND `e`.`status`='GRANTED' AND `e`.`lease_activated_at` > #{activeAfter} "
             + "AND `e`.`deleted`=b'0' "
             + "AND `s`.`provider`='TAKU' AND `s`.`reward_verification_status`='SIGNED_VERIFIED' "
             + "AND `s`.`entitlement_status`='GRANTED' "

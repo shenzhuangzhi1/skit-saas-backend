@@ -119,6 +119,7 @@ class SkitTask5PersistenceContractTest {
                 "episodeNo", Integer.class,
                 "status", String.class,
                 "grantedAt", LocalDateTime.class,
+                "leaseActivatedAt", LocalDateTime.class,
                 "version", Integer.class));
 
         assertDataObject(SkitEntitlementGrantDO.class, "skit_entitlement_grant", fields(
@@ -420,7 +421,7 @@ class SkitTask5PersistenceContractTest {
                 "selectGrantedEpisodes", Long.class, Long.class, Long.class, LocalDateTime.class));
         assertContainsAll(granted, "tenant_id=#{tenantid}", "member_id=#{memberid}",
                 "drama_id=#{dramaid}", "deleted=b'0'", "status='granted'",
-                "granted_at > #{activeafter}",
+                "lease_activated_at > #{activeafter}",
                 "order by episode_no asc");
         assertFalse(granted.contains("for update"), "GET entitlement reads must not take row locks");
 
@@ -437,7 +438,29 @@ class SkitTask5PersistenceContractTest {
         Method insert = SkitContentEntitlementMapper.class
                 .getMethod("insertGrantedIfAbsent", SkitContentEntitlementDO.class);
         String insertSql = insertSql(insert);
-        assertContainsAll(insertSql, "on duplicate key update", "id=last_insert_id(id)");
+        assertContainsAll(insertSql, "lease_activated_at", "on duplicate key update",
+                "id=last_insert_id(id)");
+
+        Method advance = SkitContentEntitlementMapper.class.getMethod(
+                "advanceVerifiedRewardLeaseCas", Long.class, Long.class, Long.class,
+                Long.class, Integer.class, Integer.class, LocalDateTime.class, LocalDateTime.class);
+        String advanceSql = updateSql(advance);
+        assertContainsAll(advanceSql, "tenant_id=#{tenantid}", "id=#{id}",
+                "version=#{expectedversion}", "granted_at=#{expectedgrantedat}",
+                "granted_at < #{grantedat}", "granted_at=#{grantedat}",
+                "lease_activated_at=#{grantedat}", "version=version+1");
+
+        Method activate = SkitContentEntitlementMapper.class.getMethod(
+                "activateVerifiedRewardLeaseCas", Long.class, Long.class, Long.class,
+                Long.class, Integer.class, Integer.class, LocalDateTime.class, LocalDateTime.class);
+        String activateSql = updateSql(activate);
+        assertContainsAll(activateSql, "tenant_id=#{tenantid}", "id=#{id}",
+                "member_id=#{memberid}", "drama_id=#{dramaid}", "episode_no=#{episodeno}",
+                "version=#{expectedversion}", "granted_at=#{proofgrantedat}",
+                "lease_activated_at < #{activatedat}",
+                "lease_activated_at=#{activatedat}", "version=version+1");
+        assertFalse(activateSql.contains("granted_at=#{activatedat}"),
+                "canonical close must never rewrite immutable signed reward provenance");
     }
 
     @Test
@@ -454,7 +477,7 @@ class SkitTask5PersistenceContractTest {
                 "g.tenant_id=#{tenantid}", "g.member_id=#{memberid}",
                 "g.drama_id=#{dramaid}", "g.episode_no=#{episodeno}",
                 "g.grant_result='created'", "e.status='granted'",
-                "e.granted_at > #{activeafter}", "g.granted_at=e.granted_at",
+                "e.lease_activated_at > #{activeafter}", "g.granted_at=e.granted_at",
                 "s.reward_verification_status='signed_verified'",
                 "s.entitlement_status='granted'",
                 "s.active_scope_release_reason='entitlement_granted'",

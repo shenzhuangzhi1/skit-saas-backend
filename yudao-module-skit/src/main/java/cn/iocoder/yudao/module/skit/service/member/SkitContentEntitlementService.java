@@ -31,6 +31,10 @@ public interface SkitContentEntitlementService {
 
     boolean ownsEpisodeForUpdate(Long memberId, Long dramaId, Integer episodeNo);
 
+    /** Activates one exact signed reward lease after its canonical rewarded close is committed. */
+    void activateVerifiedRewardLeaseOnClose(Long memberId, Long adSessionId, Long dramaId,
+                                            Integer episodeNo, LocalDateTime closedAt);
+
     final class VerifiedRewardProvenance {
 
         private final Integer episodeNo;

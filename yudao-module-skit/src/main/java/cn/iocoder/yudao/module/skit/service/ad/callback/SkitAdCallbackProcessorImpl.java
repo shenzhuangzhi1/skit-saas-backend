@@ -48,7 +48,6 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private static final String SIGNED_REWARD = "SIGNED_REWARD";
     private static final long SIGNED_REWARD_FIELD_MASK = 0x3fL;
     private static final int LEGACY_GROSS_SCALE = 8;
-    private static final int CONTENT_ENTITLEMENT_MINUTES = 5;
 
     private final SkitAdCallbackInboxMapper inboxMapper;
     private final SkitAdSessionMapper sessionMapper;
@@ -203,6 +202,10 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 throw new IllegalStateException("Entitlement status is outside the supported state machine");
             }
         }
+        // Capture the grant clock only after the exact entitlement projection is locked. This
+        // makes a callback that waited behind CLOSED serialize after that close instead of
+        // backdating a new lease to the beginning of callback processing.
+        LocalDateTime grantedAt = nextVerifiedRewardAt(existing);
 
         SkitAdRevenueEventDO rewardedEstimate = prepareRewardEstimate(
                 session, impressionAuthority, authority, inbox.getReceivedAt());
@@ -212,12 +215,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 inbox.getTenantId(), session.getId(), inbox.getAdAccountId(), inbox.getId(),
                 inbox.getReceivedAt(), session.getVersion(), inbox.getCallbackKeyVersion(),
                 inbox.getRewardSecretVersion(), authority.getTransactionId(), signedShowId,
-                networkFirmId, authority.getAdsourceId(), processedAt);
+                networkFirmId, authority.getAdsourceId(), grantedAt);
         if (updated != 1) {
             throw new IllegalStateException("Reward session changed before verified entitlement commit");
         }
 
-        grantEpisodes(session, episodes, existing, authority.getTransactionId(), processedAt);
+        grantEpisodes(session, episodes, existing, authority.getTransactionId(), grantedAt);
         if (rewardedEstimate != null) {
             projectionService.projectRewardedEstimate(rewardedEstimate);
         }
@@ -499,27 +502,27 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             if (entitlement == null) {
                 entitlement = new SkitContentEntitlementDO().setMemberId(session.getMemberId())
                         .setDramaId(session.getDramaId()).setEpisodeNo(episode).setStatus("GRANTED")
-                        .setGrantedAt(grantedAt).setVersion(0);
+                        .setGrantedAt(grantedAt).setLeaseActivatedAt(grantedAt).setVersion(0);
                 entitlement.setTenantId(session.getTenantId());
                 int inserted = entitlementMapper.insertGrantedIfAbsent(entitlement);
                 if (inserted < 0 || entitlement.getId() == null || entitlement.getId() <= 0) {
                     throw new IllegalStateException("Entitlement id was not returned after upsert");
                 }
                 grantResult = "CREATED";
-            } else if (isExpiredEntitlement(entitlement, grantedAt)) {
-                int renewed = entitlementMapper.renewExpiredLeaseCas(session.getTenantId(),
-                        entitlement.getId(), session.getMemberId(), session.getDramaId(), episode,
-                        entitlement.getVersion(), grantedAt.minusMinutes(CONTENT_ENTITLEMENT_MINUTES),
-                        grantedAt);
-                if (renewed != 1) {
-                    throw new IllegalStateException("Expired entitlement lease changed before renewal");
-                }
-                entitlement.setGrantedAt(grantedAt).setVersion(entitlement.getVersion() + 1);
-                // This is a fresh verified reward event and intentionally remains CREATED in the
-                // append-only grant ledger; the current lease is bound by the same granted_at.
-                grantResult = "CREATED";
             } else {
-                grantResult = "ALREADY_OWNED";
+                LocalDateTime expectedGrantedAt = entitlement.getGrantedAt();
+                int advanced = entitlementMapper.advanceVerifiedRewardLeaseCas(session.getTenantId(),
+                        entitlement.getId(), session.getMemberId(), session.getDramaId(), episode,
+                        entitlement.getVersion(), expectedGrantedAt,
+                        grantedAt);
+                if (advanced != 1) {
+                    throw new IllegalStateException("Entitlement proof changed before verified reward advance");
+                }
+                entitlement.setGrantedAt(grantedAt).setLeaseActivatedAt(grantedAt)
+                        .setVersion(entitlement.getVersion() + 1);
+                // Every fresh signed reward becomes the current immutable provenance anchor,
+                // including the rare case where an older close just reactivated an active lease.
+                grantResult = "CREATED";
             }
             grant = new SkitEntitlementGrantDO().setAdSessionId(session.getId())
                     .setEntitlementId(entitlement.getId()).setMemberId(session.getMemberId())
@@ -533,13 +536,22 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         }
     }
 
-    private boolean isExpiredEntitlement(SkitContentEntitlementDO entitlement,
-                                         LocalDateTime authoritativeNow) {
-        if (entitlement.getGrantedAt() == null || entitlement.getVersion() == null) {
-            throw new IllegalStateException("Granted entitlement lease is malformed");
+    private LocalDateTime nextVerifiedRewardAt(
+            Map<Integer, SkitContentEntitlementDO> existing) {
+        LocalDateTime candidate = now();
+        for (SkitContentEntitlementDO entitlement : existing.values()) {
+            if (entitlement.getGrantedAt() == null || entitlement.getLeaseActivatedAt() == null
+                    || entitlement.getVersion() == null) {
+                throw new IllegalStateException("Granted entitlement lease is malformed");
+            }
+            LocalDateTime latest = entitlement.getGrantedAt().isAfter(
+                    entitlement.getLeaseActivatedAt())
+                    ? entitlement.getGrantedAt() : entitlement.getLeaseActivatedAt();
+            if (!candidate.isAfter(latest)) {
+                candidate = latest.plusSeconds(1);
+            }
         }
-        return !entitlement.getGrantedAt()
-                .isAfter(authoritativeNow.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
+        return candidate;
     }
 
     private LockedImpressionAuthority lockExistingImpressionAuthority(SkitAdSessionDO session) {

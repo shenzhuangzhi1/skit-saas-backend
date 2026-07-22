@@ -122,6 +122,7 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         initializer.validateTask2TableSignatures(true);
         initializer.validateTask5SchemaHardening(true);
         initializer.validateTask7SchemaHardening(true);
+        initializer.validateContentEntitlementLeaseActivationSchema(true);
     }
 
     private Map<String, String> task7HardenedFingerprints() {

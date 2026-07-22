@@ -133,7 +133,8 @@ class SkitContentScopeServiceImplTest {
                 catalog(TENANT_ID, false, 0, "正常", 20, 2, 3)));
         SkitContentEntitlementDO expired = entitlement(
                 TENANT_ID, MEMBER_ID, DRAMA_ID, 3, "GRANTED")
-                .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
+                .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0))
+                .setLeaseActivatedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Collections.singletonList(3))).thenReturn(Collections.singletonList(expired));
 
@@ -152,7 +153,8 @@ class SkitContentScopeServiceImplTest {
                 catalog(TENANT_ID, false, 0, "正常", 20, 2, 3)));
         SkitContentEntitlementDO expired = entitlement(
                 TENANT_ID, MEMBER_ID, DRAMA_ID, 9, "GRANTED")
-                .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
+                .setGrantedAt(LocalDateTime.of(2000, 1, 1, 0, 0))
+                .setLeaseActivatedAt(LocalDateTime.of(2000, 1, 1, 0, 0));
         when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
                 Collections.singletonList(9))).thenReturn(Collections.singletonList(expired));
 
@@ -366,7 +368,8 @@ class SkitContentScopeServiceImplTest {
         SkitContentEntitlementDO row = new SkitContentEntitlementDO()
                 .setId(81L + episodeNo).setMemberId(memberId).setDramaId(dramaId)
                 .setEpisodeNo(episodeNo).setStatus(status)
-                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+                .setGrantedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC))
+                .setLeaseActivatedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
         row.setTenantId(tenantId);
         row.setDeleted(false);
         return row;

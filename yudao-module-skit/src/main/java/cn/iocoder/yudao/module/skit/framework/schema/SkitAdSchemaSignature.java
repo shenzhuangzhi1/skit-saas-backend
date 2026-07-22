@@ -153,6 +153,9 @@ public final class SkitAdSchemaSignature {
         RELEASED_ADDITIVE_INDEXES = immutableIndexMap(releasedIndexes);
 
         Map<String, Map<String, List<String>>> columnDefinitions = new LinkedHashMap<>();
+        addColumnDefinition(columnDefinitions, "skit_content_entitlement", "lease_activated_at",
+                "datetime|NO|<NULL>||<NULL>", "datetime|YES|<NULL>||<NULL>",
+                "datetime|NO|<NULL>||", "datetime|YES|<NULL>||");
         addColumnDefinition(columnDefinitions, "skit_ad_report_pull", "report_date",
                 "date|NO|<NULL>||<NULL>", "date|YES|<NULL>||<NULL>", "date|YES|<NULL>||");
         addColumnDefinition(columnDefinitions, "skit_ad_report_pull", "report_timezone",
@@ -352,6 +355,26 @@ public final class SkitAdSchemaSignature {
                 throw new IllegalStateException("Incompatible additive column " + table + "." + name
                         + ": expected one of " + allowedShapes + ", actual=" + shape);
             }
+        }
+        // An additive migration may deliberately place its column beside the field it extends
+        // (for example lease_activated_at AFTER granted_at). Once that column is projected out,
+        // MySQL's physical ORDINAL_POSITION values for every following released column are one
+        // position higher than in the immutable released fingerprint. Re-number the remaining
+        // rows while preserving their physical order so both upgrade and fresh-bootstrap paths
+        // project onto the same released envelope.
+        return renumberColumnOrdinals(result);
+    }
+
+    private static List<String> renumberColumnOrdinals(List<String> rows) {
+        List<String> result = new ArrayList<>(rows.size());
+        for (int index = 0; index < rows.size(); index++) {
+            String row = rows.get(index);
+            int separator = row.indexOf('|');
+            if (separator < 0) {
+                result.add(row);
+                continue;
+            }
+            result.add(String.format("%04d", index + 1) + row.substring(separator));
         }
         return result;
     }

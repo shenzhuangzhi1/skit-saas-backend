@@ -159,6 +159,7 @@ for quartz_release_contract in \
 done
 for skit_schema_summary_contract in \
     "${activation_script}|skit_ad_network_capability" \
+    "${activation_script}|skit_content_entitlement" \
     "${activation_script}|EXTRA" \
     "${activation_script}|SELECT 'INDEXES' AS kind" \
     "${activation_script}|information_schema.STATISTICS" \

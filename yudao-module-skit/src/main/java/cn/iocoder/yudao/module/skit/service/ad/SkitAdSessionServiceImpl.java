@@ -853,6 +853,35 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         if (session.getAdsourceId() == null) {
             session.setAdsourceId(event.getAdsourceId());
         }
+        if (shouldActivateVerifiedRewardLeaseOnClose(
+                session, event, current, clientEvent, occurredAt)) {
+            entitlementService.activateVerifiedRewardLeaseOnClose(
+                    memberId, session.getId(), session.getDramaId(), session.getEpisodeFrom(),
+                    occurredAt);
+        }
+    }
+
+    /**
+     * Only the first monotonic transition into CLOSED may move the lease clock. A replay with a
+     * different event id/sequence sees an already-CLOSED session and cannot extend playback.
+     */
+    private boolean shouldActivateVerifiedRewardLeaseOnClose(
+            SkitAdSessionDO session, ClientEventCommand event,
+            SkitAdSessionStateMachine.ClientLifecycle priorLifecycle,
+            SkitAdSessionStateMachine.ClientEvent clientEvent,
+            LocalDateTime occurredAt) {
+        return priorLifecycle != SkitAdSessionStateMachine.ClientLifecycle.CLOSED
+                && clientEvent == SkitAdSessionStateMachine.ClientEvent.CLOSED
+                && Boolean.TRUE.equals(event.getClosed())
+                && Boolean.TRUE.equals(event.getClientRewardObserved())
+                && "SIGNED_VERIFIED".equals(session.getRewardVerificationStatus())
+                && "GRANTED".equals(session.getEntitlementStatus())
+                && session.getRewardAcceptUntil() != null
+                && !occurredAt.isAfter(session.getRewardAcceptUntil())
+                && session.getId() != null && session.getId() > 0
+                && session.getDramaId() != null && session.getDramaId() > 0
+                && session.getEpisodeFrom() != null && session.getEpisodeFrom() > 0
+                && session.getEpisodeFrom().equals(session.getEpisodeTo());
     }
 
     private boolean isTerminalPreShowFailure(SkitAdSessionDO session,

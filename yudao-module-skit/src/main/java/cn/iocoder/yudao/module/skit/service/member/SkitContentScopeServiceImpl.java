@@ -144,7 +144,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
                     || !candidates.contains(row.getEpisodeNo()) || Boolean.TRUE.equals(row.getDeleted())
                     || !("GRANTED".equals(row.getStatus())
                     || "SECURITY_REVOKED".equals(row.getStatus()))
-                    || row.getGrantedAt() == null
+                    || row.getGrantedAt() == null || row.getLeaseActivatedAt() == null
                     || result.put(row.getEpisodeNo(), row) != null) {
                 throw new IllegalStateException(
                         "Content entitlement escaped the tenant/member/catalog boundary");
@@ -155,8 +155,8 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
 
     private boolean isActiveEntitlement(SkitContentEntitlementDO entitlement, LocalDateTime now) {
         return entitlement != null && "GRANTED".equals(entitlement.getStatus())
-                && entitlement.getGrantedAt() != null
-                && entitlement.getGrantedAt()
+                && entitlement.getLeaseActivatedAt() != null
+                && entitlement.getLeaseActivatedAt()
                 .isAfter(now.minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
     }
 
