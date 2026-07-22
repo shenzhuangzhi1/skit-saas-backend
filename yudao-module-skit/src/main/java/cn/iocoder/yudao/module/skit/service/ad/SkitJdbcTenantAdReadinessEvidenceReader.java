@@ -7,16 +7,22 @@ import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportRequestScop
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Predicate;
 
 /**
  * Reads only readiness metadata. No credential ciphertext, nonce, key material, raw callback payload,
@@ -81,8 +87,22 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
                 capability.getImpressionCallbackTemplateVerifiedAt() != null);
 
         Set<Integer> networkFirmIds = safeNetworkIds(capability.getUnlockNetworkFirmIdsJson());
-        result.setUnlockNetworksAuthoritative(authoritativeNetworks(
-                tenantId, capability.getAdAccountId(), networkFirmIds));
+        List<Map<String, Object>> networkCapabilities = networkCapabilityRows(
+                tenantId, capability.getAdAccountId());
+        List<Map<String, Object>> rewardCallbacks = callbackRows(tenantId,
+                capability.getAdAccountId(), capability.getDedicatedUnlockPlacementId(),
+                networkFirmIds, true);
+        List<Map<String, Object>> impressionCallbacks = callbackRows(tenantId,
+                capability.getAdAccountId(), capability.getDedicatedUnlockPlacementId(),
+                networkFirmIds, false);
+        List<SkitTenantAdReadinessEvidence.NetworkEvidence> networkReadiness =
+                evaluateNetworkEvidence(tenantId, capability.getAdAccountId(), networkFirmIds,
+                        networkCapabilities, rewardCallbacks, impressionCallbacks);
+        result.setAvailableNetworkCapabilities(evaluateAvailableCapabilities(
+                tenantId, capability.getAdAccountId(), networkCapabilities));
+        result.setNetworkReadiness(networkReadiness);
+        result.setUnlockNetworksAuthoritative(allSelectedNetworksPass(
+                networkReadiness, SkitTenantAdReadinessEvidence.NetworkEvidence::isAuthoritative));
 
         ReportingEvidence reporting = reportingEvidence(tenantId, capability.getAdAccountId(), account);
         result.setReportingCredentialConfigured(reporting.credentialConfigured);
@@ -90,12 +110,18 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
         result.setReportFresh(reporting.reportFresh);
         result.setLastReportSuccessAt(reporting.lastReportSuccessAt);
 
-        CallbackEvidence callbacks = callbackEvidence(tenantId, capability.getAdAccountId(),
-                capability.getDedicatedUnlockPlacementId(), networkFirmIds);
-        result.setSignedRewardCallbackObserved(callbacks.lastSignedRewardAt != null);
-        result.setImpressionCallbackObserved(callbacks.lastImpressionAt != null);
-        result.setLastSignedRewardCallbackAt(callbacks.lastSignedRewardAt);
-        result.setLastImpressionCallbackAt(callbacks.lastImpressionAt);
+        result.setSignedRewardCallbackObserved(allSelectedNetworksPass(networkReadiness,
+                SkitTenantAdReadinessEvidence.NetworkEvidence::isSignedRewardObserved));
+        result.setImpressionCallbackObserved(allSelectedNetworksPass(networkReadiness,
+                SkitTenantAdReadinessEvidence.NetworkEvidence::isImpressionObserved));
+        result.setMissingSignedRewardNetworkFirmIds(missingNetworks(networkReadiness,
+                SkitTenantAdReadinessEvidence.NetworkEvidence::isSignedRewardObserved));
+        result.setMissingImpressionNetworkFirmIds(missingNetworks(networkReadiness,
+                SkitTenantAdReadinessEvidence.NetworkEvidence::isImpressionObserved));
+        result.setLastSignedRewardCallbackAt(oldestCompleteObservation(
+                networkReadiness, true));
+        result.setLastImpressionCallbackAt(oldestCompleteObservation(
+                networkReadiness, false));
 
         MemberEvidence members = memberEvidence(tenantId, capability.getShadowTestMemberIdsJson());
         result.setShadowMembersBelongToTenant(members.allBelongToTenant);
@@ -169,40 +195,17 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
         return rows.size() == 1 ? rows.get(0) : Collections.emptyMap();
     }
 
-    private boolean authoritativeNetworks(Long tenantId, Long accountId, Set<Integer> networkFirmIds) {
-        if (accountId == null || networkFirmIds.isEmpty()) {
-            return false;
+    private List<Map<String, Object>> networkCapabilityRows(Long tenantId, Long accountId) {
+        if (tenantId == null || accountId == null || accountId <= 0) {
+            return Collections.emptyList();
         }
-        List<Object> parameters = new ArrayList<>();
-        parameters.add(tenantId);
-        parameters.add(accountId);
-        parameters.addAll(networkFirmIds);
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+        return jdbcTemplate.queryForList(
                 "SELECT `tenant_id`,`ad_account_id`,`network_firm_id`,`reward_authority`,"
                         + "`supports_user_id`,`supports_custom_data`,`supports_stable_transaction`,"
                         + "`supports_impression_revenue`,`supports_reporting`,`enabled`,`verified_at` "
                         + "FROM `skit_ad_network_capability` WHERE `tenant_id`=? AND `ad_account_id`=? "
-                        + "AND `network_firm_id` IN (" + placeholders(networkFirmIds.size()) + ") "
-                        + "AND `deleted`=b'0'",
-                parameters.toArray());
-        if (rows.size() != networkFirmIds.size()) {
-            return false;
-        }
-        for (Map<String, Object> row : rows) {
-            if (!tenantId.equals(longValue(row.get("tenant_id")))
-                    || !accountId.equals(longValue(row.get("ad_account_id")))
-                    || !networkFirmIds.contains(intValue(row.get("network_firm_id"), -1))
-                    || !"SIGNED_REWARD".equals(stringValue(row.get("reward_authority")))
-                    || !booleanValue(row.get("supports_user_id"))
-                    || !booleanValue(row.get("supports_custom_data"))
-                    || !booleanValue(row.get("supports_stable_transaction"))
-                    || !booleanValue(row.get("supports_impression_revenue"))
-                    || !booleanValue(row.get("supports_reporting"))
-                    || !booleanValue(row.get("enabled")) || row.get("verified_at") == null) {
-                return false;
-            }
-        }
-        return true;
+                        + "AND `deleted`=b'0' ORDER BY `network_firm_id`",
+                tenantId, accountId);
     }
 
     private ReportingEvidence reportingEvidence(Long tenantId, Long accountId, Map<String, Object> account) {
@@ -274,42 +277,261 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
         return null;
     }
 
-    private CallbackEvidence callbackEvidence(Long tenantId, Long accountId, String placementId,
-                                                Set<Integer> networkFirmIds) {
-        CallbackEvidence result = new CallbackEvidence();
+    private List<Map<String, Object>> callbackRows(Long tenantId, Long accountId, String placementId,
+                                                    Set<Integer> networkFirmIds, boolean reward) {
         if (accountId == null || StrUtil.isBlank(placementId) || networkFirmIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Object> parameters = new ArrayList<>();
+        parameters.add(tenantId);
+        parameters.add(accountId);
+        parameters.add(placementId);
+        parameters.addAll(networkFirmIds);
+        parameters.add(CALLBACK_MAX_AGE_DAYS);
+        String networkClause = placeholders(networkFirmIds.size());
+        String authorityClause = reward
+                ? "AND `callback_type`='REWARD' AND `authentication_level`='SIGNED_REWARD' "
+                + "AND `signature_status`='VALID' AND `evidence_provenance`='SIGNED_ILRD' "
+                + "AND `signed_field_mask`=63 AND `adsource_id` IS NOT NULL "
+                + "AND `adsource_id`<>'' "
+                : "AND `callback_type`='IMPRESSION' AND `provider_request_id` IS NOT NULL "
+                + "AND `adsource_id` IS NOT NULL AND `adsource_id`<>'' "
+                + "AND `authentication_level`='UNSIGNED_PROVIDER_OBSERVATION' ";
+        return jdbcTemplate.queryForList(
+                "SELECT `network_firm_id`,`adsource_id`,MAX(`received_at`) AS `observed_at` "
+                        + "FROM `skit_ad_callback_inbox` WHERE `tenant_id`=? "
+                        + "AND `ad_account_id`=? AND `placement_id`=? AND `network_firm_id` IN ("
+                        + networkClause + ") AND `ad_session_id` IS NOT NULL " + authorityClause
+                        + "AND `delivery_integrity_status`='CANONICAL' "
+                        + "AND `processing_status`='SUCCEEDED' "
+                        + "AND `received_at`>=TIMESTAMPADD(DAY,-?,CURRENT_TIMESTAMP) "
+                        + "AND `deleted`=b'0' GROUP BY `network_firm_id`,`adsource_id` "
+                        + "ORDER BY `network_firm_id`,`adsource_id`",
+                parameters.toArray());
+    }
+
+    static List<SkitTenantAdReadinessEvidence.NetworkEvidence> evaluateNetworkEvidence(
+            Long tenantId, Long accountId, Set<Integer> selectedNetworkIds,
+            List<Map<String, Object>> capabilityRows, List<Map<String, Object>> rewardRows,
+            List<Map<String, Object>> impressionRows) {
+        Map<Integer, Map<String, Object>> capabilities = new HashMap<>();
+        for (Map<String, Object> row : safeRows(capabilityRows)) {
+            int networkFirmId = intValue(row.get("network_firm_id"), -1);
+            if (tenantId != null && tenantId.equals(longValue(row.get("tenant_id")))
+                    && accountId != null && accountId.equals(longValue(row.get("ad_account_id")))
+                    && networkFirmId > 0) {
+                capabilities.put(networkFirmId, row);
+            }
+        }
+        List<SkitTenantAdReadinessEvidence.NetworkEvidence> result = new ArrayList<>();
+        for (Integer networkFirmId : new TreeSet<>(selectedNetworkIds == null
+                ? Collections.emptySet() : selectedNetworkIds)) {
+            if (networkFirmId == null || networkFirmId <= 0) {
+                continue;
+            }
+            Map<String, Object> capability = capabilities.get(networkFirmId);
+            SkitTenantAdReadinessEvidence.NetworkEvidence evidence =
+                    new SkitTenantAdReadinessEvidence.NetworkEvidence();
+            evidence.setNetworkFirmId(networkFirmId);
+            evidence.setRewardAuthority(capability == null ? null
+                    : stringValue(capability.get("reward_authority")));
+            evidence.setEnabled(capability != null && booleanValue(capability.get("enabled")));
+            evidence.setVerifiedAt(capability == null ? null
+                    : localDateTime(capability.get("verified_at")));
+            evidence.setVerified(evidence.getVerifiedAt() != null);
+            evidence.setSupportsUserId(capability != null
+                    && booleanValue(capability.get("supports_user_id")));
+            evidence.setSupportsCustomData(capability != null
+                    && booleanValue(capability.get("supports_custom_data")));
+            evidence.setSupportsStableTransaction(capability != null
+                    && booleanValue(capability.get("supports_stable_transaction")));
+            evidence.setSupportsImpressionRevenue(capability != null
+                    && booleanValue(capability.get("supports_impression_revenue")));
+            evidence.setSupportsReporting(capability != null
+                    && booleanValue(capability.get("supports_reporting")));
+
+            List<String> capabilityBlockers = capabilityBlockers(capability, evidence);
+            evidence.setCapabilityBlockers(Collections.unmodifiableList(capabilityBlockers));
+            evidence.setAuthoritative(capabilityBlockers.isEmpty());
+            evidence.setSelectable(evidence.isAuthoritative());
+
+            NetworkObservations rewards = observations(tenantId, accountId, networkFirmId,
+                    rewardRows, evidence.getVerifiedAt());
+            NetworkObservations impressions = observations(tenantId, accountId, networkFirmId,
+                    impressionRows, evidence.getVerifiedAt());
+            boolean rewardObserved = evidence.isAuthoritative() && !rewards.sourceRefs.isEmpty();
+            boolean impressionObserved = evidence.isAuthoritative()
+                    && evidence.isSupportsImpressionRevenue()
+                    && !impressions.sourceRefs.isEmpty();
+            evidence.setSignedRewardObserved(rewardObserved);
+            evidence.setImpressionObserved(impressionObserved);
+            evidence.setLastSignedRewardCallbackAt(rewardObserved ? rewards.latest : null);
+            evidence.setLastImpressionCallbackAt(impressionObserved ? impressions.latest : null);
+            evidence.setSignedRewardSourceRefs(rewardObserved
+                    ? immutableStrings(rewards.sourceRefs) : Collections.emptyList());
+            evidence.setImpressionSourceRefs(impressionObserved
+                    ? immutableStrings(impressions.sourceRefs) : Collections.emptyList());
+            TreeSet<String> sourceRefs = new TreeSet<>();
+            sourceRefs.addAll(evidence.getSignedRewardSourceRefs());
+            sourceRefs.addAll(evidence.getImpressionSourceRefs());
+            evidence.setSourceRefs(immutableStrings(sourceRefs));
+
+            List<String> blockers = new ArrayList<>(capabilityBlockers);
+            addBlocker(blockers, evidence.isSupportsImpressionRevenue(),
+                    "IMPRESSION_REVENUE_UNSUPPORTED");
+            addBlocker(blockers, evidence.isSupportsReporting(), "REPORTING_UNSUPPORTED");
+            addBlocker(blockers, rewardObserved, "REAL_SIGNED_REWARD_CALLBACK_MISSING");
+            addBlocker(blockers, impressionObserved, "REAL_IMPRESSION_CALLBACK_MISSING");
+            evidence.setBlockers(Collections.unmodifiableList(blockers));
+            result.add(evidence);
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    private static List<SkitTenantAdReadinessEvidence.NetworkEvidence> evaluateAvailableCapabilities(
+            Long tenantId, Long accountId, List<Map<String, Object>> capabilityRows) {
+        Set<Integer> networkIds = new TreeSet<>();
+        for (Map<String, Object> row : safeRows(capabilityRows)) {
+            int networkFirmId = intValue(row.get("network_firm_id"), -1);
+            if (tenantId != null && tenantId.equals(longValue(row.get("tenant_id")))
+                    && accountId != null && accountId.equals(longValue(row.get("ad_account_id")))
+                    && networkFirmId > 0) {
+                networkIds.add(networkFirmId);
+            }
+        }
+        return evaluateNetworkEvidence(tenantId, accountId, networkIds, capabilityRows,
+                Collections.emptyList(), Collections.emptyList());
+    }
+
+    static boolean allSelectedNetworksPass(
+            List<SkitTenantAdReadinessEvidence.NetworkEvidence> evidence,
+            Predicate<SkitTenantAdReadinessEvidence.NetworkEvidence> predicate) {
+        if (evidence == null || evidence.isEmpty() || predicate == null) {
+            return false;
+        }
+        for (SkitTenantAdReadinessEvidence.NetworkEvidence network : evidence) {
+            if (network == null || !predicate.test(network)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static Set<Integer> missingNetworks(
+            List<SkitTenantAdReadinessEvidence.NetworkEvidence> evidence,
+            Predicate<SkitTenantAdReadinessEvidence.NetworkEvidence> predicate) {
+        if (evidence == null || evidence.isEmpty() || predicate == null) {
+            return Collections.emptySet();
+        }
+        TreeSet<Integer> result = new TreeSet<>();
+        for (SkitTenantAdReadinessEvidence.NetworkEvidence network : evidence) {
+            if (network != null && network.getNetworkFirmId() != null
+                    && network.getNetworkFirmId() > 0 && !predicate.test(network)) {
+                result.add(network.getNetworkFirmId());
+            }
+        }
+        return result.isEmpty() ? Collections.emptySet()
+                : Collections.unmodifiableSet(new LinkedHashSet<>(result));
+    }
+
+    private static LocalDateTime oldestCompleteObservation(
+            List<SkitTenantAdReadinessEvidence.NetworkEvidence> evidence, boolean reward) {
+        LocalDateTime oldest = null;
+        if (evidence == null || evidence.isEmpty()) {
+            return null;
+        }
+        for (SkitTenantAdReadinessEvidence.NetworkEvidence network : evidence) {
+            LocalDateTime observed = reward ? network.getLastSignedRewardCallbackAt()
+                    : network.getLastImpressionCallbackAt();
+            if (observed == null) {
+                return null;
+            }
+            if (oldest == null || observed.isBefore(oldest)) {
+                oldest = observed;
+            }
+        }
+        return oldest;
+    }
+
+    private static List<String> capabilityBlockers(
+            Map<String, Object> capability,
+            SkitTenantAdReadinessEvidence.NetworkEvidence evidence) {
+        List<String> blockers = new ArrayList<>();
+        if (capability == null) {
+            blockers.add("NETWORK_CAPABILITY_MISSING");
+            return blockers;
+        }
+        addBlocker(blockers, evidence.isEnabled(), "NETWORK_CAPABILITY_DISABLED");
+        addBlocker(blockers, evidence.isVerified(), "NETWORK_CAPABILITY_UNVERIFIED");
+        addBlocker(blockers, "SIGNED_REWARD".equals(evidence.getRewardAuthority()),
+                "SIGNED_REWARD_AUTHORITY_MISSING");
+        addBlocker(blockers, evidence.isSupportsUserId(), "STABLE_USER_ID_UNSUPPORTED");
+        addBlocker(blockers, evidence.isSupportsCustomData(), "STABLE_CUSTOM_DATA_UNSUPPORTED");
+        addBlocker(blockers, evidence.isSupportsStableTransaction(),
+                "STABLE_TRANSACTION_UNSUPPORTED");
+        return blockers;
+    }
+
+    private static void addBlocker(List<String> blockers, boolean passes, String blocker) {
+        if (!passes) {
+            blockers.add(blocker);
+        }
+    }
+
+    private static NetworkObservations observations(Long tenantId, Long accountId,
+                                                    Integer expectedNetworkFirmId,
+                                                    List<Map<String, Object>> rows,
+                                                    LocalDateTime verifiedAt) {
+        NetworkObservations result = new NetworkObservations();
+        if (tenantId == null || accountId == null || expectedNetworkFirmId == null
+                || expectedNetworkFirmId <= 0 || verifiedAt == null) {
             return result;
         }
-        List<Object> common = new ArrayList<>();
-        common.add(tenantId);
-        common.add(accountId);
-        common.add(placementId);
-        common.addAll(networkFirmIds);
-        String networkClause = placeholders(networkFirmIds.size());
-        List<Object> rewardParameters = new ArrayList<>(common);
-        rewardParameters.add(CALLBACK_MAX_AGE_DAYS);
-        result.lastSignedRewardAt = jdbcTemplate.queryForObject(
-                "SELECT MAX(`received_at`) FROM `skit_ad_callback_inbox` WHERE `tenant_id`=? "
-                        + "AND `ad_account_id`=? AND `placement_id`=? AND `network_firm_id` IN ("
-                        + networkClause + ") AND `callback_type`='REWARD' AND `ad_session_id` IS NOT NULL "
-                        + "AND `authentication_level`='SIGNED_REWARD' AND `signature_status`='VALID' "
-                        + "AND `evidence_provenance`='SIGNED_ILRD' AND `signed_field_mask`=63 "
-                        + "AND `delivery_integrity_status`='CANONICAL' AND `processing_status`='SUCCEEDED' "
-                        + "AND `received_at`>=TIMESTAMPADD(DAY,-?,CURRENT_TIMESTAMP) AND `deleted`=b'0'",
-                (rs, rowNum) -> localDateTime(rs.getTimestamp(1)), rewardParameters.toArray());
-
-        List<Object> impressionParameters = new ArrayList<>(common);
-        impressionParameters.add(CALLBACK_MAX_AGE_DAYS);
-        result.lastImpressionAt = jdbcTemplate.queryForObject(
-                "SELECT MAX(`received_at`) FROM `skit_ad_callback_inbox` WHERE `tenant_id`=? "
-                        + "AND `ad_account_id`=? AND `placement_id`=? AND `network_firm_id` IN ("
-                        + networkClause + ") AND `callback_type`='IMPRESSION' AND `ad_session_id` IS NOT NULL "
-                        + "AND `provider_request_id` IS NOT NULL AND `adsource_id` IS NOT NULL "
-                        + "AND `authentication_level`='UNSIGNED_PROVIDER_OBSERVATION' "
-                        + "AND `delivery_integrity_status`='CANONICAL' AND `processing_status`='SUCCEEDED' "
-                        + "AND `received_at`>=TIMESTAMPADD(DAY,-?,CURRENT_TIMESTAMP) AND `deleted`=b'0'",
-                (rs, rowNum) -> localDateTime(rs.getTimestamp(1)), impressionParameters.toArray());
+        for (Map<String, Object> row : safeRows(rows)) {
+            int networkFirmId = intValue(row.get("network_firm_id"), -1);
+            LocalDateTime observedAt = localDateTime(row.get("observed_at"));
+            String adsourceId = stringValue(row.get("adsource_id"));
+            if (networkFirmId != expectedNetworkFirmId || StrUtil.isBlank(adsourceId)
+                    || observedAt == null || observedAt.isBefore(verifiedAt)) {
+                continue;
+            }
+            result.sourceRefs.add(sourceRef(tenantId, accountId, networkFirmId, adsourceId));
+            if (result.latest == null || observedAt.isAfter(result.latest)) {
+                result.latest = observedAt;
+            }
+        }
         return result;
+    }
+
+    static String sourceRef(Long tenantId, Long accountId, Integer networkFirmId,
+                            String adsourceId) {
+        if (tenantId == null || tenantId <= 0 || accountId == null || accountId <= 0
+                || networkFirmId == null || networkFirmId <= 0 || StrUtil.isBlank(adsourceId)) {
+            throw new IllegalArgumentException("Source reference scope is invalid");
+        }
+        String canonical = "skit-readiness-source-v1:" + tenantId + ':' + accountId + ':'
+                + networkFirmId + ':' + adsourceId.trim();
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(12);
+            for (int index = 0; index < 6; index++) {
+                hex.append(Character.forDigit((digest[index] >>> 4) & 0x0f, 16));
+                hex.append(Character.forDigit(digest[index] & 0x0f, 16));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static List<String> immutableStrings(Set<String> values) {
+        return values == null || values.isEmpty() ? Collections.emptyList()
+                : Collections.unmodifiableList(new ArrayList<>(new TreeSet<>(values)));
+    }
+
+    private static List<Map<String, Object>> safeRows(List<Map<String, Object>> rows) {
+        return rows == null ? Collections.emptyList() : rows;
     }
 
     private MemberEvidence memberEvidence(Long tenantId, String memberJson) {
@@ -453,9 +675,9 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
         private LocalDateTime issuedAt;
     }
 
-    private static final class CallbackEvidence {
-        private LocalDateTime lastSignedRewardAt;
-        private LocalDateTime lastImpressionAt;
+    private static final class NetworkObservations {
+        private LocalDateTime latest;
+        private final Set<String> sourceRefs = new TreeSet<>();
     }
 
     private static final class MemberEvidence {

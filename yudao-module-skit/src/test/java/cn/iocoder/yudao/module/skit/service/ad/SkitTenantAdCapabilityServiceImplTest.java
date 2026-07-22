@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.skit.service.ad;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.app.SkitAppReleaseProfileDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
@@ -38,6 +39,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
@@ -85,8 +87,11 @@ class SkitTenantAdCapabilityServiceImplTest {
     void readinessEnumeratesEveryProductionPrerequisiteWithoutReturningSecrets() {
         SkitTenantAdCapabilityDO capability = shadowCapability();
         when(capabilityMapper.selectByTenantForShare(TENANT_ID)).thenReturn(capability);
+        SkitTenantAdReadinessEvidence evidence = readyEvidence();
+        evidence.setAvailableNetworkCapabilities(Collections.singletonList(networkEvidence(66)));
+        evidence.setNetworkReadiness(Collections.singletonList(networkEvidence(66)));
         when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
-                .thenReturn(readyEvidence());
+                .thenReturn(evidence);
 
         SkitTenantAdCapabilityService.ReadinessView view = service.getReadiness();
 
@@ -107,6 +112,18 @@ class SkitTenantAdCapabilityServiceImplTest {
         assertEquals(4, view.getCallbackKeyVersion());
         assertEquals(5, view.getRewardSecretVersion());
         assertTrue(view.getCallbackPublicUrlHttps());
+        assertEquals(1, view.getAvailableNetworkCapabilities().size());
+        assertEquals(66, view.getAvailableNetworkCapabilities().get(0).getNetworkFirmId());
+        assertTrue(view.getAvailableNetworkCapabilities().get(0).isVerified());
+        assertTrue(view.getAvailableNetworkCapabilities().get(0).isSelectable());
+        assertEquals(1, view.getNetworkReadiness().size());
+        assertTrue(view.getNetworkReadiness().get(0).isAuthoritative());
+        assertTrue(view.getNetworkReadiness().get(0).isSignedRewardObserved());
+        assertTrue(view.getNetworkReadiness().get(0).isImpressionObserved());
+        assertEquals(Collections.singletonList("012345abcdef"),
+                view.getNetworkReadiness().get(0).getSourceRefs());
+        assertTrue(view.getMissingSignedRewardNetworkFirmIds().isEmpty());
+        assertTrue(view.getMissingImpressionNetworkFirmIds().isEmpty());
         assertFalse(view.toString().contains("ciphertext"));
         assertFalse(view.toString().contains("secret"));
     }
@@ -124,6 +141,8 @@ class SkitTenantAdCapabilityServiceImplTest {
         assertEquals(TENANT_ID, view.getTenantId());
         assertEquals("OFF", view.getRolloutState());
         assertEquals(0, view.getReadinessVersion());
+        assertTrue(view.getUnlockNetworkFirmIds().isEmpty(),
+                "a new tenant must not silently inherit a rewarded network");
         assertFalse(view.isProductionReady());
     }
 
@@ -317,29 +336,223 @@ class SkitTenantAdCapabilityServiceImplTest {
     }
 
     @Test
-    void configurationUsesServerDerivedPlacementNetworksAndProtocol() {
+    void configurationPersistsRequestedDynamicNetworksSortedWithoutSelfCertification() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(readyEvidence());
+        when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID)).thenReturn(
+                Arrays.asList(networkCapability(22, true), networkCapability(46, true),
+                        networkCapability(66, true)));
+        when(capabilityMapper.updateConfigurationCas(TENANT_ID, capability.getId(), 3,
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[22,46,66]",
+                "[101,102]", "2.4.0", 1)).thenReturn(1);
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(shadowCapability().setUnlockNetworkFirmIdsJson("[22,46,66]")
+                        .setReadinessVersion(4));
+
+        SkitTenantAdCapabilityService.ConfigurationCommand command = configuration(3);
+        command.setDedicatedUnlockPlacementId("user-supplied-spoofed-placement");
+        command.setUnlockNetworkFirmIds(new LinkedHashSet<>(Arrays.asList(46, 66, 22)));
+        command.setMinProtocolVersion(null);
+
+        SkitTenantAdCapabilityService.CapabilityView saved = service.configure(command);
+
+        assertEquals(new LinkedHashSet<>(Arrays.asList(22, 46, 66)),
+                saved.getUnlockNetworkFirmIds());
+        verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
+        verify(networkCapabilityMapper).selectAllForShare(TENANT_ID, ACCOUNT_ID);
+        verify(capabilityMapper).updateConfigurationCas(TENANT_ID, capability.getId(), 3,
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[22,46,66]",
+                "[101,102]", "2.4.0", 1);
+    }
+
+    @Test
+    void offConfigurationRejectsMissingSelectedNetworkCapability() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(readyEvidence());
+        when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID)).thenReturn(
+                Arrays.asList(networkCapability(35, true), networkCapability(66, true)));
+
+        assertServiceException(() -> service.configure(configuration(3)), AD_ROLLOUT_NOT_READY,
+                "UNLOCK_NETWORK_CAPABILITY_NOT_AUTHORITATIVE");
+
+        verify(capabilityMapper, never()).updateConfigurationCas(any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void offConfigurationRejectsDisabledUnverifiedOrWrongAuthorityCapability() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        SkitAdNetworkCapabilityDO unverified = networkCapability(67, true).setVerifiedAt(null);
+        SkitAdNetworkCapabilityDO disabled = networkCapability(67, false);
+        SkitAdNetworkCapabilityDO wrongAuthority = networkCapability(67, true)
+                .setRewardAuthority("NONE");
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(readyEvidence());
+        for (SkitAdNetworkCapabilityDO rejected : Arrays.asList(
+                disabled, unverified, wrongAuthority)) {
+            when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID)).thenReturn(
+                    Arrays.asList(networkCapability(35, true), networkCapability(66, true), rejected));
+            assertServiceException(() -> service.configure(configuration(3)), AD_ROLLOUT_NOT_READY,
+                    "UNLOCK_NETWORK_CAPABILITY_NOT_AUTHORITATIVE");
+        }
+
+        verify(capabilityMapper, never()).updateConfigurationCas(any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void offConfigurationRejectsCrossAccountSelectedNetworkCapability() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        SkitAdNetworkCapabilityDO crossAccount = networkCapability(67, true).setAdAccountId(9999L);
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(readyEvidence());
+        when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID)).thenReturn(
+                Arrays.asList(networkCapability(35, true), networkCapability(66, true), crossAccount));
+
+        assertServiceException(() -> service.configure(configuration(3)), AD_ROLLOUT_NOT_READY,
+                "UNLOCK_NETWORK_CAPABILITY_NOT_AUTHORITATIVE");
+
+        verify(capabilityMapper, never()).updateConfigurationCas(any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void productionUnlockConfigurationRejectsInvalidOrOversizedNetworkSets() {
+        SkitTenantAdCapabilityService.ConfigurationCommand invalid = configuration(3);
+        invalid.setUnlockNetworkFirmIds(new LinkedHashSet<>(Arrays.asList(66, -7)));
+        assertServiceException(() -> service.configure(invalid), AD_ROLLOUT_CONFIG_INVALID,
+                "UNLOCK_NETWORKS");
+
+        LinkedHashSet<Integer> oversized = new LinkedHashSet<>();
+        for (int network = 1; network <= 17; network++) {
+            oversized.add(network);
+        }
+        SkitTenantAdCapabilityService.ConfigurationCommand tooMany = configuration(3);
+        tooMany.setUnlockNetworkFirmIds(oversized);
+        assertServiceException(() -> service.configure(tooMany), AD_ROLLOUT_CONFIG_INVALID,
+                "UNLOCK_NETWORKS");
+
+        verifyNoInteractions(capabilityMapper, evidenceReader, networkCapabilityMapper);
+    }
+
+    @Test
+    void offConfigurationMayExplicitlyKeepTheNetworkSelectionEmpty() {
         SkitTenantAdCapabilityDO capability = offCapability();
         when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
         when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
                 .thenReturn(readyEvidence());
         when(capabilityMapper.updateConfigurationCas(TENANT_ID, capability.getId(), 3,
-                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[66]",
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[]",
                 "[101,102]", "2.4.0", 1)).thenReturn(1);
         when(capabilityMapper.selectByTenantForShare(TENANT_ID))
-                .thenReturn(shadowCapability().setReadinessVersion(4));
-
+                .thenReturn(offCapability().setUnlockNetworkFirmIdsJson("[]").setReadinessVersion(4));
         SkitTenantAdCapabilityService.ConfigurationCommand command = configuration(3);
-        command.setDedicatedUnlockPlacementId("user-supplied-spoofed-placement");
         command.setUnlockNetworkFirmIds(Collections.emptySet());
-        command.setMinProtocolVersion(null);
 
-        service.configure(command);
+        SkitTenantAdCapabilityService.CapabilityView saved = service.configure(command);
 
-        verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
-        verify(networkCapabilityMapper).upsertTakuAdxAuthority(TENANT_ID, ACCOUNT_ID);
+        assertTrue(saved.getUnlockNetworkFirmIds().isEmpty());
         verify(capabilityMapper).updateConfigurationCas(TENANT_ID, capability.getId(), 3,
-                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[66]",
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[]",
                 "[101,102]", "2.4.0", 1);
+    }
+
+    @Test
+    void activeShadowConfigurationCannotRemoveEveryUnlockNetwork() {
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(shadowCapability());
+        SkitTenantAdCapabilityService.ConfigurationCommand command = configuration(8);
+        command.setUnlockNetworkFirmIds(Collections.emptySet());
+
+        assertServiceException(() -> service.configure(command), AD_ROLLOUT_CONFIG_INVALID,
+                "UNLOCK_NETWORKS");
+
+        verify(capabilityMapper, never()).updateConfigurationCas(any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void superAdminCapabilityMutationSupportsArbitraryNetworkIdsAndLogicalDisable() {
+        SkitAdNetworkCapabilityDO network46 = networkCapability(46, true);
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID))
+                .thenReturn(offCapability(), offCapability().setReadinessVersion(4));
+        when(networkCapabilityMapper.selectForUpdate(TENANT_ID, ACCOUNT_ID, 46))
+                .thenReturn(null, network46);
+        when(networkCapabilityMapper.upsertVerified(TENANT_ID, ACCOUNT_ID, 46,
+                "SIGNED_REWARD", true, true, true, true, true)).thenReturn(1);
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 46))
+                .thenReturn(network46, networkCapability(46, false));
+        when(networkCapabilityMapper.disable(TENANT_ID, ACCOUNT_ID, 46)).thenReturn(1);
+        when(capabilityMapper.bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 3))
+                .thenReturn(1);
+        when(capabilityMapper.bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 4))
+                .thenReturn(1);
+
+        SkitTenantAdCapabilityService.NetworkCapabilityView enabled =
+                service.verifyNetworkCapability(networkCommand(46, true));
+        SkitTenantAdCapabilityService.NetworkCapabilityCommand disable = networkCommand(46, false);
+        disable.setExpectedReadinessVersion(4);
+        SkitTenantAdCapabilityService.NetworkCapabilityView disabled =
+                service.verifyNetworkCapability(disable);
+
+        assertEquals(46, enabled.getNetworkFirmId());
+        assertTrue(enabled.isEnabled());
+        assertFalse(disabled.isEnabled());
+        assertTrue(disabled.isVerified(), "logical disable must preserve verification metadata");
+        verify(networkCapabilityMapper).upsertVerified(TENANT_ID, ACCOUNT_ID, 46,
+                "SIGNED_REWARD", true, true, true, true, true);
+        verify(networkCapabilityMapper).disable(TENANT_ID, ACCOUNT_ID, 46);
+        verify(capabilityMapper).bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 3);
+        verify(capabilityMapper).bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 4);
+    }
+
+    @Test
+    void capabilityMutationRejectsCrossTenantAccountAndUnsignedOrUnstableClaims() {
+        when(adAccountMapper.selectEnabledTakuPlacementId(TENANT_ID, 9999L)).thenReturn(null);
+        SkitTenantAdCapabilityService.NetworkCapabilityCommand crossTenant = networkCommand(22, true);
+        crossTenant.setAdAccountId(9999L);
+        assertServiceException(() -> service.verifyNetworkCapability(crossTenant),
+                AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
+
+        SkitTenantAdCapabilityService.NetworkCapabilityCommand unstable = networkCommand(22, true);
+        unstable.setSupportsStableTransaction(false);
+        assertServiceException(() -> service.verifyNetworkCapability(unstable),
+                AD_ROLLOUT_CONFIG_INVALID, "SIGNED_REWARD_CAPABILITY_INVALID");
+        verifyNoInteractions(networkCapabilityMapper);
+    }
+
+    @Test
+    void explicitNoneAuthorityIsPersistedButNeverSelectable() {
+        SkitAdNetworkCapabilityDO none = networkCapability(22, true)
+                .setRewardAuthority("NONE")
+                .setSupportsUserId(false)
+                .setSupportsCustomData(false)
+                .setSupportsStableTransaction(false);
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(offCapability());
+        when(networkCapabilityMapper.selectForUpdate(TENANT_ID, ACCOUNT_ID, 22)).thenReturn(null);
+        when(networkCapabilityMapper.upsertVerified(TENANT_ID, ACCOUNT_ID, 22,
+                "NONE", false, false, false, true, true)).thenReturn(1);
+        when(capabilityMapper.bumpNetworkCapabilityVersionCas(TENANT_ID, 700L, ACCOUNT_ID, 3))
+                .thenReturn(1);
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 22)).thenReturn(none);
+        SkitTenantAdCapabilityService.NetworkCapabilityCommand command = networkCommand(22, true);
+        command.setRewardAuthority("NONE");
+        command.setSupportsUserId(false);
+        command.setSupportsCustomData(false);
+        command.setSupportsStableTransaction(false);
+
+        SkitTenantAdCapabilityService.NetworkCapabilityView saved =
+                service.verifyNetworkCapability(command);
+
+        assertEquals("NONE", saved.getRewardAuthority());
+        assertTrue(saved.isVerified());
+        assertFalse(saved.isSelectable());
+        assertTrue(saved.getBlockers().contains("SIGNED_REWARD_AUTHORITY_MISSING"));
     }
 
     @Test
@@ -432,6 +645,40 @@ class SkitTenantAdCapabilityServiceImplTest {
         return command;
     }
 
+    private SkitTenantAdCapabilityService.NetworkCapabilityCommand networkCommand(
+            int networkFirmId, boolean enabled) {
+        SkitTenantAdCapabilityService.NetworkCapabilityCommand command =
+                new SkitTenantAdCapabilityService.NetworkCapabilityCommand();
+        command.setAdAccountId(ACCOUNT_ID);
+        command.setNetworkFirmId(networkFirmId);
+        command.setRewardAuthority("SIGNED_REWARD");
+        command.setEnabled(enabled);
+        command.setSupportsUserId(true);
+        command.setSupportsCustomData(true);
+        command.setSupportsStableTransaction(true);
+        command.setSupportsImpressionRevenue(true);
+        command.setSupportsReporting(true);
+        command.setExpectedReadinessVersion(3);
+        return command;
+    }
+
+    private SkitAdNetworkCapabilityDO networkCapability(int networkFirmId, boolean enabled) {
+        SkitAdNetworkCapabilityDO result = new SkitAdNetworkCapabilityDO();
+        result.setId(900L + networkFirmId);
+        result.setTenantId(TENANT_ID);
+        result.setAdAccountId(ACCOUNT_ID);
+        result.setNetworkFirmId(networkFirmId);
+        result.setRewardAuthority("SIGNED_REWARD");
+        result.setSupportsUserId(true);
+        result.setSupportsCustomData(true);
+        result.setSupportsStableTransaction(true);
+        result.setSupportsImpressionRevenue(true);
+        result.setSupportsReporting(true);
+        result.setEnabled(enabled);
+        result.setVerifiedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 5));
+        return result;
+    }
+
     private SkitTenantAdCapabilityDO offCapability() {
         return capability("OFF", 3);
     }
@@ -481,6 +728,22 @@ class SkitTenantAdCapabilityServiceImplTest {
                 .setCallbackKeyVersion(4).setRewardSecretVersion(5)
                 .setCallbackKeyIssuedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 3))
                 .setRewardSecretIssuedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 4));
+    }
+
+    private SkitTenantAdReadinessEvidence.NetworkEvidence networkEvidence(int networkFirmId) {
+        return new SkitTenantAdReadinessEvidence.NetworkEvidence()
+                .setNetworkFirmId(networkFirmId).setRewardAuthority("SIGNED_REWARD")
+                .setEnabled(true).setVerified(true)
+                .setVerifiedAt(java.time.LocalDateTime.of(2026, 7, 14, 1, 5))
+                .setSupportsUserId(true).setSupportsCustomData(true)
+                .setSupportsStableTransaction(true).setSupportsImpressionRevenue(true)
+                .setSupportsReporting(true).setAuthoritative(true).setSelectable(true)
+                .setSignedRewardObserved(true).setImpressionObserved(true)
+                .setLastSignedRewardCallbackAt(java.time.LocalDateTime.of(2026, 7, 14, 2, 0))
+                .setLastImpressionCallbackAt(java.time.LocalDateTime.of(2026, 7, 14, 2, 1))
+                .setSourceRefs(Collections.singletonList("012345abcdef"))
+                .setSignedRewardSourceRefs(Collections.singletonList("012345abcdef"))
+                .setImpressionSourceRefs(Collections.singletonList("012345abcdef"));
     }
 
 }

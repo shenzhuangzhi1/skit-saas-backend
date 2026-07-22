@@ -6,6 +6,8 @@ import lombok.Data;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.Collections;
+import java.util.stream.Collectors;
 
 @Data
 public class SkitTenantAdReadinessRespVO {
@@ -45,7 +47,11 @@ public class SkitTenantAdReadinessRespVO {
     private Boolean shadowMembersValid;
     private Boolean shadowReady;
     private Boolean productionReady;
-    private List<String> blockers;
+    private List<String> blockers = Collections.emptyList();
+    private List<SkitAdNetworkCapabilityRespVO> availableNetworkCapabilities = Collections.emptyList();
+    private List<SkitAdNetworkReadinessRespVO> networkReadiness = Collections.emptyList();
+    private Set<Integer> missingSignedRewardNetworkFirmIds = Collections.emptySet();
+    private Set<Integer> missingImpressionNetworkFirmIds = Collections.emptySet();
     private LocalDateTime lastSignedRewardCallbackAt;
     private LocalDateTime lastImpressionCallbackAt;
     private LocalDateTime lastReportSuccessAt;
@@ -87,7 +93,17 @@ public class SkitTenantAdReadinessRespVO {
         result.setShadowMembersValid(source.getShadowMembersValid());
         result.setShadowReady(source.getShadowReady());
         result.setProductionReady(source.getProductionReady());
-        result.setBlockers(source.getBlockers());
+        result.setBlockers(source.getBlockers() == null ? Collections.emptyList() : source.getBlockers());
+        result.setAvailableNetworkCapabilities(source.getAvailableNetworkCapabilities() == null
+                ? Collections.emptyList() : source.getAvailableNetworkCapabilities().stream()
+                .map(SkitAdNetworkCapabilityRespVO::from).collect(Collectors.toList()));
+        result.setNetworkReadiness(source.getNetworkReadiness() == null
+                ? Collections.emptyList() : source.getNetworkReadiness().stream()
+                .map(SkitAdNetworkReadinessRespVO::from).collect(Collectors.toList()));
+        result.setMissingSignedRewardNetworkFirmIds(source.getMissingSignedRewardNetworkFirmIds() == null
+                ? Collections.emptySet() : source.getMissingSignedRewardNetworkFirmIds());
+        result.setMissingImpressionNetworkFirmIds(source.getMissingImpressionNetworkFirmIds() == null
+                ? Collections.emptySet() : source.getMissingImpressionNetworkFirmIds());
         result.setLastSignedRewardCallbackAt(source.getLastSignedRewardCallbackAt());
         result.setLastImpressionCallbackAt(source.getLastImpressionCallbackAt());
         result.setLastReportSuccessAt(source.getLastReportSuccessAt());

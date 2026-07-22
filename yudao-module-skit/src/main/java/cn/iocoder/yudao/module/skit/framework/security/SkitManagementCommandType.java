@@ -11,6 +11,7 @@ public enum SkitManagementCommandType {
     REPORTING_CONFIGURATION(true),
     AD_READINESS_CONFIGURATION(true),
     AD_ROLLOUT_TRANSITION(true),
+    AD_NETWORK_CAPABILITY_VERIFY(false),
     APP_RELEASE_UPDATE(false),
     APP_BUILD_MATERIAL_UPDATE(false),
     ADMIN_RECORD_WRITE(true),

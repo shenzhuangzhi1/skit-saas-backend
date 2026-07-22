@@ -5,11 +5,13 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackEdgeAttemptD
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackEdgeAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitCallbackPayloadCryptoService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdSessionTokenService;
@@ -73,6 +75,7 @@ class SkitCallbackIngressServiceImplTest {
     private SkitAdCallbackAttemptMapper attemptMapper;
     private SkitAdCallbackEdgeAttemptMapper edgeAttemptMapper;
     private SkitAdNetworkCapabilityMapper networkCapabilityMapper;
+    private SkitTenantAdCapabilityMapper tenantCapabilityMapper;
     private SkitCallbackPayloadCryptoService payloadCryptoService;
     private SkitCallbackRateLimiter rateLimiter;
     private SkitCallbackIngressServiceImpl service;
@@ -94,6 +97,7 @@ class SkitCallbackIngressServiceImplTest {
         attemptMapper = mock(SkitAdCallbackAttemptMapper.class);
         edgeAttemptMapper = mock(SkitAdCallbackEdgeAttemptMapper.class);
         networkCapabilityMapper = mock(SkitAdNetworkCapabilityMapper.class);
+        tenantCapabilityMapper = mock(SkitTenantAdCapabilityMapper.class);
         payloadCryptoService = mock(SkitCallbackPayloadCryptoService.class);
         rateLimiter = mock(SkitCallbackRateLimiter.class);
         Clock clock = Clock.fixed(Instant.parse("2026-07-14T15:20:00Z"),
@@ -101,7 +105,8 @@ class SkitCallbackIngressServiceImplTest {
         service = new SkitCallbackIngressServiceImpl(routingService, new TakuCallbackCanonicalizer(),
                 new TakuRewardSignatureVerifier(new ObjectMapper()), credentialService, tokenService,
                 sessionMapper, inboxMapper, attemptMapper, edgeAttemptMapper,
-                networkCapabilityMapper, payloadCryptoService, rateLimiter, clock);
+                new SkitRewardAuthorityPolicy(tenantCapabilityMapper, networkCapabilityMapper),
+                payloadCryptoService, rateLimiter, clock);
 
         when(routingService.resolve(CALLBACK_KEY, RECEIVED_AT)).thenReturn(
                 new SkitCallbackRoutingService.CallbackRoute(
@@ -111,6 +116,8 @@ class SkitCallbackIngressServiceImplTest {
                 .thenReturn(session);
         when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
                 .thenReturn(validCapability());
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[66]"));
         when(credentialService.resolveRewardSecret(eq(TENANT_ID), eq(ACCOUNT_ID), eq(7),
                 eq(session.getRewardAcceptUntil()), eq(RECEIVED_AT))).thenAnswer(invocation ->
                 new SkitAdCredentialVersionService.ResolvedRewardSecret(
@@ -264,6 +271,65 @@ class SkitCallbackIngressServiceImplTest {
         for (SkitAdNetworkCapabilityDO invalid : invalidCapabilities) {
             when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
                     .thenReturn(invalid);
+            assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
+                    service.receiveReward(CALLBACK_KEY,
+                            signedRewardQuery(customData, REWARD_SECRET), "203.0.113.8"));
+        }
+
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void signedSelectedDynamicNetworkIsAcceptedWithoutAFixedRuntimeAllowList() {
+        int dynamicNetwork = 46;
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[46]"));
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, dynamicNetwork))
+                .thenReturn(validCapability().setNetworkFirmId(dynamicNetwork));
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY,
+                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, SHOW_ID, null,
+                        dynamicNetwork, dynamicNetwork),
+                "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
+        assertEquals(dynamicNetwork, insertedInbox.get().getNetworkFirmId());
+        verify(sessionMapper).markRewardCallbackReceivedCas(
+                TENANT_ID, SESSION_ROW_ID, ACCOUNT_ID, INBOX_ID, RECEIVED_AT);
+    }
+
+    @Test
+    void topLevelSpoofCannotAuthorizeADifferentSignedIlrdNetwork() {
+        int signedNetwork = 46;
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
+                .thenReturn(validCapability());
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY,
+                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, SHOW_ID, null,
+                        signedNetwork, 66),
+                "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void crossTenantOrCrossAccountCapabilityCannotAuthorizeReward() {
+        SkitAdNetworkCapabilityDO wrongTenant = validCapability();
+        wrongTenant.setTenantId(TENANT_ID + 1);
+        SkitAdNetworkCapabilityDO[] escapedCapabilities = {
+                wrongTenant,
+                validCapability().setAdAccountId(ACCOUNT_ID + 1)
+        };
+        for (SkitAdNetworkCapabilityDO escaped : escapedCapabilities) {
+            when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
+                    .thenReturn(escaped);
             assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
                     service.receiveReward(CALLBACK_KEY,
                             signedRewardQuery(customData, REWARD_SECRET), "203.0.113.8"));
@@ -484,6 +550,8 @@ class SkitCallbackIngressServiceImplTest {
                 .setAdAccountId(ACCOUNT_ID).setPolicySnapshotId(88L)
                 .setCallbackKeyVersion(4).setRewardSecretVersion(7).setProvider("TAKU")
                 .setPlacementId(PLACEMENT_ID).setScenarioId("drama_unlock")
+                .setBusinessType("EPISODE_UNLOCK").setDramaId(801L)
+                .setEpisodeFrom(3).setEpisodeTo(3).setUnlockScope("drama:801:episode:3")
                 .setPseudonymousUserId(PSEUDONYMOUS_USER).setRewardVerificationStatus("PENDING")
                 .setRewardAcceptUntil(RECEIVED_AT.plusMinutes(5)).setVersion(0);
         row.setTenantId(TENANT_ID);
@@ -497,6 +565,15 @@ class SkitCallbackIngressServiceImplTest {
                 .setSupportsCustomData(true).setSupportsStableTransaction(true)
                 .setSupportsImpressionRevenue(true).setSupportsReporting(true)
                 .setEnabled(true).setVerifiedAt(RECEIVED_AT.minusDays(1));
+        row.setTenantId(TENANT_ID);
+        return row;
+    }
+
+    private SkitTenantAdCapabilityDO selectedNetworks(String networkIdsJson) {
+        SkitTenantAdCapabilityDO row = new SkitTenantAdCapabilityDO().setId(81L)
+                .setAdAccountId(ACCOUNT_ID).setRolloutState("SHADOW_TEST_USERS")
+                .setDedicatedUnlockPlacementId(PLACEMENT_ID)
+                .setUnlockNetworkFirmIdsJson(networkIdsJson).setReadinessVersion(3);
         row.setTenantId(TENANT_ID);
         return row;
     }
@@ -523,7 +600,15 @@ class SkitCallbackIngressServiceImplTest {
     private static String signedRewardQuery(String extraData, byte[] signingSecret,
                                             String transactionId, String signedShowId,
                                             String signedShowCustomExt) {
-        String ilrd = "{\"network_firm_id\":66,\"adsource_id\":\"7\","
+        return signedRewardQuery(extraData, signingSecret, transactionId, signedShowId,
+                signedShowCustomExt, 66, 66);
+    }
+
+    private static String signedRewardQuery(String extraData, byte[] signingSecret,
+                                            String transactionId, String signedShowId,
+                                            String signedShowCustomExt, int signedNetworkFirmId,
+                                            int topLevelNetworkFirmId) {
+        String ilrd = "{\"network_firm_id\":" + signedNetworkFirmId + ",\"adsource_id\":\"7\","
                 + "\"id\":\"" + signedShowId + "\",\"adunit_id\":\"" + PLACEMENT_ID + "\""
                 + (signedShowCustomExt == null ? "" : ",\"show_custom_ext\":\""
                 + signedShowCustomExt + "\"") + "}";
@@ -533,7 +618,8 @@ class SkitCallbackIngressServiceImplTest {
         String sign = md5Hex(preimage);
         return "user_id=" + encode(PSEUDONYMOUS_USER) + "&trans_id=" + transactionId
                 + "&reward_amount=1&reward_name=coin&placement_id=" + PLACEMENT_ID
-                + "&extra_data=" + encode(extraData) + "&network_firm_id=66&adsource_id=7"
+                + "&extra_data=" + encode(extraData) + "&network_firm_id=" + topLevelNetworkFirmId
+                + "&adsource_id=7"
                 + "&scenario_id=drama_unlock&sign=" + sign + "&ilrd=" + encode(ilrd);
     }
 

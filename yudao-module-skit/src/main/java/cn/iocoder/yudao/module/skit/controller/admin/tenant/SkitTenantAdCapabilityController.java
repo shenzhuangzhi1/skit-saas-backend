@@ -6,6 +6,8 @@ import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdCallbackKey
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdCallbackKeyRotateRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdRewardSecretRotateReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdRewardSecretRotateRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdNetworkCapabilityRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdNetworkCapabilityVerifyReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitTenantAdCapabilityConfigReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitTenantAdCapabilityRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitTenantAdReadinessRespVO;
@@ -42,6 +44,8 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -78,6 +82,43 @@ public class SkitTenantAdCapabilityController {
             @RequestParam(value = "tenantId", required = false) Long requestedTenantId) {
         return success(tenantScopeGuard.readTenant(requestedTenantId, true,
                 scope -> SkitTenantAdReadinessRespVO.from(capabilityService.getReadiness())));
+    }
+
+    @GetMapping("/network-capabilities")
+    @Operation(summary = "获得指定广告账户的已审计网络能力")
+    public CommonResult<List<SkitAdNetworkCapabilityRespVO>> getNetworkCapabilities(
+            @RequestParam(value = "tenantId", required = false) Long requestedTenantId,
+            @RequestParam("adAccountId") Long adAccountId) {
+        return success(tenantScopeGuard.readTenant(requestedTenantId, false,
+                scope -> capabilityService.listNetworkCapabilities(adAccountId).stream()
+                        .map(SkitAdNetworkCapabilityRespVO::from)
+                        .collect(Collectors.toList())));
+    }
+
+    @PutMapping("/network-capability")
+    @PreAuthorize("@ss.hasRole('super_admin')")
+    @Operation(summary = "平台管理员审计认证或停用广告网络能力")
+    public CommonResult<SkitAdNetworkCapabilityRespVO> verifyNetworkCapability(
+            @Valid @RequestBody SkitAdNetworkCapabilityVerifyReqVO request) {
+        SkitTenantAdCapabilityService.NetworkCapabilityView saved = tenantScopeGuard.writeTenant(
+                request.getTenantId(), SkitManagementCommandType.AD_NETWORK_CAPABILITY_VERIFY,
+                request.getReason(), scope -> {
+                    SkitTenantAdCapabilityService.NetworkCapabilityView before = capabilityService
+                            .listNetworkCapabilities(request.getAdAccountId()).stream()
+                            .filter(value -> request.getNetworkFirmId().equals(value.getNetworkFirmId()))
+                            .findFirst().orElse(null);
+                    return commandExecutor.execute(scope,
+                            SkitManagementCommandType.AD_NETWORK_CAPABILITY_VERIFY,
+                            "AD_NETWORK_CAPABILITY",
+                            request.getAdAccountId() + ":" + request.getNetworkFirmId(),
+                            request.getReason(), canonical(before), canonical(request), () -> {
+                                SkitTenantAdCapabilityService.NetworkCapabilityView result =
+                                        capabilityService.verifyNetworkCapability(toCommand(request));
+                                return new SkitManagementCommandExecutor.CommandResult<>(
+                                        result, canonical(result));
+                            });
+                });
+        return success(SkitAdNetworkCapabilityRespVO.from(saved));
     }
 
     @PutMapping("/configuration")
@@ -253,6 +294,23 @@ public class SkitTenantAdCapabilityController {
         return command;
     }
 
+    private SkitTenantAdCapabilityService.NetworkCapabilityCommand toCommand(
+            SkitAdNetworkCapabilityVerifyReqVO request) {
+        SkitTenantAdCapabilityService.NetworkCapabilityCommand command =
+                new SkitTenantAdCapabilityService.NetworkCapabilityCommand();
+        command.setAdAccountId(request.getAdAccountId());
+        command.setNetworkFirmId(request.getNetworkFirmId());
+        command.setRewardAuthority(request.getRewardAuthority());
+        command.setEnabled(request.getEnabled());
+        command.setSupportsUserId(request.getSupportsUserId());
+        command.setSupportsCustomData(request.getSupportsCustomData());
+        command.setSupportsStableTransaction(request.getSupportsStableTransaction());
+        command.setSupportsImpressionRevenue(request.getSupportsImpressionRevenue());
+        command.setSupportsReporting(request.getSupportsReporting());
+        command.setExpectedReadinessVersion(request.getExpectedReadinessVersion());
+        return command;
+    }
+
     private static SQLException findSqlFailure(Throwable failure) {
         Throwable current = failure;
         while (current != null) {
@@ -305,6 +363,31 @@ public class SkitTenantAdCapabilityController {
                 + ";members=" + value.getShadowTestMemberIds()
                 + ";native=" + value.getMinNativeVersion()
                 + ";protocol=" + value.getMinProtocolVersion();
+    }
+
+    private static String canonical(SkitTenantAdCapabilityService.NetworkCapabilityView value) {
+        if (value == null) return "<none>";
+        return "network=" + value.getNetworkFirmId()
+                + ";authority=" + value.getRewardAuthority()
+                + ";enabled=" + value.isEnabled() + ";verified=" + value.isVerified()
+                + ";verifiedAt=" + value.getVerifiedAt()
+                + ";user=" + value.isSupportsUserId()
+                + ";custom=" + value.isSupportsCustomData()
+                + ";transaction=" + value.isSupportsStableTransaction()
+                + ";impression=" + value.isSupportsImpressionRevenue()
+                + ";reporting=" + value.isSupportsReporting();
+    }
+
+    private static String canonical(SkitAdNetworkCapabilityVerifyReqVO value) {
+        return "account=" + value.getAdAccountId() + ";network=" + value.getNetworkFirmId()
+                + ";authority=" + value.getRewardAuthority()
+                + ";enabled=" + value.getEnabled()
+                + ";user=" + value.getSupportsUserId()
+                + ";custom=" + value.getSupportsCustomData()
+                + ";transaction=" + value.getSupportsStableTransaction()
+                + ";impression=" + value.getSupportsImpressionRevenue()
+                + ";reporting=" + value.getSupportsReporting()
+                + ";expected=" + value.getExpectedReadinessVersion();
     }
 
     private static String canonical(SkitTenantAdCapabilityConfigReqVO value) {

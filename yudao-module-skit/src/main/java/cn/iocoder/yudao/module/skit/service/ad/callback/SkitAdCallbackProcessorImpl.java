@@ -63,6 +63,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private final SkitFrozenCommissionProjectionService projectionService;
     private final TakuCallbackCanonicalizer canonicalizer;
     private final TakuRewardSignatureVerifier signatureVerifier;
+    private final SkitRewardAuthorityPolicy rewardAuthorityPolicy;
     private final Clock clock;
 
     @Autowired
@@ -78,10 +79,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                        SkitPolicySnapshotService snapshotService,
                                        SkitFrozenCommissionProjectionService projectionService,
                                        TakuCallbackCanonicalizer canonicalizer,
-                                       TakuRewardSignatureVerifier signatureVerifier) {
+                                       TakuRewardSignatureVerifier signatureVerifier,
+                                       SkitRewardAuthorityPolicy rewardAuthorityPolicy) {
         this(inboxMapper, sessionMapper, capabilityMapper, entitlementMapper, grantMapper,
                 revenueMapper, payloadCrypto, credentialService, tokenService, snapshotService,
-                projectionService, canonicalizer, signatureVerifier, Clock.systemDefaultZone());
+                projectionService, canonicalizer, signatureVerifier, rewardAuthorityPolicy,
+                Clock.systemDefaultZone());
     }
 
     SkitAdCallbackProcessorImpl(SkitAdCallbackInboxMapper inboxMapper,
@@ -97,6 +100,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                 SkitFrozenCommissionProjectionService projectionService,
                                 TakuCallbackCanonicalizer canonicalizer,
                                 TakuRewardSignatureVerifier signatureVerifier,
+                                SkitRewardAuthorityPolicy rewardAuthorityPolicy,
                                 Clock clock) {
         this.inboxMapper = Objects.requireNonNull(inboxMapper, "inboxMapper");
         this.sessionMapper = Objects.requireNonNull(sessionMapper, "sessionMapper");
@@ -111,6 +115,8 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
         this.canonicalizer = Objects.requireNonNull(canonicalizer, "canonicalizer");
         this.signatureVerifier = Objects.requireNonNull(signatureVerifier, "signatureVerifier");
+        this.rewardAuthorityPolicy = Objects.requireNonNull(
+                rewardAuthorityPolicy, "rewardAuthorityPolicy");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -172,17 +178,13 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             return rejectReward(inbox, session, "REWARD_REVALIDATION_FAILED", processedAt);
         }
         TakuRewardSignatureVerifier.SignedRewardAuthority authority = verification.getAuthority();
-        String authorityError = rewardAuthorityError(inbox, session, authority);
-        if (authorityError != null) {
-            return rejectReward(inbox, session, authorityError, processedAt);
+        SkitRewardAuthorityPolicy.Decision authorityDecision = rewardAuthorityPolicy.authorize(
+                SkitRewardAuthorityPolicy.Context.processing(
+                        inbox, session, authority, callback.getObservedNetworkFirmId()));
+        if (!authorityDecision.isAuthorized()) {
+            return rejectReward(inbox, session, authorityDecision.getErrorCode(), processedAt);
         }
-
-        int networkFirmId = authority.getSignedIlrdEvidence().getNetworkFirmId();
-        SkitAdNetworkCapabilityDO capability = capabilityMapper.selectForShare(
-                inbox.getTenantId(), inbox.getAdAccountId(), networkFirmId);
-        if (!rewardCapabilityAllows(inbox, capability, networkFirmId)) {
-            return rejectReward(inbox, session, "NETWORK_CAPABILITY_REJECTED", processedAt);
-        }
+        int networkFirmId = authorityDecision.getNetworkFirmId();
 
         LockedImpressionAuthority impressionAuthority = lockExistingImpressionAuthority(session);
         String sourceAuthorityError = impressionAuthorityError(impressionAuthority, authority);
@@ -377,34 +379,6 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         return null;
     }
 
-    private String rewardAuthorityError(SkitAdCallbackInboxDO inbox, SkitAdSessionDO session,
-                                        TakuRewardSignatureVerifier.SignedRewardAuthority authority) {
-        TakuRewardSignatureVerifier.SignedIlrdEvidence evidence = authority.getSignedIlrdEvidence();
-        if (!Objects.equals(authority.getTransactionId(), inbox.getProviderTransactionId())
-                || !Objects.equals(authority.getPlacementId(), session.getPlacementId())
-                || !Objects.equals(authority.getPlacementId(), inbox.getPlacementId())
-                || !Objects.equals(authority.getAdsourceId(), inbox.getAdsourceId())
-                || evidence == null || !Objects.equals(evidence.getNetworkFirmId(), inbox.getNetworkFirmId())
-                || !Objects.equals(evidence.getShowId(), inbox.getProviderShowId())) {
-            return "SIGNED_REWARD_AUTHORITY_MISMATCH";
-        }
-        String signedSessionId = evidence.getShowCustomExt();
-        boolean tokenMatchesSession = sameHash(inbox.getExtraDataHash(), session.getSessionTokenHash());
-        boolean signedSessionMatches = signedSessionId != null
-                && signedSessionId.equals(session.getSessionId());
-        if (signedSessionId != null && !signedSessionMatches) {
-            return "SIGNED_SHOW_CUSTOM_EXT_MISMATCH";
-        }
-        if (!tokenMatchesSession && !signedSessionMatches) {
-            return "REWARD_SESSION_BINDING_MISMATCH";
-        }
-        if (evidence.getShowId() != null && session.getProviderShowId() != null
-                && !evidence.getShowId().equals(session.getProviderShowId())) {
-            return "SIGNED_SHOW_MISMATCH";
-        }
-        return null;
-    }
-
     private String impressionEnvelopeError(SkitAdCallbackInboxDO inbox, SkitAdSessionDO session) {
         if (!PROVIDER.equals(inbox.getProvider()) || !PROVIDER.equals(session.getProvider())
                 || !IMPRESSION.equals(inbox.getCallbackType())
@@ -467,17 +441,6 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             return "IMPRESSION_SIGNED_AUTHORITY_MISMATCH";
         }
         return null;
-    }
-
-    private boolean rewardCapabilityAllows(SkitAdCallbackInboxDO inbox,
-                                           SkitAdNetworkCapabilityDO capability,
-                                           int networkFirmId) {
-        return hardAllowedRewardNetwork(networkFirmId)
-                && capabilityScopeMatches(inbox, capability, networkFirmId)
-                && SIGNED_REWARD.equals(capability.getRewardAuthority())
-                && Boolean.TRUE.equals(capability.getSupportsUserId())
-                && Boolean.TRUE.equals(capability.getSupportsCustomData())
-                && Boolean.TRUE.equals(capability.getSupportsStableTransaction());
     }
 
     private boolean impressionCapabilityAllows(SkitAdCallbackInboxDO inbox,
@@ -895,10 +858,6 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 || inbox.getLeaseUntil() == null) {
             throw new IllegalStateException("Callback inbox is not owned by the active processor lease");
         }
-    }
-
-    private static boolean hardAllowedRewardNetwork(int networkFirmId) {
-        return networkFirmId == 35 || networkFirmId == 66 || networkFirmId == 67;
     }
 
     private static boolean isExactSingleEpisodeScope(SkitAdSessionDO session) {

@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackEdgeAttemptD
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitAdPolicySnapshotDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.commission.SkitCommissionPlanDO;
@@ -27,6 +28,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdClientEventMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.commission.SkitAdPolicySnapshotMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.commission.SkitCommissionPlanMapper;
@@ -51,6 +53,7 @@ import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackIngressServi
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRateLimiter;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRoutingService;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitAdRewardReceiptResolutionService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitRewardAuthorityPolicy;
 import cn.iocoder.yudao.module.skit.service.ad.callback.TakuCallbackCanonicalizer;
 import cn.iocoder.yudao.module.skit.service.ad.callback.TakuRewardSignatureVerifier;
 import cn.iocoder.yudao.module.skit.service.commission.SkitPolicySnapshotService;
@@ -118,6 +121,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -224,6 +228,41 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                         + "FROM skit_ad_session WHERE tenant_id=? AND member_id=? AND drama_id=? "
                         + "AND episode_from=? AND deleted=b'0'", Integer.class,
                 fixture.tenantId, fixture.memberId, dramaId, episodeNo));
+    }
+
+    @Test
+    void arbitraryNetworkCapabilityUpsertPersistsExplicitAuthorityAndLogicalDisable() {
+        SessionFixture fixture = insertSessionFixture(
+                959001L, 959002L, 959003L, 959004L, 959005L);
+        SkitAdNetworkCapabilityMapper mapper = context.getBean(SkitAdNetworkCapabilityMapper.class);
+
+        inTenant(fixture.tenantId, () -> {
+            assertTrue(mapper.upsertVerified(fixture.tenantId, fixture.accountId, 46,
+                    "NONE", false, false, false, true, true) > 0);
+            SkitAdNetworkCapabilityDO none = mapper.selectForShare(
+                    fixture.tenantId, fixture.accountId, 46);
+            assertEquals("NONE", none.getRewardAuthority());
+            assertTrue(Boolean.TRUE.equals(none.getEnabled()));
+            assertNotNull(none.getVerifiedAt());
+
+            assertTrue(mapper.upsertVerified(fixture.tenantId, fixture.accountId, 46,
+                    "SIGNED_REWARD", true, true, true, true, true) > 0);
+            SkitAdNetworkCapabilityDO signed = mapper.selectForShare(
+                    fixture.tenantId, fixture.accountId, 46);
+            assertEquals("SIGNED_REWARD", signed.getRewardAuthority());
+            assertTrue(Boolean.TRUE.equals(signed.getSupportsStableTransaction()));
+            assertEquals("capability-verification", jdbc().queryForObject(
+                    "SELECT creator FROM skit_ad_network_capability WHERE tenant_id=? "
+                            + "AND ad_account_id=? AND network_firm_id=46", String.class,
+                    fixture.tenantId, fixture.accountId));
+
+            assertEquals(1, mapper.disable(fixture.tenantId, fixture.accountId, 46));
+            SkitAdNetworkCapabilityDO disabled = mapper.selectForShare(
+                    fixture.tenantId, fixture.accountId, 46);
+            assertFalse(Boolean.TRUE.equals(disabled.getEnabled()));
+            assertNotNull(disabled.getVerifiedAt(), "logical disable preserves verification metadata");
+            return null;
+        });
     }
 
     @Test
@@ -946,12 +985,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         long dramaId = 953206L;
         int episodeNo = 13;
         insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
-        jdbc().update("INSERT INTO skit_ad_network_capability "
-                        + "(tenant_id,ad_account_id,network_firm_id,reward_authority,supports_user_id,"
-                        + "supports_custom_data,supports_stable_transaction,supports_impression_revenue,"
-                        + "supports_reporting,enabled,verified_at) "
-                        + "VALUES (?,?,66,'SIGNED_REWARD',b'1',b'1',b'1',b'1',b'1',b'1',NOW())",
-                fixture.tenantId, fixture.accountId);
+        insertSignedRewardCapability(fixture);
 
         SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
                 () -> sessionService.createForMember(fixture.memberId, command(dramaId, episodeNo)));
@@ -1136,6 +1170,14 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     private void insertSignedRewardCapability(SessionFixture fixture) {
+        jdbc().update("INSERT INTO skit_tenant_ad_capability "
+                        + "(tenant_id,ad_account_id,rollout_state,dedicated_unlock_placement_id,"
+                        + "unlock_network_firm_ids_json,shadow_test_member_ids_json,min_native_version,"
+                        + "min_protocol_version,readiness_version) VALUES (?,?,'OFF',?,'[66]','[]','',1,0) "
+                        + "ON DUPLICATE KEY UPDATE ad_account_id=VALUES(ad_account_id),"
+                        + "dedicated_unlock_placement_id=VALUES(dedicated_unlock_placement_id),"
+                        + "unlock_network_firm_ids_json=VALUES(unlock_network_firm_ids_json)",
+                fixture.tenantId, fixture.accountId, "placement-" + fixture.tenantId);
         jdbc().update("INSERT INTO skit_ad_network_capability "
                         + "(tenant_id,ad_account_id,network_firm_id,reward_authority,supports_user_id,"
                         + "supports_custom_data,supports_stable_transaction,supports_impression_revenue,"
@@ -1533,6 +1575,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             initializeTableInfo(assistant, SkitAdCallbackEdgeAttemptDO.class);
             initializeTableInfo(assistant, SkitAdCallbackInboxDO.class);
             initializeTableInfo(assistant, SkitAdNetworkCapabilityDO.class);
+            initializeTableInfo(assistant, SkitTenantAdCapabilityDO.class);
             initializeTableInfo(assistant, SkitAgentDO.class);
             initializeTableInfo(assistant, SkitCommissionPlanDO.class);
             initializeTableInfo(assistant, SkitCommissionRuleDO.class);
@@ -1594,6 +1637,12 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         MapperFactoryBean<SkitAdNetworkCapabilityMapper> adNetworkCapabilityMapperFactory(
                 SqlSessionFactory sqlSessionFactory) {
             return mapperFactory(SkitAdNetworkCapabilityMapper.class, sqlSessionFactory);
+        }
+
+        @Bean
+        MapperFactoryBean<SkitTenantAdCapabilityMapper> tenantAdCapabilityMapperFactory(
+                SqlSessionFactory sqlSessionFactory) {
+            return mapperFactory(SkitTenantAdCapabilityMapper.class, sqlSessionFactory);
         }
 
         @Bean
@@ -1817,13 +1866,20 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 SkitAdCallbackInboxMapper inboxMapper,
                 SkitAdCallbackAttemptMapper attemptMapper,
                 SkitAdCallbackEdgeAttemptMapper edgeAttemptMapper,
-                SkitAdNetworkCapabilityMapper networkCapabilityMapper,
+                SkitRewardAuthorityPolicy rewardAuthorityPolicy,
                 SkitCallbackPayloadCryptoService payloadCryptoService,
                 SkitCallbackRateLimiter rateLimiter) {
             return new SkitCallbackIngressServiceImpl(routingService, canonicalizer,
                     signatureVerifier, credentialService, tokenService, sessionMapper,
-                    inboxMapper, attemptMapper, edgeAttemptMapper, networkCapabilityMapper,
+                    inboxMapper, attemptMapper, edgeAttemptMapper, rewardAuthorityPolicy,
                     payloadCryptoService, rateLimiter);
+        }
+
+        @Bean
+        SkitRewardAuthorityPolicy rewardAuthorityPolicy(
+                SkitTenantAdCapabilityMapper tenantCapabilityMapper,
+                SkitAdNetworkCapabilityMapper networkCapabilityMapper) {
+            return new SkitRewardAuthorityPolicy(tenantCapabilityMapper, networkCapabilityMapper);
         }
 
         @Bean

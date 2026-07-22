@@ -4,12 +4,14 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
@@ -84,6 +86,7 @@ class SkitAdCallbackProcessorTest {
     private SkitAdCallbackInboxMapper inboxMapper;
     private SkitAdSessionMapper sessionMapper;
     private SkitAdNetworkCapabilityMapper capabilityMapper;
+    private SkitTenantAdCapabilityMapper tenantCapabilityMapper;
     private SkitContentEntitlementMapper entitlementMapper;
     private SkitEntitlementGrantMapper grantMapper;
     private SkitAdRevenueEventMapper revenueMapper;
@@ -105,6 +108,7 @@ class SkitAdCallbackProcessorTest {
         inboxMapper = mock(SkitAdCallbackInboxMapper.class);
         sessionMapper = mock(SkitAdSessionMapper.class);
         capabilityMapper = mock(SkitAdNetworkCapabilityMapper.class);
+        tenantCapabilityMapper = mock(SkitTenantAdCapabilityMapper.class);
         entitlementMapper = mock(SkitContentEntitlementMapper.class);
         grantMapper = mock(SkitEntitlementGrantMapper.class);
         revenueMapper = mock(SkitAdRevenueEventMapper.class);
@@ -122,7 +126,8 @@ class SkitAdCallbackProcessorTest {
         processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
                 entitlementMapper, grantMapper, revenueMapper, payloadCrypto, credentialService,
                 tokenService, snapshotService, projectionService, new TakuCallbackCanonicalizer(),
-                new TakuRewardSignatureVerifier(new ObjectMapper()), clock);
+                new TakuRewardSignatureVerifier(new ObjectMapper()),
+                new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), clock);
 
         SkitPolicySnapshotService.PolicySnapshot snapshot =
                 mock(SkitPolicySnapshotService.PolicySnapshot.class);
@@ -144,6 +149,8 @@ class SkitAdCallbackProcessorTest {
                 .thenAnswer(invocation -> session);
         when(capabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
                 .thenReturn(rewardCapability());
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[66]"));
         when(payloadCrypto.decrypt(any(), any())).thenAnswer(invocation ->
                 decryptedPayload.get().clone());
         when(credentialService.resolveRewardSecret(TENANT_ID, ACCOUNT_ID, 7,
@@ -811,6 +818,23 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void deselectedRewardIsRejectedBySharedAuthorityPolicyBeforeEntitlementMutation() {
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[22,46]"));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_NETWORK_NOT_SELECTED", result.getErrorCode());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(anyLong(), anyLong(), anyLong(),
+                anyLong(), any(), anyInt(), anyInt(), anyInt(), anyString(), any(), anyInt(),
+                anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
     void infrastructureDecryptionFailurePropagatesForRetryWithoutTerminalAck() {
         when(payloadCrypto.decrypt(any(), any())).thenThrow(new IllegalStateException("kms unavailable"));
 
@@ -885,7 +909,7 @@ class SkitAdCallbackProcessorTest {
                 .setAdAccountId(ACCOUNT_ID).setPolicySnapshotId(SNAPSHOT_ID)
                 .setCallbackKeyVersion(4).setRewardSecretVersion(7).setProvider("TAKU")
                 .setPlacementId(PLACEMENT).setScenarioId("drama_unlock")
-                .setBusinessType("DRAMA_EPISODE_UNLOCK").setDramaId(DRAMA_ID)
+                .setBusinessType("EPISODE_UNLOCK").setDramaId(DRAMA_ID)
                 .setEpisodeFrom(3).setEpisodeTo(3).setUnlockScope("drama:801:episode:3")
                 .setActiveScopeHash(new byte[32]).setPseudonymousUserId(PSEUDONYMOUS_USER)
                 .setAccessMode("MEMBER_OAUTH").setClientLifecycleStatus("SHOWN")
@@ -962,6 +986,15 @@ class SkitAdCallbackProcessorTest {
 
     private SkitAdNetworkCapabilityDO impressionCapability() {
         return rewardCapability();
+    }
+
+    private SkitTenantAdCapabilityDO selectedNetworks(String networkIdsJson) {
+        SkitTenantAdCapabilityDO row = new SkitTenantAdCapabilityDO().setId(81L)
+                .setAdAccountId(ACCOUNT_ID).setRolloutState("SHADOW_TEST_USERS")
+                .setDedicatedUnlockPlacementId(PLACEMENT)
+                .setUnlockNetworkFirmIdsJson(networkIdsJson).setReadinessVersion(3);
+        row.setTenantId(TENANT_ID);
+        return row;
     }
 
     private SkitAdRevenueEventDO pendingEstimate() {
