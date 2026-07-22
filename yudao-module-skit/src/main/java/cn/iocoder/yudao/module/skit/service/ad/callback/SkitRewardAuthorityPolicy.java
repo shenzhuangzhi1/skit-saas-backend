@@ -9,7 +9,6 @@ import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Objects;
@@ -118,12 +117,12 @@ public class SkitRewardAuthorityPolicy {
                 || !Objects.equals(signed.getAdsourceId(), context.authority.getAdsourceId())) {
             return "SIGNED_REWARD_AUTHORITY_MISMATCH";
         }
-        if (signed.getShowCustomExt() != null
-                && !Objects.equals(signed.getShowCustomExt(), session.getSessionId())) {
+        if (signed.getShowCustomExt() == null || session.getSessionId() == null
+                || !Objects.equals(signed.getShowCustomExt(), session.getSessionId())) {
             return "SIGNED_SHOW_CUSTOM_EXT_MISMATCH";
         }
-        if (signed.getShowId() != null && session.getProviderShowId() != null
-                && !Objects.equals(signed.getShowId(), session.getProviderShowId())) {
+        if (signed.getShowId() == null || session.getProviderShowId() == null
+                || !Objects.equals(signed.getShowId(), session.getProviderShowId())) {
             return "SIGNED_SHOW_MISMATCH";
         }
         return null;
@@ -144,11 +143,7 @@ public class SkitRewardAuthorityPolicy {
                 || !Objects.equals(inbox.getProviderShowId(), signed.getShowId())) {
             return "SIGNED_REWARD_AUTHORITY_MISMATCH";
         }
-        boolean tokenMatchesSession = Arrays.equals(
-                inbox.getExtraDataHash(), context.session.getSessionTokenHash());
-        boolean signedSessionMatches = signed.getShowCustomExt() != null
-                && Objects.equals(signed.getShowCustomExt(), context.session.getSessionId());
-        if (!tokenMatchesSession && !signedSessionMatches) {
+        if (!Objects.equals(signed.getShowCustomExt(), context.session.getSessionId())) {
             return "REWARD_SESSION_BINDING_MISMATCH";
         }
         return null;

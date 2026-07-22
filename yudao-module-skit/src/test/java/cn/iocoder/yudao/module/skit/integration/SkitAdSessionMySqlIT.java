@@ -792,6 +792,41 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
+    void mysqlIngressRejectsMissingSignedSessionOrShowAndAcceptsExactBinding() {
+        SessionFixture fixture = insertSessionFixture(953471L, 953472L, 953473L, 953474L, 953475L);
+        long dramaId = 953476L;
+        int episodeNo = 19;
+        insertCatalog(fixture.tenantId, dramaId, 30, episodeNo - 1);
+        insertSignedRewardCapability(fixture);
+        SkitAdSessionService.CreateResult created = inTenant(fixture.tenantId,
+                () -> sessionService.createForMember(fixture.memberId, command(dramaId, episodeNo)));
+        String sdkRequestId = "request-strict-binding";
+        String showId = "show-strict-binding";
+        SkitAdSessionService.ClientEventCommand loading = clientEvent(created,
+                "strict-binding-loading", 0, "LOAD_STARTED", "LOADING", sdkRequestId);
+        SkitAdSessionService.ClientEventCommand shown = clientEvent(created,
+                "strict-binding-shown", 1, "SHOWN", "SHOWING", sdkRequestId);
+        shown.setProviderShowId(showId);
+        inTenant(fixture.tenantId,
+                () -> sessionService.recordClientEvents(fixture.memberId, created.getSessionId(),
+                        Arrays.asList(loading, shown),
+                        new SkitTenantAdCapabilityService.ClientRuntime(null, null)));
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
+                callbackIngressService.receiveReward(callbackKey(fixture),
+                        signedRewardQuery(created, showId, false, true), "203.0.113.35"));
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
+                callbackIngressService.receiveReward(callbackKey(fixture),
+                        signedRewardQuery(created, showId, true, false), "203.0.113.35"));
+        assertEquals(0, callbackInboxCount(fixture.tenantId));
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK,
+                callbackIngressService.receiveReward(callbackKey(fixture),
+                        signedRewardQuery(created, showId), "203.0.113.35"));
+        assertEquals(1, callbackInboxCount(fixture.tenantId));
+    }
+
+    @Test
     void unrewardedCloseWinningRewardIngressRaceRejectsLateSignedReceipt() throws Exception {
         SessionFixture fixture = insertSessionFixture(953501L, 953502L, 953503L, 953504L, 953505L);
         long dramaId = 953506L;
@@ -892,7 +927,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         String rawQuery = signedRewardQuery(created, showId);
 
         sessionRowLockRaceProbe.arm(fixture.tenantId,
-                "SkitAdSessionMapper.selectByTokenHashForUpdate");
+                "SkitAdSessionMapper.selectByAccountAndSessionIdForUpdate");
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService workers = Executors.newFixedThreadPool(2);
@@ -1018,7 +1053,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
-    void signedRewardIngressAndPreShowFailureRaceHasExactlyOneAuthoritativeOutcome() throws Exception {
+    void preShowSignedRewardCannotOutrankMissingProviderShowEvenWhenItLocksFirst() throws Exception {
         SessionFixture fixture = insertSessionFixture(953201L, 953202L, 953203L, 953204L, 953205L);
         long dramaId = 953206L;
         int episodeNo = 13;
@@ -1041,7 +1076,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         SkitAdSessionService.ClientEventCommand failed = clientEvent(created,
                 "race-pre-show-failed", 1, "FAILED", "ERROR", sdkRequestId);
         sessionRowLockRaceProbe.arm(fixture.tenantId,
-                "SkitAdSessionMapper.selectByTokenHashForUpdate");
+                "SkitAdSessionMapper.selectByAccountAndSessionIdForUpdate");
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService workers = Executors.newFixedThreadPool(2);
@@ -1077,36 +1112,29 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                         + "active_scope_released_at,active_scope_release_reason,failure_reason,version "
                         + "FROM skit_ad_session WHERE tenant_id=? AND session_id=?",
                 fixture.tenantId, created.getSessionId());
-        boolean callbackReceiptAuthoritative = session.get("reward_callback_inbox_id") != null
-                && session.get("reward_callback_received_at") != null;
-        boolean clientFailureAuthoritative = "REJECTED".equals(
-                session.get("reward_verification_status"));
-        assertEquals(1, (callbackReceiptAuthoritative ? 1 : 0)
-                        + (clientFailureAuthoritative ? 1 : 0),
-                "a signed receipt and a pre-show rejection cannot both become authoritative");
-        assertEquals(SkitCallbackIngressService.IngressResponse.OK, callbackResult,
-                "the signed callback that locks the session first must remain authoritative");
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, callbackResult,
+                "signed ILRD cannot authorize a session without a stored provider show id");
         assertEquals("FAILED", failedResult.getClientLifecycleStatus());
-        assertEquals("PENDING", failedResult.getRewardVerificationStatus());
+        assertEquals("REJECTED", failedResult.getRewardVerificationStatus());
         assertEquals("FAILED", session.get("client_lifecycle_status"));
-        assertEquals("PENDING", session.get("reward_verification_status"));
+        assertEquals("REJECTED", session.get("reward_verification_status"));
         assertEquals("NONE", session.get("entitlement_status"));
         assertEquals("NONE", session.get("revenue_status"));
-        assertNotNull(session.get("reward_callback_inbox_id"));
-        assertNotNull(session.get("reward_callback_received_at"));
-        assertNotNull(session.get("active_scope_hash"));
-        assertNull(session.get("active_scope_released_at"));
-        assertNull(session.get("active_scope_release_reason"));
-        assertNull(session.get("failure_reason"));
-        assertEquals(3, ((Number) session.get("version")).intValue(),
-                "load, signed receipt and telemetry failure must commit as three serial changes");
+        assertNull(session.get("reward_callback_inbox_id"));
+        assertNull(session.get("reward_callback_received_at"));
+        assertNull(session.get("active_scope_hash"));
+        assertNotNull(session.get("active_scope_released_at"));
+        assertEquals("REWARD_REJECTED", session.get("active_scope_release_reason"));
+        assertEquals("CLIENT_PRE_SHOW_FAILED", session.get("failure_reason"));
+        assertEquals(2, ((Number) session.get("version")).intValue(),
+                "only load and telemetry failure may mutate the session");
         assertEquals(2, jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_client_event "
                         + "WHERE tenant_id=? AND ad_session_id=(SELECT id FROM skit_ad_session "
                         + "WHERE tenant_id=? AND session_id=?)",
                 Integer.class, fixture.tenantId, fixture.tenantId, created.getSessionId()));
-        assertEquals(1, callbackInboxCount(fixture.tenantId));
-        assertEquals(1, callbackAttemptCount(fixture.tenantId));
-        assertEquals(0, callbackEdgeAttemptCount(fixture.tenantId));
+        assertEquals(0, callbackInboxCount(fixture.tenantId));
+        assertEquals(0, callbackAttemptCount(fixture.tenantId));
+        assertEquals(1, callbackEdgeAttemptCount(fixture.tenantId));
     }
 
     private List<SkitAdSessionService.CreateResult> concurrentCreates(
@@ -1298,10 +1326,18 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
 
     private static String signedRewardQuery(SkitAdSessionService.CreateResult session,
                                             String showId) {
+        return signedRewardQuery(session, showId, true, true);
+    }
+
+    private static String signedRewardQuery(SkitAdSessionService.CreateResult session,
+                                            String showId, boolean includeSignedSession,
+                                            boolean includeSignedShow) {
         String adsourceId = "7";
         String ilrd = "{\"network_firm_id\":66,\"adsource_id\":\"" + adsourceId
-                + "\",\"id\":\"" + showId + "\",\"adunit_id\":\""
-                + session.getPlacementId() + "\"}";
+                + "\"" + (includeSignedShow ? ",\"id\":\"" + showId + "\"" : "")
+                + ",\"adunit_id\":\"" + session.getPlacementId() + "\""
+                + (includeSignedSession ? ",\"show_custom_ext\":\""
+                + session.getSessionId() + "\"" : "") + "}";
         String preimage = "trans_id=" + showId + "&placement_id=" + session.getPlacementId()
                 + "&adsource_id=" + adsourceId + "&reward_amount=1&reward_name=coin&sec_key="
                 + new String(CALLBACK_REWARD_SECRET, StandardCharsets.US_ASCII) + "&ilrd=" + ilrd;
@@ -1502,7 +1538,7 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                     current.isolationLevels,
                     "callback ingress and client telemetry must keep their production isolation levels");
             assertEquals(new HashSet<>(Arrays.asList(
-                            "SkitAdSessionMapper.selectByTokenHashForUpdate",
+                            "SkitAdSessionMapper.selectByAccountAndSessionIdForUpdate",
                             "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate")),
                     current.lockStatements,
                     "the race must contend through both production session row-lock paths");
@@ -1516,8 +1552,9 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
             }
             MappedStatement statement = (MappedStatement) invocation.getArgs()[0];
             String lockStatement;
-            if (statement.getId().endsWith("SkitAdSessionMapper.selectByTokenHashForUpdate")) {
-                lockStatement = "SkitAdSessionMapper.selectByTokenHashForUpdate";
+            if (statement.getId().endsWith(
+                    "SkitAdSessionMapper.selectByAccountAndSessionIdForUpdate")) {
+                lockStatement = "SkitAdSessionMapper.selectByAccountAndSessionIdForUpdate";
             } else if (statement.getId().endsWith(
                     "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate")) {
                 lockStatement = "SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate";
@@ -1573,7 +1610,8 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
 
             private RaceState(long tenantId, String firstLockStatement) {
                 this.tenantId = tenantId;
-                if (!"SkitAdSessionMapper.selectByTokenHashForUpdate".equals(firstLockStatement)
+                if (!"SkitAdSessionMapper.selectByAccountAndSessionIdForUpdate"
+                        .equals(firstLockStatement)
                         && !"SkitAdSessionMapper.selectByTenantMemberAndSessionIdForUpdate"
                         .equals(firstLockStatement)) {
                     throw new IllegalArgumentException("unsupported first row-lock path");

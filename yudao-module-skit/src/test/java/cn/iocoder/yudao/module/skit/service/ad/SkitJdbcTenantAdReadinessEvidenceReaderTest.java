@@ -117,6 +117,8 @@ class SkitJdbcTenantAdReadinessEvidenceReaderTest {
         assertEquals(3, evidence.getSourceRefs().size());
         assertEquals(evidence.getSourceRefs(), evidence.getSignedRewardSourceRefs());
         assertEquals(evidence.getSourceRefs(), evidence.getImpressionSourceRefs());
+        assertTrue(evidence.isPairedSourceObserved());
+        assertEquals(evidence.getSourceRefs(), evidence.getPairedSourceRefs());
         assertTrue(evidence.getSourceRefs().stream().allMatch(value -> value.matches("[0-9a-f]{12}")));
         assertFalse(evidence.toString().contains(sourceOne));
         assertFalse(evidence.toString().contains(sourceTwo));
@@ -124,6 +126,53 @@ class SkitJdbcTenantAdReadinessEvidenceReaderTest {
         assertTrue(evidence.getSourceRefs().contains(
                 SkitJdbcTenantAdReadinessEvidenceReader.sourceRef(
                         TENANT_ID, ACCOUNT_ID, 46, sourceOne)));
+    }
+
+    @Test
+    void differentRewardAndImpressionSourcesCannotBeSplicedIntoProductionEvidence() {
+        LocalDateTime verifiedAt = PULLED_AT.minusDays(2);
+        String rewardSource = "reward-source-a";
+        String impressionSource = "impression-source-b";
+
+        SkitTenantAdReadinessEvidence.NetworkEvidence evidence =
+                SkitJdbcTenantAdReadinessEvidenceReader.evaluateNetworkEvidence(
+                        TENANT_ID, ACCOUNT_ID, Collections.singleton(46),
+                        Collections.singletonList(capability(46, verifiedAt)),
+                        Collections.singletonList(callback(
+                                46, rewardSource, PULLED_AT.minusMinutes(2))),
+                        Collections.singletonList(callback(
+                                46, impressionSource, PULLED_AT.minusMinutes(1))))
+                        .get(0);
+
+        assertTrue(evidence.isSignedRewardObserved());
+        assertTrue(evidence.isImpressionObserved());
+        assertFalse(evidence.isPairedSourceObserved());
+        assertTrue(evidence.getPairedSourceRefs().isEmpty());
+        assertTrue(evidence.getBlockers().contains("PAIRED_SOURCE_EVIDENCE_MISSING"));
+        assertEquals(Collections.singletonList(SkitJdbcTenantAdReadinessEvidenceReader.sourceRef(
+                TENANT_ID, ACCOUNT_ID, 46, rewardSource)), evidence.getSignedRewardSourceRefs());
+        assertEquals(Collections.singletonList(SkitJdbcTenantAdReadinessEvidenceReader.sourceRef(
+                TENANT_ID, ACCOUNT_ID, 46, impressionSource)), evidence.getImpressionSourceRefs());
+    }
+
+    @Test
+    void sameSourceRewardAndImpressionCreatePairedProductionEvidence() {
+        LocalDateTime verifiedAt = PULLED_AT.minusDays(2);
+        String source = "same-source";
+
+        SkitTenantAdReadinessEvidence.NetworkEvidence evidence =
+                SkitJdbcTenantAdReadinessEvidenceReader.evaluateNetworkEvidence(
+                        TENANT_ID, ACCOUNT_ID, Collections.singleton(46),
+                        Collections.singletonList(capability(46, verifiedAt)),
+                        Collections.singletonList(callback(46, source, PULLED_AT.minusMinutes(2))),
+                        Collections.singletonList(callback(46, source, PULLED_AT.minusMinutes(1))))
+                        .get(0);
+
+        String expectedRef = SkitJdbcTenantAdReadinessEvidenceReader.sourceRef(
+                TENANT_ID, ACCOUNT_ID, 46, source);
+        assertTrue(evidence.isPairedSourceObserved());
+        assertEquals(Collections.singletonList(expectedRef), evidence.getPairedSourceRefs());
+        assertFalse(evidence.getBlockers().contains("PAIRED_SOURCE_EVIDENCE_MISSING"));
     }
 
     private static Map<String, Object> account(String placementId) {

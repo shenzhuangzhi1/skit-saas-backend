@@ -392,8 +392,10 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
-    void signedRewardWithoutSignedShowPreservesIndependentClientShow() {
-        String queryWithoutShow = signedRewardQuery(customData, TRANSACTION, null);
+    void signedRewardWithoutSignedShowIsRejectedBeforeEntitlement() {
+        session.setSessionId(SESSION_PUBLIC_ID);
+        String queryWithoutShow = signedRewardQuery(
+                customData, TRANSACTION, null, SESSION_PUBLIC_ID);
         decryptedPayload.set(queryWithoutShow.getBytes(StandardCharsets.US_ASCII));
         inbox = rewardInbox(queryWithoutShow).setProviderShowId(null);
         session.setProviderShowId("client-sdk-show-id");
@@ -401,10 +403,43 @@ class SkitAdCallbackProcessorTest {
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
 
-        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
-        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
-                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, null, 66, ADSOURCE,
-                PROCESSING_AT);
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_SHOW_MISMATCH", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void matchingUnsignedExtraDataCannotReplaceMissingSignedSessionBinding() {
+        String queryWithoutSignedSession = signedRewardQuery(
+                customData, TRANSACTION, SIGNED_SHOW, null);
+        decryptedPayload.set(queryWithoutSignedSession.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(queryWithoutSignedSession);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_SHOW_CUSTOM_EXT_MISMATCH", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void missingSessionProviderShowRejectsSignedRewardBeforeEntitlement() {
+        session.setSessionId(SESSION_PUBLIC_ID).setProviderShowId(null);
+        String strictQuery = signedRewardQuery(
+                customData, TRANSACTION, SIGNED_SHOW, SESSION_PUBLIC_ID);
+        decryptedPayload.set(strictQuery.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(strictQuery);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("SIGNED_SHOW_MISMATCH", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
     }
 
     @Test
@@ -920,7 +955,7 @@ class SkitAdCallbackProcessorTest {
 
     private SkitAdSessionDO rewardSession() {
         SkitAdSessionDO row = new SkitAdSessionDO()
-                .setId(SESSION_ID).setSessionId("server-session-public-id")
+                .setId(SESSION_ID).setSessionId(SESSION_PUBLIC_ID)
                 .setSessionTokenHash(tokenService.hashCustomData(customData))
                 .setSessionTokenKeyVersion(1).setProtocolVersion(1).setMemberId(MEMBER_ID)
                 .setAdAccountId(ACCOUNT_ID).setPolicySnapshotId(SNAPSHOT_ID)
@@ -1055,7 +1090,7 @@ class SkitAdCallbackProcessorTest {
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId) {
-        return signedRewardQuery(extraData, transactionId, signedShowId, null);
+        return signedRewardQuery(extraData, transactionId, signedShowId, SESSION_PUBLIC_ID);
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId,
@@ -1079,7 +1114,7 @@ class SkitAdCallbackProcessorTest {
                 + "&package_name=com.example.skit&adformat=1&placement_id=" + PLACEMENT
                 + "&nw_firm_id=66&adsource_id=" + ADSOURCE + "&adsource_price=" + price
                 + "&currency=" + currency + "&timestamp=1784042400000"
-                + "&show_custom_ext=server-session-public-id";
+                + "&show_custom_ext=" + SESSION_PUBLIC_ID;
     }
 
     private static String encode(String value) {

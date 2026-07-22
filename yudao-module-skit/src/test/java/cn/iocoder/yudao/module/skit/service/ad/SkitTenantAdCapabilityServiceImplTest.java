@@ -164,6 +164,7 @@ class SkitTenantAdCapabilityServiceImplTest {
                 evidence -> evidence.setReportFresh(false),
                 evidence -> evidence.setSignedRewardCallbackObserved(false),
                 evidence -> evidence.setImpressionCallbackObserved(false),
+                evidence -> evidence.setPairedSourceEvidenceObserved(false),
                 evidence -> evidence.setNativeReleaseReady(false),
                 evidence -> evidence.setProtocolReady(false),
                 evidence -> evidence.setShadowMembersValid(false),
@@ -209,6 +210,23 @@ class SkitTenantAdCapabilityServiceImplTest {
         assertTrue(view.getBlockers().contains("IMPRESSION_CALLBACK_TEMPLATE_UNVERIFIED"));
         assertTrue(view.getBlockers().contains("REPORTING_CREDENTIAL_MISSING"));
         assertTrue(view.getBlockers().contains("REPORTING_PERMISSION_UNVERIFIED"));
+    }
+
+    @Test
+    void unpairedSourceEvidenceBlocksProductionEvenWhenNetworkLevelFactsExist() {
+        SkitTenantAdCapabilityDO capability = shadowCapability();
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID)).thenReturn(capability);
+        SkitTenantAdReadinessEvidence evidence = readyEvidence()
+                .setPairedSourceEvidenceObserved(false)
+                .setMissingPairedSourceNetworkFirmIds(Collections.singleton(66));
+        when(evidenceReader.read(TENANT_ID, capability)).thenReturn(evidence);
+
+        SkitTenantAdCapabilityService.ReadinessView view = service.getReadiness();
+
+        assertTrue(view.isShadowReady());
+        assertFalse(view.isProductionReady());
+        assertTrue(view.getBlockers().contains("PAIRED_SOURCE_EVIDENCE_MISSING"));
+        assertEquals(Collections.singleton(66), view.getMissingPairedSourceNetworkFirmIds());
     }
 
     @Test
@@ -722,7 +740,8 @@ class SkitTenantAdCapabilityServiceImplTest {
                 .setImpressionCallbackTemplateVerified(true).setUnlockNetworksAuthoritative(true)
                 .setReportingCredentialConfigured(true).setReportingPermissionVerified(true)
                 .setReportFresh(true).setSignedRewardCallbackObserved(true)
-                .setImpressionCallbackObserved(true).setNativeReleaseReady(true)
+                .setImpressionCallbackObserved(true).setPairedSourceEvidenceObserved(true)
+                .setNativeReleaseReady(true)
                 .setProtocolReady(true).setShadowMembersBelongToTenant(true)
                 .setShadowMembersValid(true).setCallbackPublicUrlHttps(true)
                 .setCallbackKeyVersion(4).setRewardSecretVersion(5)
@@ -739,11 +758,13 @@ class SkitTenantAdCapabilityServiceImplTest {
                 .setSupportsStableTransaction(true).setSupportsImpressionRevenue(true)
                 .setSupportsReporting(true).setAuthoritative(true).setSelectable(true)
                 .setSignedRewardObserved(true).setImpressionObserved(true)
+                .setPairedSourceObserved(true)
                 .setLastSignedRewardCallbackAt(java.time.LocalDateTime.of(2026, 7, 14, 2, 0))
                 .setLastImpressionCallbackAt(java.time.LocalDateTime.of(2026, 7, 14, 2, 1))
                 .setSourceRefs(Collections.singletonList("012345abcdef"))
                 .setSignedRewardSourceRefs(Collections.singletonList("012345abcdef"))
-                .setImpressionSourceRefs(Collections.singletonList("012345abcdef"));
+                .setImpressionSourceRefs(Collections.singletonList("012345abcdef"))
+                .setPairedSourceRefs(Collections.singletonList("012345abcdef"));
     }
 
 }

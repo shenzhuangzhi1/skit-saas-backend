@@ -363,6 +363,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 "REAL_SIGNED_REWARD_CALLBACK_MISSING");
         require(productionBlockers, evidence.isImpressionCallbackObserved(),
                 "REAL_IMPRESSION_CALLBACK_MISSING");
+        require(productionBlockers, evidence.isPairedSourceEvidenceObserved(),
+                "PAIRED_SOURCE_EVIDENCE_MISSING");
         require(productionBlockers, evidence.isCallbackPublicUrlHttps(),
                 "CALLBACK_PUBLIC_URL_HTTPS_REQUIRED");
 
@@ -397,6 +399,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         view.setReportFresh(evidence.isReportFresh());
         view.setSignedRewardCallbackObserved(evidence.isSignedRewardCallbackObserved());
         view.setImpressionCallbackObserved(evidence.isImpressionCallbackObserved());
+        view.setPairedSourceEvidenceObserved(evidence.isPairedSourceEvidenceObserved());
         view.setNativeReleaseReady(evidence.isNativeReleaseReady());
         view.setProtocolReady(evidence.isProtocolReady());
         view.setShadowMembersValid(evidence.isShadowMembersValid());
@@ -410,6 +413,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 evidence.getMissingSignedRewardNetworkFirmIds()));
         view.setMissingImpressionNetworkFirmIds(immutableIntegers(
                 evidence.getMissingImpressionNetworkFirmIds()));
+        view.setMissingPairedSourceNetworkFirmIds(immutableIntegers(
+                evidence.getMissingPairedSourceNetworkFirmIds()));
         view.setLastSignedRewardCallbackAt(evidence.getLastSignedRewardCallbackAt());
         view.setLastImpressionCallbackAt(evidence.getLastImpressionCallbackAt());
         view.setLastReportSuccessAt(evidence.getLastReportSuccessAt());
@@ -716,11 +721,13 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
             view.setAuthoritative(source.isAuthoritative());
             view.setSignedRewardObserved(source.isSignedRewardObserved());
             view.setImpressionObserved(source.isImpressionObserved());
+            view.setPairedSourceObserved(source.isPairedSourceObserved());
             view.setLastSignedRewardCallbackAt(source.getLastSignedRewardCallbackAt());
             view.setLastImpressionCallbackAt(source.getLastImpressionCallbackAt());
             view.setSourceRefs(immutableStrings(source.getSourceRefs()));
             view.setSignedRewardSourceRefs(immutableStrings(source.getSignedRewardSourceRefs()));
             view.setImpressionSourceRefs(immutableStrings(source.getImpressionSourceRefs()));
+            view.setPairedSourceRefs(immutableStrings(source.getPairedSourceRefs()));
             view.setBlockers(immutableStrings(source.getBlockers()));
             result.add(view);
         }

@@ -42,6 +42,7 @@ public class SkitTenantAdReadinessRespVO {
     private Boolean reportFresh;
     private Boolean signedRewardCallbackObserved;
     private Boolean impressionCallbackObserved;
+    private Boolean pairedSourceEvidenceObserved;
     private Boolean nativeReleaseReady;
     private Boolean protocolReady;
     private Boolean shadowMembersValid;
@@ -52,6 +53,7 @@ public class SkitTenantAdReadinessRespVO {
     private List<SkitAdNetworkReadinessRespVO> networkReadiness = Collections.emptyList();
     private Set<Integer> missingSignedRewardNetworkFirmIds = Collections.emptySet();
     private Set<Integer> missingImpressionNetworkFirmIds = Collections.emptySet();
+    private Set<Integer> missingPairedSourceNetworkFirmIds = Collections.emptySet();
     private LocalDateTime lastSignedRewardCallbackAt;
     private LocalDateTime lastImpressionCallbackAt;
     private LocalDateTime lastReportSuccessAt;
@@ -88,6 +90,7 @@ public class SkitTenantAdReadinessRespVO {
         result.setReportFresh(source.getReportFresh());
         result.setSignedRewardCallbackObserved(source.getSignedRewardCallbackObserved());
         result.setImpressionCallbackObserved(source.getImpressionCallbackObserved());
+        result.setPairedSourceEvidenceObserved(source.getPairedSourceEvidenceObserved());
         result.setNativeReleaseReady(source.getNativeReleaseReady());
         result.setProtocolReady(source.getProtocolReady());
         result.setShadowMembersValid(source.getShadowMembersValid());
@@ -104,6 +107,8 @@ public class SkitTenantAdReadinessRespVO {
                 ? Collections.emptySet() : source.getMissingSignedRewardNetworkFirmIds());
         result.setMissingImpressionNetworkFirmIds(source.getMissingImpressionNetworkFirmIds() == null
                 ? Collections.emptySet() : source.getMissingImpressionNetworkFirmIds());
+        result.setMissingPairedSourceNetworkFirmIds(source.getMissingPairedSourceNetworkFirmIds() == null
+                ? Collections.emptySet() : source.getMissingPairedSourceNetworkFirmIds());
         result.setLastSignedRewardCallbackAt(source.getLastSignedRewardCallbackAt());
         result.setLastImpressionCallbackAt(source.getLastImpressionCallbackAt());
         result.setLastReportSuccessAt(source.getLastReportSuccessAt());

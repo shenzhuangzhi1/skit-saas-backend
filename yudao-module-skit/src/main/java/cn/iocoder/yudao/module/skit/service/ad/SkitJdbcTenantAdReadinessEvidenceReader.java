@@ -114,10 +114,14 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
                 SkitTenantAdReadinessEvidence.NetworkEvidence::isSignedRewardObserved));
         result.setImpressionCallbackObserved(allSelectedNetworksPass(networkReadiness,
                 SkitTenantAdReadinessEvidence.NetworkEvidence::isImpressionObserved));
+        result.setPairedSourceEvidenceObserved(allSelectedNetworksPass(networkReadiness,
+                SkitTenantAdReadinessEvidence.NetworkEvidence::isPairedSourceObserved));
         result.setMissingSignedRewardNetworkFirmIds(missingNetworks(networkReadiness,
                 SkitTenantAdReadinessEvidence.NetworkEvidence::isSignedRewardObserved));
         result.setMissingImpressionNetworkFirmIds(missingNetworks(networkReadiness,
                 SkitTenantAdReadinessEvidence.NetworkEvidence::isImpressionObserved));
+        result.setMissingPairedSourceNetworkFirmIds(missingNetworks(networkReadiness,
+                SkitTenantAdReadinessEvidence.NetworkEvidence::isPairedSourceObserved));
         result.setLastSignedRewardCallbackAt(oldestCompleteObservation(
                 networkReadiness, true));
         result.setLastImpressionCallbackAt(oldestCompleteObservation(
@@ -371,6 +375,14 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
                     ? immutableStrings(rewards.sourceRefs) : Collections.emptyList());
             evidence.setImpressionSourceRefs(impressionObserved
                     ? immutableStrings(impressions.sourceRefs) : Collections.emptyList());
+            TreeSet<String> pairedSourceRefs = new TreeSet<>(
+                    evidence.getSignedRewardSourceRefs());
+            pairedSourceRefs.retainAll(evidence.getImpressionSourceRefs());
+            boolean pairedSourceObserved = evidence.isAuthoritative()
+                    && evidence.isSupportsImpressionRevenue() && !pairedSourceRefs.isEmpty();
+            evidence.setPairedSourceObserved(pairedSourceObserved);
+            evidence.setPairedSourceRefs(pairedSourceObserved
+                    ? immutableStrings(pairedSourceRefs) : Collections.emptyList());
             TreeSet<String> sourceRefs = new TreeSet<>();
             sourceRefs.addAll(evidence.getSignedRewardSourceRefs());
             sourceRefs.addAll(evidence.getImpressionSourceRefs());
@@ -382,6 +394,7 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
             addBlocker(blockers, evidence.isSupportsReporting(), "REPORTING_UNSUPPORTED");
             addBlocker(blockers, rewardObserved, "REAL_SIGNED_REWARD_CALLBACK_MISSING");
             addBlocker(blockers, impressionObserved, "REAL_IMPRESSION_CALLBACK_MISSING");
+            addBlocker(blockers, pairedSourceObserved, "PAIRED_SOURCE_EVIDENCE_MISSING");
             evidence.setBlockers(Collections.unmodifiableList(blockers));
             result.add(evidence);
         }

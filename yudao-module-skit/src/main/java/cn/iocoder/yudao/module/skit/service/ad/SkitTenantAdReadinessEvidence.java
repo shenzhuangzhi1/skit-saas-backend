@@ -32,6 +32,7 @@ public class SkitTenantAdReadinessEvidence {
     private boolean reportFresh;
     private boolean signedRewardCallbackObserved;
     private boolean impressionCallbackObserved;
+    private boolean pairedSourceEvidenceObserved;
     private boolean nativeReleaseReady;
     private boolean protocolReady;
     private boolean shadowMembersBelongToTenant;
@@ -43,6 +44,7 @@ public class SkitTenantAdReadinessEvidence {
     private List<NetworkEvidence> networkReadiness = Collections.emptyList();
     private Set<Integer> missingSignedRewardNetworkFirmIds = Collections.emptySet();
     private Set<Integer> missingImpressionNetworkFirmIds = Collections.emptySet();
+    private Set<Integer> missingPairedSourceNetworkFirmIds = Collections.emptySet();
 
     @Data
     public static class NetworkEvidence {
@@ -60,11 +62,13 @@ public class SkitTenantAdReadinessEvidence {
         private boolean selectable;
         private boolean signedRewardObserved;
         private boolean impressionObserved;
+        private boolean pairedSourceObserved;
         private LocalDateTime lastSignedRewardCallbackAt;
         private LocalDateTime lastImpressionCallbackAt;
         private List<String> sourceRefs = Collections.emptyList();
         private List<String> signedRewardSourceRefs = Collections.emptyList();
         private List<String> impressionSourceRefs = Collections.emptyList();
+        private List<String> pairedSourceRefs = Collections.emptyList();
         private List<String> capabilityBlockers = Collections.emptyList();
         private List<String> blockers = Collections.emptyList();
     }

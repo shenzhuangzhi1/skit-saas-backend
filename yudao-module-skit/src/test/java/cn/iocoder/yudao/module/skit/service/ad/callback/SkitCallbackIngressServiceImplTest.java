@@ -114,6 +114,8 @@ class SkitCallbackIngressServiceImplTest {
         session = session();
         when(sessionMapper.selectByTokenHashForUpdate(eq(TENANT_ID), eq(ACCOUNT_ID), any(byte[].class)))
                 .thenReturn(session);
+        when(sessionMapper.selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, SESSION_PUBLIC_ID)).thenReturn(session);
         when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
                 .thenReturn(validCapability());
         when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
@@ -216,6 +218,54 @@ class SkitCallbackIngressServiceImplTest {
     }
 
     @Test
+    void missingSignedShowCustomExtRejectsEvenWhenExtraDataMatchesSession() {
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY,
+                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, SHOW_ID, null),
+                "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void missingSignedShowIdRejectsEvenWhenSessionHasProviderShow() {
+        session.setProviderShowId(SHOW_ID);
+        when(sessionMapper.selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, SESSION_PUBLIC_ID)).thenReturn(session);
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY,
+                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, null, SESSION_PUBLIC_ID),
+                "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void missingSessionProviderShowRejectsEvenWhenSignedIlrdHasExactShow() {
+        session.setProviderShowId(null);
+        when(sessionMapper.selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, SESSION_PUBLIC_ID)).thenReturn(session);
+
+        SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                CALLBACK_KEY,
+                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, SHOW_ID,
+                        SESSION_PUBLIC_ID),
+                "203.0.113.8");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any());
+    }
+
+    @Test
     void badDigestReturns601AndCanNeverCreateDurableBusinessFacts() {
         String rawQuery = signedRewardQuery(customData,
                 "different-secret-value-32-bytes".getBytes(StandardCharsets.US_ASCII));
@@ -291,7 +341,7 @@ class SkitCallbackIngressServiceImplTest {
 
         SkitCallbackIngressService.IngressResponse result = service.receiveReward(
                 CALLBACK_KEY,
-                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, SHOW_ID, null,
+                signedRewardQuery(customData, REWARD_SECRET, SHOW_ID, SHOW_ID, SESSION_PUBLIC_ID,
                         dynamicNetwork, dynamicNetwork),
                 "203.0.113.8");
 
@@ -566,6 +616,7 @@ class SkitCallbackIngressServiceImplTest {
                 .setPlacementId(PLACEMENT_ID).setScenarioId("drama_unlock")
                 .setBusinessType("EPISODE_UNLOCK").setDramaId(801L)
                 .setEpisodeFrom(3).setEpisodeTo(3).setUnlockScope("drama:801:episode:3")
+                .setProviderShowId(SHOW_ID)
                 .setPseudonymousUserId(PSEUDONYMOUS_USER).setRewardVerificationStatus("PENDING")
                 .setRewardAcceptUntil(RECEIVED_AT.plusMinutes(5)).setVersion(0);
         row.setTenantId(TENANT_ID);
@@ -603,12 +654,13 @@ class SkitCallbackIngressServiceImplTest {
     }
 
     private static String signedRewardQuery(String extraData, byte[] signingSecret) {
-        return signedRewardQuery(extraData, signingSecret, SHOW_ID, SHOW_ID, null);
+        return signedRewardQuery(extraData, signingSecret, SHOW_ID, SHOW_ID, SESSION_PUBLIC_ID);
     }
 
     private static String signedRewardQuery(String extraData, byte[] signingSecret,
                                             String transactionId, String signedShowId) {
-        return signedRewardQuery(extraData, signingSecret, transactionId, signedShowId, null);
+        return signedRewardQuery(extraData, signingSecret, transactionId, signedShowId,
+                SESSION_PUBLIC_ID);
     }
 
     private static String signedRewardQuery(String extraData, byte[] signingSecret,
@@ -623,7 +675,8 @@ class SkitCallbackIngressServiceImplTest {
                                             String signedShowCustomExt, int signedNetworkFirmId,
                                             int topLevelNetworkFirmId) {
         String ilrd = "{\"network_firm_id\":" + signedNetworkFirmId + ",\"adsource_id\":\"7\","
-                + "\"id\":\"" + signedShowId + "\",\"adunit_id\":\"" + PLACEMENT_ID + "\""
+                + (signedShowId == null ? "" : "\"id\":\"" + signedShowId + "\",")
+                + "\"adunit_id\":\"" + PLACEMENT_ID + "\""
                 + (signedShowCustomExt == null ? "" : ",\"show_custom_ext\":\""
                 + signedShowCustomExt + "\"") + "}";
         String preimage = "trans_id=" + transactionId + "&placement_id=" + PLACEMENT_ID

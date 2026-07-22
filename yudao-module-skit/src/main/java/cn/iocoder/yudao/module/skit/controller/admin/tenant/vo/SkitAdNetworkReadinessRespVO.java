@@ -23,11 +23,13 @@ public class SkitAdNetworkReadinessRespVO {
     private boolean authoritative;
     private boolean signedRewardObserved;
     private boolean impressionObserved;
+    private boolean pairedSourceObserved;
     private LocalDateTime lastSignedRewardCallbackAt;
     private LocalDateTime lastImpressionCallbackAt;
     private List<String> sourceRefs = Collections.emptyList();
     private List<String> signedRewardSourceRefs = Collections.emptyList();
     private List<String> impressionSourceRefs = Collections.emptyList();
+    private List<String> pairedSourceRefs = Collections.emptyList();
     private List<String> blockers = Collections.emptyList();
 
     public static SkitAdNetworkReadinessRespVO from(
@@ -46,11 +48,13 @@ public class SkitAdNetworkReadinessRespVO {
         result.setAuthoritative(source.isAuthoritative());
         result.setSignedRewardObserved(source.isSignedRewardObserved());
         result.setImpressionObserved(source.isImpressionObserved());
+        result.setPairedSourceObserved(source.isPairedSourceObserved());
         result.setLastSignedRewardCallbackAt(source.getLastSignedRewardCallbackAt());
         result.setLastImpressionCallbackAt(source.getLastImpressionCallbackAt());
         result.setSourceRefs(nonNull(source.getSourceRefs()));
         result.setSignedRewardSourceRefs(nonNull(source.getSignedRewardSourceRefs()));
         result.setImpressionSourceRefs(nonNull(source.getImpressionSourceRefs()));
+        result.setPairedSourceRefs(nonNull(source.getPairedSourceRefs()));
         result.setBlockers(nonNull(source.getBlockers()));
         return result;
     }

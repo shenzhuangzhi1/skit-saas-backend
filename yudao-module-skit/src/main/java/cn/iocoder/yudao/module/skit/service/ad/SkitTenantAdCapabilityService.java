@@ -123,6 +123,7 @@ public interface SkitTenantAdCapabilityService {
         private Boolean reportFresh;
         private Boolean signedRewardCallbackObserved;
         private Boolean impressionCallbackObserved;
+        private Boolean pairedSourceEvidenceObserved;
         private Boolean nativeReleaseReady;
         private Boolean protocolReady;
         private Boolean shadowMembersValid;
@@ -133,6 +134,7 @@ public interface SkitTenantAdCapabilityService {
         private List<NetworkReadinessView> networkReadiness = Collections.emptyList();
         private Set<Integer> missingSignedRewardNetworkFirmIds = Collections.emptySet();
         private Set<Integer> missingImpressionNetworkFirmIds = Collections.emptySet();
+        private Set<Integer> missingPairedSourceNetworkFirmIds = Collections.emptySet();
         private LocalDateTime lastSignedRewardCallbackAt;
         private LocalDateTime lastImpressionCallbackAt;
         private LocalDateTime lastReportSuccessAt;
@@ -193,11 +195,13 @@ public interface SkitTenantAdCapabilityService {
         private boolean authoritative;
         private boolean signedRewardObserved;
         private boolean impressionObserved;
+        private boolean pairedSourceObserved;
         private LocalDateTime lastSignedRewardCallbackAt;
         private LocalDateTime lastImpressionCallbackAt;
         private List<String> sourceRefs = Collections.emptyList();
         private List<String> signedRewardSourceRefs = Collections.emptyList();
         private List<String> impressionSourceRefs = Collections.emptyList();
+        private List<String> pairedSourceRefs = Collections.emptyList();
         private List<String> blockers = Collections.emptyList();
     }
 

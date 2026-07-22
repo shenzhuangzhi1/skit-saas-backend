@@ -65,6 +65,25 @@ class SkitRewardAuthorityPolicyTest {
     }
 
     @Test
+    void strictSignedShowAndSessionBindingRejectsMissingOrMismatchedValues() {
+        authority = signedAuthority(NETWORK_ID, SHOW_ID, null);
+        SkitRewardAuthorityPolicy.Decision missingSession = authorize(session);
+        assertFalse(missingSession.isAuthorized());
+        assertEquals("SIGNED_SHOW_CUSTOM_EXT_MISMATCH", missingSession.getErrorCode());
+
+        authority = signedAuthority(NETWORK_ID, null, SESSION_ID);
+        SkitRewardAuthorityPolicy.Decision missingShow = authorize(session);
+        assertFalse(missingShow.isAuthorized());
+        assertEquals("SIGNED_SHOW_MISMATCH", missingShow.getErrorCode());
+
+        authority = signedAuthority(NETWORK_ID, SHOW_ID, SESSION_ID);
+        SkitRewardAuthorityPolicy.Decision missingSessionShow = authorize(
+                session().setProviderShowId(null));
+        assertFalse(missingSessionShow.isAuthorized());
+        assertEquals("SIGNED_SHOW_MISMATCH", missingSessionShow.getErrorCode());
+    }
+
+    @Test
     void onlyShadowOrEnforcedRolloutCanAuthorizeReward() {
         for (String activeState : new String[]{"SHADOW_TEST_USERS", "ENFORCED"}) {
             when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
@@ -187,10 +206,17 @@ class SkitRewardAuthorityPolicyTest {
     }
 
     private TakuRewardSignatureVerifier.SignedRewardAuthority signedAuthority(int networkFirmId) {
+        return signedAuthority(networkFirmId, SHOW_ID, SESSION_ID);
+    }
+
+    private TakuRewardSignatureVerifier.SignedRewardAuthority signedAuthority(
+            int networkFirmId, String showId, String showCustomExt) {
         String ilrd = "{\"network_firm_id\":" + networkFirmId
-                + ",\"adsource_id\":\"" + ADSOURCE + "\",\"id\":\"" + SHOW_ID
-                + "\",\"adunit_id\":\"" + PLACEMENT + "\",\"show_custom_ext\":\""
-                + SESSION_ID + "\"}";
+                + ",\"adsource_id\":\"" + ADSOURCE + "\""
+                + (showId == null ? "" : ",\"id\":\"" + showId + "\"")
+                + ",\"adunit_id\":\"" + PLACEMENT + "\""
+                + (showCustomExt == null ? "" : ",\"show_custom_ext\":\""
+                + showCustomExt + "\"") + "}";
         String preimage = "trans_id=" + TRANSACTION_ID + "&placement_id=" + PLACEMENT
                 + "&adsource_id=" + ADSOURCE + "&reward_amount=1&reward_name=coin&sec_key="
                 + new String(SECRET, StandardCharsets.US_ASCII) + "&ilrd=" + ilrd;

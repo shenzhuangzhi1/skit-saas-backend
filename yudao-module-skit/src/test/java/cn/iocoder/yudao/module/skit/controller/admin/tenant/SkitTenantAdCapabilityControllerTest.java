@@ -114,6 +114,10 @@ class SkitTenantAdCapabilityControllerTest {
                 response.getData().getNetworkReadiness().get(0).getSourceRefs());
         assertTrue(response.getData().getMissingSignedRewardNetworkFirmIds().isEmpty());
         assertTrue(response.getData().getMissingImpressionNetworkFirmIds().isEmpty());
+        assertTrue(response.getData().getMissingPairedSourceNetworkFirmIds().isEmpty());
+        assertTrue(response.getData().getPairedSourceEvidenceObserved());
+        assertEquals(Collections.singletonList("012345abcdef"),
+                response.getData().getNetworkReadiness().get(0).getPairedSourceRefs());
         assertEquals(99L, TenantContextHolder.getRequiredTenantId());
     }
 
@@ -292,12 +296,15 @@ class SkitTenantAdCapabilityControllerTest {
         result.setMinProtocolVersion(1);
         result.setCallbackKeyVersion(2);
         result.setCallbackKeyIssuedAt(LocalDateTime.of(2026, 7, 15, 4, 0));
+        result.setPairedSourceEvidenceObserved(true);
         SkitTenantAdCapabilityService.NetworkReadinessView network =
                 new SkitTenantAdCapabilityService.NetworkReadinessView();
         network.setNetworkFirmId(66);
         network.setSourceRefs(Collections.singletonList("012345abcdef"));
         network.setSignedRewardSourceRefs(Collections.singletonList("012345abcdef"));
         network.setImpressionSourceRefs(Collections.singletonList("012345abcdef"));
+        network.setPairedSourceObserved(true);
+        network.setPairedSourceRefs(Collections.singletonList("012345abcdef"));
         result.setNetworkReadiness(Collections.singletonList(network));
         return result;
     }
