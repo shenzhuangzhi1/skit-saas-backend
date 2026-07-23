@@ -16,6 +16,8 @@ import cn.iocoder.yudao.module.skit.service.management.SkitManagementCommandExec
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportingConfigurationService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -33,6 +35,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -128,6 +131,40 @@ class SkitTenantBusinessControllerTest {
 
         verify(adminTenantScopeGuard).writeTenant(eq(20L),
                 eq(SkitManagementCommandType.AD_CREDENTIAL_CLEAR), eq(clear.getReason()), any());
+    }
+
+    @Test
+    void adAccountSaveMapsIndependentTakuDisplayPlacements() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        SkitTenantBusinessController.AdAccountSaveReqVO save = validAdAccountSave();
+        objectMapper.readerForUpdating(save).readValue("{"
+                + "\"takuPlacementId\":\"reward-slot\","
+                + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
+                + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
+                + "\"homeBannerPlacementId\":\"banner-slot\"}");
+        executeWrite(SkitManagementCommandType.AD_ACCOUNT_UPDATE, save.getReason());
+        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
+        when(adAccountService.saveSettings(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(managementCommandExecutor.execute(any(), eq(SkitManagementCommandType.AD_ACCOUNT_UPDATE),
+                eq("AD_ACCOUNT_SETTINGS"), eq("20"), eq(save.getReason()),
+                anyString(), anyString(), any())).thenAnswer(invocation -> {
+                    Supplier<?> mutation = invocation.getArgument(7);
+                    mutation.get();
+                    return new SkitAdAccountService.Settings();
+                });
+
+        controller.saveAdAccount(save);
+
+        ArgumentCaptor<SkitAdAccountService.Settings> captor =
+                ArgumentCaptor.forClass(SkitAdAccountService.Settings.class);
+        verify(adAccountService).saveSettings(captor.capture());
+        JsonNode mapped = objectMapper.valueToTree(captor.getValue());
+        assertEquals("reward-slot", mapped.path("takuPlacementId").asText());
+        assertEquals("checkin-slot",
+                mapped.path("checkInEntryInterstitialPlacementId").asText());
+        assertEquals("drama-slot",
+                mapped.path("postCheckInDramaInterstitialPlacementId").asText());
+        assertEquals("banner-slot", mapped.path("homeBannerPlacementId").asText());
     }
 
     @Test

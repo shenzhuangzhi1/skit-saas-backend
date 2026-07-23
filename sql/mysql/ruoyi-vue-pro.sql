@@ -5402,7 +5402,8 @@ CREATE TABLE IF NOT EXISTS `skit_member` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
   `mobile` varchar(32) NOT NULL, `password` varchar(100) NOT NULL, `nickname` varchar(64) NOT NULL,
   `inviter_id` bigint DEFAULT NULL, `invite_code` varchar(32) NOT NULL, `depth` int NOT NULL DEFAULT 1,
-  `status` tinyint NOT NULL DEFAULT 0, `register_ip` varchar(50) DEFAULT '', `login_ip` varchar(50) DEFAULT '',
+  `status` tinyint NOT NULL DEFAULT 0, `point_balance` int NOT NULL DEFAULT 0 COMMENT '当前积分余额',
+  `register_ip` varchar(50) DEFAULT '', `login_ip` varchar(50) DEFAULT '',
   `login_time` datetime DEFAULT NULL,
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -5415,6 +5416,23 @@ CREATE TABLE IF NOT EXISTS `skit_member` (
   CONSTRAINT `fk_skit_member_inviter` FOREIGN KEY (`tenant_id`,`inviter_id`)
     REFERENCES `skit_member` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='短剧独立会员';
+
+CREATE TABLE IF NOT EXISTS `skit_member_point_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
+  `member_id` bigint NOT NULL, `biz_type` varchar(32) NOT NULL, `biz_id` varchar(64) NOT NULL,
+  `title` varchar(64) NOT NULL, `description` varchar(255) NOT NULL DEFAULT '',
+  `point_delta` int NOT NULL, `balance_after` int NOT NULL,
+  `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted` bit(1) NOT NULL DEFAULT b'0', PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_skit_member_point_tenant_id` (`tenant_id`,`id`),
+  UNIQUE KEY `uk_skit_member_point_business` (`tenant_id`,`member_id`,`biz_type`,`biz_id`),
+  KEY `idx_skit_member_point_member_time` (`tenant_id`,`member_id`,`create_time`,`id`),
+  CONSTRAINT `fk_skit_member_point_member` FOREIGN KEY (`tenant_id`,`member_id`)
+    REFERENCES `skit_member` (`tenant_id`,`id`) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT `ck_skit_member_point_delta` CHECK (`point_delta` <> 0),
+  CONSTRAINT `ck_skit_member_point_balance` CHECK (`balance_after` >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='会员积分不可变记录';
 
 CREATE TABLE IF NOT EXISTS `skit_member_closure` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
@@ -6037,6 +6055,9 @@ CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_callback_inbox','idx_skit_ad_c
   'ALTER TABLE `skit_ad_callback_inbox` ADD INDEX `idx_skit_ad_callback_global_received` (`received_at`,`id`)')$$
 CALL `skit_apply_ddl_if_missing`('INDEX','skit_ad_reconciliation_bucket','idx_skit_ad_recon_bucket_global_date',
   'ALTER TABLE `skit_ad_reconciliation_bucket` ADD INDEX `idx_skit_ad_recon_bucket_global_date` (`report_date`,`id`)')$$
+
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_member','point_balance',
+  'ALTER TABLE `skit_member` ADD COLUMN `point_balance` int NOT NULL DEFAULT 0 COMMENT ''当前积分余额'' AFTER `status`')$$
 
 CALL `skit_apply_ddl_if_missing`('COLUMN','skit_app_release_profile','hot_release_no',
   'ALTER TABLE `skit_app_release_profile` ADD COLUMN `hot_release_no` bigint NOT NULL DEFAULT 0')$$

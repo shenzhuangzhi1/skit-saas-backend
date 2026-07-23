@@ -226,6 +226,22 @@ class SkitMemberServiceImplTest {
     }
 
     @Test
+    void profileReturnsTheCurrentPointBalance() {
+        TenantContextHolder.setTenantId(TENANT_ID);
+        SkitMemberDO member = enabledMember(MEMBER_ID, TENANT_ID, 0, "INVITE88")
+                .setPointBalance(6);
+        when(memberMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        when(tenantService.getTenant(TENANT_ID)).thenReturn(
+                new TenantDO().setId(TENANT_ID).setName("tenant-42"));
+        when(memberMapper.selectCountByInviterId(MEMBER_ID)).thenReturn(0L);
+
+        SkitMemberService.ProfileView result = memberService.getProfile(MEMBER_ID);
+
+        assertEquals(6, result.getPointBalance());
+    }
+
+    @Test
     void registerAllowsMobileAlreadyUsedByAnotherTenant() {
         SkitAgentDO agent = SkitAgentDO.builder().id(6L).tenantId(TENANT_ID).tenantCode("AGENT42")
                 .rootInviteCode("ROOT42").status(CommonStatusEnum.ENABLE.getStatus()).build();

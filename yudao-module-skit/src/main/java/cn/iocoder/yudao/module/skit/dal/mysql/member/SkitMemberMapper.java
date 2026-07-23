@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitMemberDO;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -80,6 +81,13 @@ public interface SkitMemberMapper extends BaseMapperX<SkitMemberDO> {
         return selectCount(new LambdaQueryWrapperX<SkitMemberDO>()
                 .eq(SkitMemberDO::getTenantId, tenantId)
                 .eq(SkitMemberDO::getInviterId, inviterId));
+    }
+
+    default int updatePointBalance(Long tenantId, Long memberId, Integer pointBalance) {
+        return update(null, new LambdaUpdateWrapper<SkitMemberDO>()
+                .set(SkitMemberDO::getPointBalance, pointBalance)
+                .eq(SkitMemberDO::getTenantId, tenantId)
+                .eq(SkitMemberDO::getId, memberId));
     }
 
 }

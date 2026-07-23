@@ -200,6 +200,7 @@ public class SkitMemberServiceImpl implements SkitMemberService {
         result.setLevel(member.getDepth());
         result.setDepth(member.getDepth());
         result.setStatus(member.getStatus());
+        result.setPointBalance(member.getPointBalance() == null ? 0 : member.getPointBalance());
         result.setTenantId(tenantId);
         result.setTenantCode(agent == null ? null : agent.getTenantCode());
         result.setTenantName(tenant == null ? null : tenant.getName());

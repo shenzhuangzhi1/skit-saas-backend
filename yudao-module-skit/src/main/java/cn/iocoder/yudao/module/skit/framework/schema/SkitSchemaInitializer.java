@@ -1048,6 +1048,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     + "AND `ur`.`tenant_id`=`u`.`tenant_id` AND `ur`.`deleted`=b'0')";
     private static final int AD_ACCOUNT_TENANT_BACKFILL_MIGRATION_VERSION = 2026071601;
     private static final int AD_CONSUMPTION_QUERY_INDEX_MIGRATION_VERSION = 2026072301;
+    private static final int MEMBER_POINT_MIGRATION_VERSION = 2026072401;
     private static final String BACKFILL_TENANT_AD_ACCOUNTS_SQL =
             "INSERT INTO `skit_ad_account` (`tenant_id`,`provider`,`account_name`,`account_id`,`app_id`,"
                     + "`app_key`,`secret`,`config_data`,`status`,`creator`,`create_time`,`updater`,`update_time`,"
@@ -1518,6 +1519,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 contentEntitlementLeaseActivationSteps()));
         result.add(migrationFromSteps(AD_CONSUMPTION_QUERY_INDEX_MIGRATION_VERSION,
                 "add tenant-safe ad consumption query indexes", adConsumptionQueryIndexSteps()));
+        result.add(migrationFromSteps(MEMBER_POINT_MIGRATION_VERSION,
+                "add tenant-safe member check-in point ledger", memberPointSteps()));
         return sortedMigrations(result);
     }
 
@@ -3034,6 +3037,37 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 () -> validateAdConsumptionQueryIndexes(true),
                 "ad-consumption-query-indexes-v1"));
         return steps;
+    }
+
+    private List<SchemaStep> memberPointSteps() {
+        SchemaStep pointBalanceColumn = schemaStep(
+                "add-column-if-missing",
+                () -> addColumnIfMissing("skit_member", "point_balance",
+                        "int NOT NULL DEFAULT 0 COMMENT '当前积分余额' AFTER `status`"),
+                "skit_member|point_balance",
+                COLUMN_EXISTS_QUERY,
+                addColumnSql("skit_member", "point_balance",
+                        "int NOT NULL DEFAULT 0 COMMENT '当前积分余额' AFTER `status`"));
+        SchemaStep pointRecordTable = executeSqlStep(
+                "CREATE TABLE IF NOT EXISTS `skit_member_point_record` ("
+                        + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                        + "`member_id` bigint NOT NULL,`biz_type` varchar(32) NOT NULL,"
+                        + "`biz_id` varchar(64) NOT NULL,`title` varchar(64) NOT NULL,"
+                        + "`description` varchar(255) NOT NULL DEFAULT '',"
+                        + "`point_delta` int NOT NULL,`balance_after` int NOT NULL,"
+                        + auditColumns() + ",PRIMARY KEY (`id`),"
+                        + "UNIQUE KEY `uk_skit_member_point_tenant_id` (`tenant_id`,`id`),"
+                        + "UNIQUE KEY `uk_skit_member_point_business` "
+                        + "(`tenant_id`,`member_id`,`biz_type`,`biz_id`),"
+                        + "KEY `idx_skit_member_point_member_time` "
+                        + "(`tenant_id`,`member_id`,`create_time`,`id`),"
+                        + "CONSTRAINT `fk_skit_member_point_member` FOREIGN KEY (`tenant_id`,`member_id`) "
+                        + "REFERENCES `skit_member` (`tenant_id`,`id`) "
+                        + "ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                        + "CONSTRAINT `ck_skit_member_point_delta` CHECK (`point_delta` <> 0),"
+                        + "CONSTRAINT `ck_skit_member_point_balance` CHECK (`balance_after` >= 0))"
+                        + tableOptions());
+        return Arrays.asList(pointBalanceColumn, pointRecordTable);
     }
 
     private List<SchemaStep> contentEntitlementLeaseActivationSteps() {

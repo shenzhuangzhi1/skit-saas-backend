@@ -6,11 +6,11 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.annotation.Resource;
+import javax.annotation.security.PermitAll;
 import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
@@ -26,7 +26,7 @@ public class SkitMemberAdConfigController {
     private SkitAdAccountService adAccountService;
 
     @GetMapping
-    @PreAuthorize("@ss.hasScope('skit_member') and @skitMemberSecurityGuard.isSkitMember()")
+    @PermitAll
     @Operation(summary = "获得当前代理商公开广告配置")
     public CommonResult<AdConfigRespVO> getAdConfig() {
         AdConfigRespVO result = new AdConfigRespVO();
@@ -38,6 +38,11 @@ public class SkitMemberAdConfigController {
             } else if (PROVIDER_TAKU.equals(config.getProvider())) {
                 result.setTaku(config);
                 result.setTakuPlacementId(config.getPlacementId());
+                result.setCheckInEntryInterstitialPlacementId(
+                        config.getCheckInEntryInterstitialPlacementId());
+                result.setPostCheckInDramaInterstitialPlacementId(
+                        config.getPostCheckInDramaInterstitialPlacementId());
+                result.setHomeBannerPlacementId(config.getHomeBannerPlacementId());
             }
         }
         if (result.getPangle() != null && result.getTaku() != null) {
@@ -57,6 +62,9 @@ public class SkitMemberAdConfigController {
         private String provider;
         private String panglePlacementId;
         private String takuPlacementId;
+        private String checkInEntryInterstitialPlacementId;
+        private String postCheckInDramaInterstitialPlacementId;
+        private String homeBannerPlacementId;
         private SkitAdAccountService.PublicConfig pangle;
         private SkitAdAccountService.PublicConfig taku;
     }

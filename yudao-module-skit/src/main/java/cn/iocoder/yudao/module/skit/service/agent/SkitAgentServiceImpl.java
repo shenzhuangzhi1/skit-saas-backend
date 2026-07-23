@@ -394,6 +394,11 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         settings.setTakuAppKey(source.getTakuAppKey());
         settings.setTakuAppSecret(source.getTakuAppSecret());
         settings.setTakuPlacementId(trimNonSecret(source.getTakuPlacementId()));
+        settings.setCheckInEntryInterstitialPlacementId(
+                trimNonSecret(source.getCheckInEntryInterstitialPlacementId()));
+        settings.setPostCheckInDramaInterstitialPlacementId(
+                trimNonSecret(source.getPostCheckInDramaInterstitialPlacementId()));
+        settings.setHomeBannerPlacementId(trimNonSecret(source.getHomeBannerPlacementId()));
         settings.setTakuEnabled(Boolean.TRUE.equals(source.getTakuEnabled()));
         adAccountService.saveSettings(settings);
     }
@@ -489,6 +494,11 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         result.setTakuUsername(settings.getTakuUsername());
         result.setTakuAppId(settings.getTakuAppId());
         result.setTakuPlacementId(settings.getTakuPlacementId());
+        result.setCheckInEntryInterstitialPlacementId(
+                settings.getCheckInEntryInterstitialPlacementId());
+        result.setPostCheckInDramaInterstitialPlacementId(
+                settings.getPostCheckInDramaInterstitialPlacementId());
+        result.setHomeBannerPlacementId(settings.getHomeBannerPlacementId());
         result.setTakuEnabled(settings.getTakuEnabled());
         result.setTakuAppKeyConfigured(settings.getTakuAppKeyConfigured());
         result.setTakuSecretConfigured(settings.getTakuSecretConfigured());

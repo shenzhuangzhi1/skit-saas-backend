@@ -40,6 +40,9 @@ public class SkitAgentUpdateReqVO {
     @Size(max = 255) private String takuAppKey;
     @Size(max = 2048) private String takuAppSecret;
     @Size(max = 128) private String takuPlacementId;
+    @Size(max = 128) private String checkInEntryInterstitialPlacementId;
+    @Size(max = 128) private String postCheckInDramaInterstitialPlacementId;
+    @Size(max = 128) private String homeBannerPlacementId;
     private Boolean takuEnabled;
 
     public void setName(String name) {

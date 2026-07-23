@@ -331,6 +331,11 @@ public class SkitTenantBusinessController {
         settings.setTakuAppKey(request.getTakuAppKey());
         settings.setTakuAppSecret(request.getTakuAppSecret());
         settings.setTakuPlacementId(request.getTakuPlacementId());
+        settings.setCheckInEntryInterstitialPlacementId(
+                request.getCheckInEntryInterstitialPlacementId());
+        settings.setPostCheckInDramaInterstitialPlacementId(
+                request.getPostCheckInDramaInterstitialPlacementId());
+        settings.setHomeBannerPlacementId(request.getHomeBannerPlacementId());
         settings.setTakuEnabled(request.getTakuEnabled());
         return settings;
     }
@@ -343,6 +348,11 @@ public class SkitTenantBusinessController {
                 + ";pangleSecretConfigured=" + value.getPangleSecretConfigured()
                 + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
                 + ";takuPlacement=" + value.getTakuPlacementId()
+                + ";checkInEntryInterstitialPlacement="
+                + value.getCheckInEntryInterstitialPlacementId()
+                + ";postCheckInDramaInterstitialPlacement="
+                + value.getPostCheckInDramaInterstitialPlacementId()
+                + ";homeBannerPlacement=" + value.getHomeBannerPlacementId()
                 + ";takuEnabled=" + value.getTakuEnabled()
                 + ";takuAppKeyConfigured=" + value.getTakuAppKeyConfigured()
                 + ";takuSecretConfigured=" + value.getTakuSecretConfigured();
@@ -355,6 +365,11 @@ public class SkitTenantBusinessController {
                 + ";pangleSecretProvided=" + (value.getPangleAppSecret() != null)
                 + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
                 + ";takuPlacement=" + value.getTakuPlacementId()
+                + ";checkInEntryInterstitialPlacement="
+                + value.getCheckInEntryInterstitialPlacementId()
+                + ";postCheckInDramaInterstitialPlacement="
+                + value.getPostCheckInDramaInterstitialPlacementId()
+                + ";homeBannerPlacement=" + value.getHomeBannerPlacementId()
                 + ";takuEnabled=" + value.getTakuEnabled()
                 + ";takuAppKeyProvided=" + (value.getTakuAppKey() != null)
                 + ";takuSecretProvided=" + (value.getTakuAppSecret() != null);
@@ -434,6 +449,12 @@ public class SkitTenantBusinessController {
         private String takuAppSecret;
         @Size(max = 128, message = "Taku 广告位长度不能超过 128 个字符")
         private String takuPlacementId;
+        @Size(max = 128, message = "Taku 签到页插屏广告位长度不能超过 128 个字符")
+        private String checkInEntryInterstitialPlacementId;
+        @Size(max = 128, message = "Taku 签到后短剧插屏广告位长度不能超过 128 个字符")
+        private String postCheckInDramaInterstitialPlacementId;
+        @Size(max = 128, message = "Taku 首页 Banner 广告位长度不能超过 128 个字符")
+        private String homeBannerPlacementId;
         @NotNull(message = "Taku 启用状态不能为空")
         private Boolean takuEnabled;
         @NotBlank(message = "管理操作原因不能为空")

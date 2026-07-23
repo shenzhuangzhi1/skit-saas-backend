@@ -26,6 +26,7 @@ public class SkitMemberDO extends TenantBaseDO {
     private String inviteCode;
     private Integer depth;
     private Integer status;
+    private Integer pointBalance;
     private String registerIp;
     private String loginIp;
     private LocalDateTime loginTime;

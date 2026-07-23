@@ -57,6 +57,9 @@ public class SkitAgentRespVO {
     private String takuUsername;
     private String takuAppId;
     private String takuPlacementId;
+    private String checkInEntryInterstitialPlacementId;
+    private String postCheckInDramaInterstitialPlacementId;
+    private String homeBannerPlacementId;
     private Boolean takuEnabled;
     private Boolean takuAppKeyConfigured;
     private Boolean takuSecretConfigured;

@@ -87,6 +87,7 @@ public interface SkitMemberService {
         private Integer level;
         private Integer depth;
         private Integer status;
+        private Integer pointBalance;
         private Long tenantId;
         private String tenantCode;
         private String tenantName;

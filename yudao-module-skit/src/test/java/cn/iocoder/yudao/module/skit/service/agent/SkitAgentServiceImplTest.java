@@ -25,6 +25,8 @@ import cn.iocoder.yudao.module.system.dal.dataobject.user.AdminUserDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantPackageService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -95,7 +97,7 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
-    void createAgentClaimsRegistryAfterGeneratedAgentIdAndBeforeTenantDefaults() {
+    void createAgentClaimsRegistryAfterGeneratedAgentIdAndBeforeTenantDefaults() throws Exception {
         when(tenantPackageService.getTenantPackageByCode("SKIT_AGENT_STANDARD"))
                 .thenReturn(new TenantPackageDO().setId(7L));
         when(tenantService.createTenant(any(TenantSaveReqVO.class))).thenReturn(42L);
@@ -108,7 +110,13 @@ class SkitAgentServiceImplTest {
             return 1;
         });
 
-        Long tenantId = agentService.createAgent(createRequest());
+        SkitAgentCreateReqVO createRequest = createRequest();
+        new ObjectMapper().readerForUpdating(createRequest).readValue("{"
+                + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
+                + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
+                + "\"homeBannerPlacementId\":\"banner-slot\"}");
+
+        Long tenantId = agentService.createAgent(createRequest);
 
         assertEquals(42L, tenantId);
         ArgumentCaptor<TenantSaveReqVO> tenantCaptor = ArgumentCaptor.forClass(TenantSaveReqVO.class);
@@ -129,7 +137,15 @@ class SkitAgentServiceImplTest {
         verify(inviteCodeRegistryService).claimAgent(42L, 4L, agent.getRootInviteCode());
         assertNull(TenantContextHolder.getTenantId(), "创建结束后必须恢复平台租户上下文");
         verify(adAccountService).ensureDefaultAccounts();
-        verify(adAccountService).saveSettings(any(SkitAdAccountService.Settings.class));
+        ArgumentCaptor<SkitAdAccountService.Settings> settingsCaptor =
+                ArgumentCaptor.forClass(SkitAdAccountService.Settings.class);
+        verify(adAccountService).saveSettings(settingsCaptor.capture());
+        JsonNode savedSettings = new ObjectMapper().valueToTree(settingsCaptor.getValue());
+        assertEquals("checkin-slot",
+                savedSettings.path("checkInEntryInterstitialPlacementId").asText());
+        assertEquals("drama-slot",
+                savedSettings.path("postCheckInDramaInterstitialPlacementId").asText());
+        assertEquals("banner-slot", savedSettings.path("homeBannerPlacementId").asText());
         verify(commissionService).ensureDefaultPlan();
 
         InOrder order = inOrder(tenantService, inviteCodeRegistryService, agentMapper,
@@ -466,7 +482,7 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
-    void pageUsesDatabasePaginationAndOnlyEnrichesReturnedRows() {
+    void pageUsesDatabasePaginationAndOnlyEnrichesReturnedRows() throws Exception {
         SkitAgentPageReqVO request = new SkitAgentPageReqVO();
         request.setPageNo(3);
         request.setPageSize(1);
@@ -491,7 +507,12 @@ class SkitAgentServiceImplTest {
         when(adminUserService.getUserListIgnoreTenant(Collections.singleton(420L)))
                 .thenReturn(Collections.singletonList(new AdminUserDO().setId(420L).setUsername("13800000000")));
         Map<Long, SkitAdAccountService.Settings> adSettings = new HashMap<>();
-        adSettings.put(42L, new SkitAdAccountService.Settings());
+        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
+        new ObjectMapper().readerForUpdating(settings).readValue("{"
+                + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
+                + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
+                + "\"homeBannerPlacementId\":\"banner-slot\"}");
+        adSettings.put(42L, settings);
         when(adAccountService.getSettingsMapForPlatform(Collections.singleton(42L))).thenReturn(adSettings);
 
         PageResult<SkitAgentRespVO> result = agentService.getAgentPage(request);
@@ -501,6 +522,11 @@ class SkitAgentServiceImplTest {
         assertEquals("标准套餐", result.getList().get(0).getPackageName());
         assertEquals("13800000000", result.getList().get(0).getUsername());
         assertEquals(Collections.singletonList("agent.example.com"), result.getList().get(0).getWebsites());
+        assertEquals("checkin-slot",
+                result.getList().get(0).getCheckInEntryInterstitialPlacementId());
+        assertEquals("drama-slot",
+                result.getList().get(0).getPostCheckInDramaInterstitialPlacementId());
+        assertEquals("banner-slot", result.getList().get(0).getHomeBannerPlacementId());
         verify(agentMapper).selectPage(request);
         verify(agentMapper, never()).selectList();
         verify(tenantService, never()).getTenant(anyLong());
