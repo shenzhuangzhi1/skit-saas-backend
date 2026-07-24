@@ -18,6 +18,7 @@ import cn.iocoder.yudao.module.system.dal.redis.oauth2.OAuth2AccessTokenRedisDAO
 import cn.iocoder.yudao.module.system.service.user.AdminUserService;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
 import org.assertj.core.util.Lists;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
@@ -62,6 +63,11 @@ public class OAuth2TokenServiceImplTest extends BaseDbAndRedisUnitTest {
     private AdminUserService adminUserService;
     @MockBean
     private TenantService tenantService;
+
+    @AfterEach
+    void tearDown() {
+        TenantContextHolder.clear();
+    }
 
     @Test
     public void testCreateAccessToken() {
