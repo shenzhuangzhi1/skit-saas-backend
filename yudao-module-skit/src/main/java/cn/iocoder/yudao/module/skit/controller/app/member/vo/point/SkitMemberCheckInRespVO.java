@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.controller.app.member.vo.point;
 
 import cn.iocoder.yudao.module.skit.service.member.SkitMemberPointService;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.time.LocalDate;
@@ -8,6 +9,7 @@ import java.time.LocalDate;
 @Data
 public class SkitMemberCheckInRespVO {
 
+    @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
     private LocalDate signInDate;
     private Integer awardedPoints;
     private Integer pointBalance;
