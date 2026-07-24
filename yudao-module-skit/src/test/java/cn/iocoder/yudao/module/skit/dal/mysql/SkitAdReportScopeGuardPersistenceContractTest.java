@@ -1,12 +1,20 @@
 package cn.iocoder.yudao.module.skit.dal.mysql;
 
+import cn.iocoder.yudao.framework.mybatis.core.type.EncryptTypeHandler;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.apache.ibatis.mapping.ResultMap;
+import org.apache.ibatis.mapping.ResultMapping;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 import java.util.Locale;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SkitAdReportScopeGuardPersistenceContractTest {
@@ -47,6 +55,33 @@ class SkitAdReportScopeGuardPersistenceContractTest {
         assertTrue(sql.contains("skit_ad_report_pull"));
         assertTrue(sql.contains("tenant_id") && sql.contains("ad_account_id"));
         assertTrue(sql.contains("provider") && sql.contains("taku"));
+    }
+
+    @Test
+    void providerRowLockUsesTheEncryptedEntityResultMap() {
+        MybatisConfiguration configuration = new MybatisConfiguration();
+        configuration.setMapUnderscoreToCamelCase(true);
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(
+                configuration, "skit-ad-account-lock-result-map-test");
+        assistant.setCurrentNamespace(SkitAdAccountMapper.class.getName());
+        TableInfoHelper.initTableInfo(assistant, SkitAdAccountDO.class);
+        configuration.addMapper(SkitAdAccountMapper.class);
+
+        ResultMap resultMap = configuration.getMappedStatement(
+                        SkitAdAccountMapper.class.getName() + ".selectByProviderForUpdate")
+                .getResultMaps().get(0);
+
+        assertEncryptedMapping(resultMap, "appKey");
+        assertEncryptedMapping(resultMap, "secret");
+    }
+
+    private void assertEncryptedMapping(ResultMap resultMap, String property) {
+        ResultMapping mapping = resultMap.getResultMappings().stream()
+                .filter(candidate -> property.equals(candidate.getProperty()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Missing encrypted result mapping for " + property));
+        assertEquals(EncryptTypeHandler.class, mapping.getTypeHandler().getClass());
     }
 
     private String sql(Method method) {

@@ -392,18 +392,26 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
-    void enabledPangleIgnoresLegacyAccountAndPlacementFields() throws Exception {
-        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
-        mockAccounts(pangle, account(PROVIDER_TAKU));
+    void omittedLegacyMetadataPreservesExistingAccountNamesAndPanglePlacement() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAccountName("legacy-pangle-user")
+                .setConfigData("{\"placementId\":\"legacy-pangle-slot\","
+                        + "\"adFormat\":\"rewarded_video\"}");
+        SkitAdAccountDO taku = account(PROVIDER_TAKU)
+                .setAccountName("legacy-taku-user");
+        mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleUsername(null);
         settings.setPanglePlacementId(null);
+        settings.setTakuUsername(null);
         settings.setTakuEnabled(false);
 
         accountService.saveSettings(settings);
 
-        assertEquals("", pangle.getAccountName());
-        assertEquals("", objectMapper.readTree(pangle.getConfigData()).get("placementId").asText());
+        assertEquals("legacy-pangle-user", pangle.getAccountName());
+        assertEquals("legacy-pangle-slot",
+                objectMapper.readTree(pangle.getConfigData()).get("placementId").asText());
+        assertEquals("legacy-taku-user", taku.getAccountName());
         assertEquals(CommonStatusEnum.ENABLE.getStatus(), pangle.getStatus());
     }
 

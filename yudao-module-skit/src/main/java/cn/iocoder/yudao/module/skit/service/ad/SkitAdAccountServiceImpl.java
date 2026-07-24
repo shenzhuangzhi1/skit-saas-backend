@@ -177,9 +177,10 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
                 || !Objects.equals(account.getProvider(), provider)) {
             throw exception(AD_ACCOUNT_NOT_EXISTS);
         }
-        String normalizedUsername = trimToEmpty(username);
+        String normalizedUsername = resolveOptionalMetadata(username, account.getAccountName());
         String normalizedAppId = trimToEmpty(appId);
-        String normalizedPlacementId = trimToEmpty(placementId);
+        String normalizedPlacementId = resolveOptionalMetadata(
+                placementId, readPlacementId(account.getConfigData()));
         String effectiveCheckInEntryInterstitialPlacementId = resolveScenePlacement(provider,
                 checkInEntryInterstitialPlacementId, account.getConfigData(),
                 "checkInEntryInterstitialPlacementId");
@@ -346,6 +347,10 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
 
     private String trimToEmpty(String value) {
         return StrUtil.nullToEmpty(StrUtil.trim(value));
+    }
+
+    private String resolveOptionalMetadata(String requestedValue, String currentValue) {
+        return requestedValue == null ? trimToEmpty(currentValue) : trimToEmpty(requestedValue);
     }
 
     private void fillSettings(Settings result, SkitAdAccountDO account) {

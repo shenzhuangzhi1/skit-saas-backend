@@ -1049,6 +1049,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final int AD_ACCOUNT_TENANT_BACKFILL_MIGRATION_VERSION = 2026071601;
     private static final int AD_CONSUMPTION_QUERY_INDEX_MIGRATION_VERSION = 2026072301;
     private static final int MEMBER_POINT_MIGRATION_VERSION = 2026072401;
+    private static final int AD_ACCOUNT_APP_KEY_CAPACITY_MIGRATION_VERSION = 2026072501;
     private static final String BACKFILL_TENANT_AD_ACCOUNTS_SQL =
             "INSERT INTO `skit_ad_account` (`tenant_id`,`provider`,`account_name`,`account_id`,`app_id`,"
                     + "`app_key`,`secret`,`config_data`,`status`,`creator`,`create_time`,`updater`,`update_time`,"
@@ -1521,6 +1522,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "add tenant-safe ad consumption query indexes", adConsumptionQueryIndexSteps()));
         result.add(migrationFromSteps(MEMBER_POINT_MIGRATION_VERSION,
                 "add tenant-safe member check-in point ledger", memberPointSteps()));
+        result.add(migrationFromSteps(AD_ACCOUNT_APP_KEY_CAPACITY_MIGRATION_VERSION,
+                "expand encrypted ad account app key capacity", adAccountAppKeyCapacitySteps()));
         return sortedMigrations(result);
     }
 
@@ -3068,6 +3071,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         + "CONSTRAINT `ck_skit_member_point_balance` CHECK (`balance_after` >= 0))"
                         + tableOptions());
         return Arrays.asList(pointBalanceColumn, pointRecordTable);
+    }
+
+    private List<SchemaStep> adAccountAppKeyCapacitySteps() {
+        return Collections.singletonList(executeSqlStep(
+                modifyColumnSql("skit_ad_account", "app_key", "varchar(1024) DEFAULT ''")));
     }
 
     private List<SchemaStep> contentEntitlementLeaseActivationSteps() {

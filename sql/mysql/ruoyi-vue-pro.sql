@@ -5389,7 +5389,7 @@ CREATE TABLE IF NOT EXISTS `skit_app_build_material` (
 CREATE TABLE IF NOT EXISTS `skit_ad_account` (
   `id` bigint NOT NULL AUTO_INCREMENT, `tenant_id` bigint NOT NULL,
   `provider` varchar(16) NOT NULL, `account_name` varchar(128) DEFAULT '', `account_id` varchar(128) DEFAULT '',
-  `app_id` varchar(128) DEFAULT '', `app_key` varchar(255) DEFAULT '', `secret` text,
+  `app_id` varchar(128) DEFAULT '', `app_key` varchar(1024) DEFAULT '', `secret` text,
   `config_data` longtext, `status` tinyint NOT NULL DEFAULT 1,
   `creator` varchar(64) DEFAULT '', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updater` varchar(64) DEFAULT '', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
