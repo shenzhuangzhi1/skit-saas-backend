@@ -3,13 +3,15 @@ package cn.iocoder.yudao.module.skit.dal.mysql.ad;
 import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
+import cn.iocoder.yudao.framework.mybatis.core.type.EncryptTypeHandler;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
 import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.ResultMap;
+import org.apache.ibatis.annotations.Result;
+import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
@@ -97,7 +99,10 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
 
     @Select("SELECT * FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
             + "AND `provider`=#{provider} AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
-    @ResultMap("mybatis-plus_SkitAdAccountDO")
+    @Results({
+            @Result(column = "app_key", property = "appKey", typeHandler = EncryptTypeHandler.class),
+            @Result(column = "secret", property = "secret", typeHandler = EncryptTypeHandler.class),
+    })
     @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; avoid appending predicates after FOR UPDATE
     SkitAdAccountDO selectByProviderForUpdate(@Param("tenantId") long tenantId,
                                                @Param("provider") String provider);

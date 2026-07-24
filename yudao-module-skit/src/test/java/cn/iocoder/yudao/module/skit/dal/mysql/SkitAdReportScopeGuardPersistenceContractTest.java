@@ -59,20 +59,26 @@ class SkitAdReportScopeGuardPersistenceContractTest {
 
     @Test
     void providerRowLockUsesTheEncryptedEntityResultMap() {
-        MybatisConfiguration configuration = new MybatisConfiguration();
-        configuration.setMapUnderscoreToCamelCase(true);
-        MapperBuilderAssistant assistant = new MapperBuilderAssistant(
-                configuration, "skit-ad-account-lock-result-map-test");
-        assistant.setCurrentNamespace(SkitAdAccountMapper.class.getName());
-        TableInfoHelper.initTableInfo(assistant, SkitAdAccountDO.class);
-        configuration.addMapper(SkitAdAccountMapper.class);
+        TableInfoHelper.remove(SkitAdAccountDO.class);
+        try {
+            MybatisConfiguration configuration = new MybatisConfiguration();
+            configuration.setMapUnderscoreToCamelCase(true);
+            MapperBuilderAssistant foreignAssistant = new MapperBuilderAssistant(
+                    configuration, "foreign-ad-account-result-map-test");
+            foreignAssistant.setCurrentNamespace("foreign.SkitAdAccountMapper");
+            TableInfoHelper.initTableInfo(foreignAssistant, SkitAdAccountDO.class);
 
-        ResultMap resultMap = configuration.getMappedStatement(
-                        SkitAdAccountMapper.class.getName() + ".selectByProviderForUpdate")
-                .getResultMaps().get(0);
+            configuration.addMapper(SkitAdAccountMapper.class);
 
-        assertEncryptedMapping(resultMap, "appKey");
-        assertEncryptedMapping(resultMap, "secret");
+            ResultMap resultMap = configuration.getMappedStatement(
+                            SkitAdAccountMapper.class.getName() + ".selectByProviderForUpdate")
+                    .getResultMaps().get(0);
+
+            assertEncryptedMapping(resultMap, "appKey");
+            assertEncryptedMapping(resultMap, "secret");
+        } finally {
+            TableInfoHelper.remove(SkitAdAccountDO.class);
+        }
     }
 
     private void assertEncryptedMapping(ResultMap resultMap, String property) {
