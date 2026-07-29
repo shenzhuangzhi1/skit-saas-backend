@@ -193,15 +193,14 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         }
 
         List<Integer> episodes = exactEpisodeScope(session);
-        Map<Integer, SkitContentEntitlementDO> existing = lockExistingEntitlements(session, episodes);
-        for (SkitContentEntitlementDO row : existing.values()) {
-            if ("SECURITY_REVOKED".equals(row.getStatus())) {
-                return rejectReward(inbox, session, "ENTITLEMENT_SECURITY_REVOKED", processedAt);
-            }
-            if (!"GRANTED".equals(row.getStatus())) {
-                throw new IllegalStateException("Entitlement status is outside the supported state machine");
-            }
+        LockedEntitlementPrefix lockedPrefix = lockRewardEntitlementPrefix(session);
+        if (lockedPrefix.errorCode != null) {
+            return rejectReward(inbox, session, lockedPrefix.errorCode, processedAt);
         }
+        Map<Integer, SkitContentEntitlementDO> existing =
+                lockedPrefix.target == null
+                        ? Collections.emptyMap()
+                        : Collections.singletonMap(session.getEpisodeTo(), lockedPrefix.target);
         // Capture the grant clock only after the exact entitlement projection is locked. This
         // makes a callback that waited behind CLOSED serialize after that close instead of
         // backdating a new lease to the beginning of callback processing.
@@ -465,21 +464,51 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 && !capability.getVerifiedAt().isAfter(inbox.getReceivedAt());
     }
 
-    private Map<Integer, SkitContentEntitlementDO> lockExistingEntitlements(
-            SkitAdSessionDO session, List<Integer> episodes) {
-        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodesForUpdate(
-                session.getTenantId(), session.getMemberId(), session.getDramaId(), episodes);
+    private LockedEntitlementPrefix lockRewardEntitlementPrefix(SkitAdSessionDO session) {
+        int targetEpisode = session.getEpisodeTo();
+        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodeHistoryForUpdate(
+                session.getTenantId(), session.getMemberId(), session.getDramaId(), targetEpisode);
         Map<Integer, SkitContentEntitlementDO> byEpisode = new HashMap<>();
-        if (rows == null) {
-            return byEpisode;
-        }
-        for (SkitContentEntitlementDO row : rows) {
-            validateEntitlement(row, session, episodes);
-            if (byEpisode.put(row.getEpisodeNo(), row) != null) {
-                throw new IllegalStateException("Entitlement uniqueness was violated");
+        if (rows != null) {
+            for (SkitContentEntitlementDO row : rows) {
+                validateEntitlement(row, session, targetEpisode);
+                if (byEpisode.put(row.getEpisodeNo(), row) != null) {
+                    throw new IllegalStateException("Entitlement uniqueness was violated");
+                }
             }
         }
-        return byEpisode;
+        for (int episode = 1; episode < targetEpisode; episode++) {
+            SkitContentEntitlementDO historical = byEpisode.get(episode);
+            if (historical == null) {
+                return LockedEntitlementPrefix.rejected("ENTITLEMENT_PREFIX_GAP");
+            }
+            String stateError = entitlementStateError(historical);
+            if (stateError != null) {
+                return LockedEntitlementPrefix.rejected(stateError);
+            }
+        }
+        SkitContentEntitlementDO target = byEpisode.get(targetEpisode);
+        String targetError = entitlementStateError(target);
+        return targetError == null
+                ? LockedEntitlementPrefix.accepted(target)
+                : LockedEntitlementPrefix.rejected(targetError);
+    }
+
+    private String entitlementStateError(SkitContentEntitlementDO entitlement) {
+        if (entitlement == null) {
+            return null;
+        }
+        if (Boolean.TRUE.equals(entitlement.getDeleted())) {
+            return "ENTITLEMENT_TOMBSTONE_REJECTED";
+        }
+        if ("SECURITY_REVOKED".equals(entitlement.getStatus())) {
+            return "ENTITLEMENT_SECURITY_REVOKED";
+        }
+        if (!"GRANTED".equals(entitlement.getStatus())) {
+            throw new IllegalStateException(
+                    "Entitlement status is outside the supported state machine");
+        }
+        return null;
     }
 
     private void grantEpisodes(SkitAdSessionDO session, List<Integer> episodes,
@@ -727,11 +756,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     }
 
     private void validateEntitlement(SkitContentEntitlementDO row, SkitAdSessionDO session,
-                                     List<Integer> episodes) {
+                                     int targetEpisode) {
         if (row == null || !Objects.equals(row.getTenantId(), session.getTenantId())
                 || !Objects.equals(row.getMemberId(), session.getMemberId())
                 || !Objects.equals(row.getDramaId(), session.getDramaId())
-                || row.getEpisodeNo() == null || !episodes.contains(row.getEpisodeNo())
+                || row.getEpisodeNo() == null || row.getEpisodeNo() <= 0
+                || row.getEpisodeNo() > targetEpisode
                 || row.getId() == null || row.getId() <= 0) {
             throw new IllegalStateException("Entitlement escaped the session content envelope");
         }
@@ -883,6 +913,25 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             throw new IllegalStateException("Reward session must target exactly one episode");
         }
         return Collections.singletonList(session.getEpisodeFrom());
+    }
+
+    private static final class LockedEntitlementPrefix {
+
+        private final SkitContentEntitlementDO target;
+        private final String errorCode;
+
+        private LockedEntitlementPrefix(SkitContentEntitlementDO target, String errorCode) {
+            this.target = target;
+            this.errorCode = errorCode;
+        }
+
+        private static LockedEntitlementPrefix accepted(SkitContentEntitlementDO target) {
+            return new LockedEntitlementPrefix(target, null);
+        }
+
+        private static LockedEntitlementPrefix rejected(String errorCode) {
+            return new LockedEntitlementPrefix(null, errorCode);
+        }
     }
 
     private static String rewardQualification(SkitAdSessionDO session) {

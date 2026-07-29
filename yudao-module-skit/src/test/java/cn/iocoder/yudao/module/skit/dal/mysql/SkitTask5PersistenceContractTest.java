@@ -498,6 +498,44 @@ class SkitTask5PersistenceContractTest {
     }
 
     @Test
+    void entitlementMapperReadsAndLocksOnlyTheTenantBoundHistoricalPrefix() throws Exception {
+        Method historyRead = Arrays.stream(SkitContentEntitlementMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("selectEntitlementHistory"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String historyReadSql = selectSql(historyRead);
+        assertContainsAll(historyReadSql, "tenant_id=#{tenantid}", "member_id=#{memberid}",
+                "drama_id=#{dramaid}", "order by episode_no asc");
+        assertFalse(historyReadSql.contains("deleted=b'0'"),
+                "history reads must expose tombstones instead of turning them into gaps");
+        assertFalse(historyReadSql.contains("status='granted'"),
+                "the read must observe SECURITY_REVOKED rows so they stop the prefix");
+        assertFalse(historyReadSql.contains("for update"),
+                "the native GET must remain read-only");
+
+        Method prefixRead = Arrays.stream(SkitContentEntitlementMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("selectEpisodeHistory"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String prefixReadSql = selectSql(prefixRead);
+        assertContainsAll(prefixReadSql, "tenant_id=#{tenantid}", "member_id=#{memberid}",
+                "drama_id=#{dramaid}", "episode_no between 1 and #{episodeto}",
+                "order by episode_no asc");
+        assertFalse(prefixReadSql.contains("deleted=b'0'"));
+        assertFalse(prefixReadSql.contains("for update"));
+
+        Method historyLock = Arrays.stream(SkitContentEntitlementMapper.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("selectEpisodeHistoryForUpdate"))
+                .findFirst().orElseThrow(AssertionError::new);
+        String historyLockSql = selectSql(historyLock);
+        assertContainsAll(historyLockSql, "tenant_id=#{tenantid}", "member_id=#{memberid}",
+                "drama_id=#{dramaid}", "episode_no between 1 and #{episodeto}",
+                "order by episode_no asc", "for update");
+        assertFalse(historyLockSql.contains("deleted=b'0'"),
+                "preflight locks must expose tombstones so insert-on-duplicate cannot fail silently");
+        assertFalse(historyLockSql.contains("status='granted'"),
+                "the ad-session lock must observe SECURITY_REVOKED rows");
+    }
+
+    @Test
     void rewardProvenanceReadUsesOnlyOneExactSignedGrantChain() throws Exception {
         Method evidence = SkitEntitlementGrantMapper.class.getMethod(
                 "selectVerifiedRewardProvenance",

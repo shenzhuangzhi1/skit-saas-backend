@@ -1384,13 +1384,22 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
                 tenantId, memberId, memberId);
     }
 
-    private void insertCatalog(long tenantId, long dramaId, int totalEpisodes, int freeEpisodes) {
+    private void insertCatalog(long tenantId, long dramaId, int totalEpisodes,
+                               int grantedHistoryEpisodes) {
         jdbc().update("INSERT INTO skit_admin_record "
                         + "(tenant_id,page_key,row_key,record_data,status,sort) "
                         + "VALUES (?,'drama',?,?,0,0)", tenantId, "drama-" + dramaId,
                 "{\"id\":" + dramaId + ",\"episodes\":" + totalEpisodes
-                        + ",\"freeEpisodes\":" + freeEpisodes
+                        + ",\"freeEpisodes\":0"
                         + ",\"unlockSize\":1,\"status\":\"上架\"}");
+        for (int episodeNo = 1; episodeNo <= grantedHistoryEpisodes; episodeNo++) {
+            jdbc().update("INSERT INTO skit_content_entitlement "
+                            + "(tenant_id,member_id,drama_id,episode_no,status,granted_at,"
+                            + "lease_activated_at,version) "
+                            + "SELECT tenant_id,id,?,?,'GRANTED',NOW(),NOW(),0 "
+                            + "FROM skit_member WHERE tenant_id=? AND deleted=b'0'",
+                    dramaId, episodeNo, tenantId);
+        }
     }
 
     private void insertSignedRewardCapability(SessionFixture fixture) {

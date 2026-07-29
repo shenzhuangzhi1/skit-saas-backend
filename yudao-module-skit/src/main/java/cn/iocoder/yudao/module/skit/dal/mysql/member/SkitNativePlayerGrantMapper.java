@@ -26,6 +26,14 @@ public interface SkitNativePlayerGrantMapper {
 
     @Select("SELECT * FROM `skit_native_player_grant` WHERE `tenant_id`=#{tenantId} "
             + "AND `id`=#{id} AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
+            + "AND `deleted`=b'0'")
+    SkitNativePlayerGrantDO selectExact(@Param("tenantId") Long tenantId,
+                                        @Param("id") Long id,
+                                        @Param("memberId") Long memberId,
+                                        @Param("dramaId") Long dramaId);
+
+    @Select("SELECT * FROM `skit_native_player_grant` WHERE `tenant_id`=#{tenantId} "
+            + "AND `id`=#{id} AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
             + "AND `deleted`=b'0' FOR UPDATE")
     SkitNativePlayerGrantDO selectExactForUpdate(@Param("tenantId") Long tenantId,
                                                  @Param("id") Long id,

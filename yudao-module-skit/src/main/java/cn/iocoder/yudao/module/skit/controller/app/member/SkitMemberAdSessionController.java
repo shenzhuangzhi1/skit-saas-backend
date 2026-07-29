@@ -34,7 +34,6 @@ import javax.annotation.Resource;
 import javax.validation.Valid;
 import javax.validation.constraints.Pattern;
 import javax.validation.constraints.Positive;
-import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils.getLoginUserId;
@@ -118,9 +117,11 @@ public class SkitMemberAdSessionController {
     @Operation(summary = "按短剧查询当前会员的服务端逐集权益")
     public CommonResult<SkitEntitlementRespVO> getEntitlements(
             @RequestParam("dramaId") @Positive(message = "短剧编号必须大于 0") Long dramaId) {
-        List<Integer> episodes = entitlementService.listGrantedEpisodes(
+        SkitContentEntitlementService.EntitlementSnapshot snapshot =
+                entitlementService.getEntitlementSnapshot(
                 getLoginUserId(), dramaId, clientRuntimeResolver.resolve());
-        return success(SkitEntitlementRespVO.of(dramaId, episodes));
+        return success(SkitEntitlementRespVO.of(
+                dramaId, snapshot.getGrantedEpisodeNos(), snapshot.getEarnedPrefixEnd()));
     }
 
 }

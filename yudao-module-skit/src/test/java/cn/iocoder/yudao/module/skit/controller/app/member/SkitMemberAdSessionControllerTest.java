@@ -255,7 +255,8 @@ class SkitMemberAdSessionControllerTest {
         authenticate(84L);
         when(adSessionService.getForMember(84L, "abcdefghijklmnopqrstuv", runtime))
                 .thenReturn(sessionView("abcdefghijklmnopqrstuv", "SHOWN"));
-        when(entitlementService.listGrantedEpisodes(84L, 903L, runtime)).thenReturn(Arrays.asList(1, 2, 5));
+        when(entitlementService.getEntitlementSnapshot(84L, 903L, runtime)).thenReturn(
+                new SkitContentEntitlementService.EntitlementSnapshot(Arrays.asList(1, 2, 5), 7));
 
         CommonResult<SkitAdSessionStatusRespVO> status =
                 controller.getAdSession("abcdefghijklmnopqrstuv");
@@ -264,8 +265,9 @@ class SkitMemberAdSessionControllerTest {
         assertEquals("SHOWN", status.getData().getClientLifecycleStatus());
         assertEquals(903L, entitlements.getData().getDramaId());
         assertEquals(Arrays.asList(1, 2, 5), entitlements.getData().getGrantedEpisodeNos());
+        assertEquals(7, entitlements.getData().getEarnedPrefixEnd());
         verify(adSessionService).getForMember(84L, "abcdefghijklmnopqrstuv", runtime);
-        verify(entitlementService).listGrantedEpisodes(84L, 903L, runtime);
+        verify(entitlementService).getEntitlementSnapshot(84L, 903L, runtime);
     }
 
     @Test

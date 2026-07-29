@@ -7,6 +7,8 @@ public interface SkitContentScopeService {
 
     AccessibleDrama requireAccessibleDrama(Long dramaId);
 
+    UnlockScope resolveUnlockScope(Long memberId, Long dramaId, Integer requestedEpisodeNo);
+
     UnlockScope resolveUnlockScopeForUpdate(Long memberId, Long dramaId, Integer requestedEpisodeNo);
 
     final class AccessibleDrama {

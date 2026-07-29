@@ -85,7 +85,10 @@ class SkitNativeAdSessionControllerTest {
         assertPostRoute("recordClientEvents", "/ad-sessions/{sessionId}/client-events",
                 String.class, String.class, SkitAdClientEventBatchReqVO.class);
         assertGetRoute("getAdSession", "/ad-sessions/{sessionId}", String.class, String.class);
-        assertGetRoute("getEntitlements", "/entitlements", String.class);
+        assertGetRoute("getLegacyEntitlements", "/entitlements",
+                String.class, HttpServletResponse.class);
+        assertGetRoute("getEntitlements", "/entitlements/{episodeNo}",
+                String.class, Integer.class, HttpServletResponse.class);
         assertGetRoute("getRewardProvenance", "/entitlements/{episodeNo}/reward-provenance",
                 String.class, Integer.class, HttpServletResponse.class);
     }
@@ -156,23 +159,33 @@ class SkitNativeAdSessionControllerTest {
         when(adSessionService.recordClientEventsForNativeGrant(
                 eq(grant), eq(sessionId), anyList(), eq(runtime)))
                 .thenReturn(view);
-        when(entitlementService.listGrantedEpisodesForPlayerGrant(grant, runtime))
-                .thenReturn(Arrays.asList(1, 3, 7));
+        when(entitlementService.listGrantedEpisodesForPlayerGrant(grant, 3, runtime))
+                .thenReturn(Arrays.asList(1, 2, 3));
+        when(entitlementService.listGrantedEpisodesForLegacyPlayerGrant(grant, runtime))
+                .thenReturn(Arrays.asList(1, 2));
 
         SkitAdClientEventBatchReqVO batch = new SkitAdClientEventBatchReqVO();
         batch.setEvents(Collections.singletonList(validEvent(sessionId)));
         CommonResult<SkitAdSessionStatusRespVO> status = controller.getAdSession(grant, sessionId);
         CommonResult<SkitAdSessionStatusRespVO> afterEvents =
                 controller.recordClientEvents(grant, sessionId, batch);
-        CommonResult<SkitGrantedEpisodesRespVO> entitlements = controller.getEntitlements(grant);
+        CommonResult<SkitGrantedEpisodesRespVO> legacyEntitlements =
+                controller.getLegacyEntitlements(grant, response);
+        CommonResult<SkitGrantedEpisodesRespVO> entitlements =
+                controller.getEntitlements(grant, 3, response);
 
         assertEquals("SHOWN", status.getData().getClientLifecycleStatus());
         assertEquals("SHOWN", afterEvents.getData().getClientLifecycleStatus());
-        assertEquals(Arrays.asList(1, 3, 7), entitlements.getData().getGrantedEpisodeNos());
+        assertEquals(Arrays.asList(1, 2),
+                legacyEntitlements.getData().getGrantedEpisodeNos());
+        assertEquals(Arrays.asList(1, 2, 3), entitlements.getData().getGrantedEpisodeNos());
         verify(adSessionService).getForNativeGrant(grant, sessionId, runtime);
         verify(adSessionService).recordClientEventsForNativeGrant(
                 eq(grant), eq(sessionId), anyList(), eq(runtime));
-        verify(entitlementService).listGrantedEpisodesForPlayerGrant(grant, runtime);
+        verify(entitlementService).listGrantedEpisodesForPlayerGrant(grant, 3, runtime);
+        verify(entitlementService).listGrantedEpisodesForLegacyPlayerGrant(grant, runtime);
+        verify(response, org.mockito.Mockito.times(2)).setHeader("Cache-Control", "no-store");
+        verify(response, org.mockito.Mockito.times(2)).setHeader("Pragma", "no-cache");
     }
 
     @Test

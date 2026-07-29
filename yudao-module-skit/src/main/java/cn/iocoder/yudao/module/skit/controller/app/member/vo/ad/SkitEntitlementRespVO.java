@@ -11,14 +11,18 @@ public final class SkitEntitlementRespVO {
 
     private final Long dramaId;
     private final List<Integer> grantedEpisodeNos;
+    private final Integer earnedPrefixEnd;
 
-    private SkitEntitlementRespVO(Long dramaId, List<Integer> grantedEpisodeNos) {
+    private SkitEntitlementRespVO(Long dramaId, List<Integer> grantedEpisodeNos,
+                                  Integer earnedPrefixEnd) {
         this.dramaId = dramaId;
         this.grantedEpisodeNos = immutableCopy(grantedEpisodeNos);
+        this.earnedPrefixEnd = earnedPrefixEnd;
     }
 
-    public static SkitEntitlementRespVO of(Long dramaId, List<Integer> grantedEpisodeNos) {
-        return new SkitEntitlementRespVO(dramaId, grantedEpisodeNos);
+    public static SkitEntitlementRespVO of(Long dramaId, List<Integer> grantedEpisodeNos,
+                                           Integer earnedPrefixEnd) {
+        return new SkitEntitlementRespVO(dramaId, grantedEpisodeNos, earnedPrefixEnd);
     }
 
     public Long getDramaId() {
@@ -27,6 +31,10 @@ public final class SkitEntitlementRespVO {
 
     public List<Integer> getGrantedEpisodeNos() {
         return grantedEpisodeNos;
+    }
+
+    public Integer getEarnedPrefixEnd() {
+        return earnedPrefixEnd;
     }
 
     private static List<Integer> immutableCopy(List<Integer> source) {

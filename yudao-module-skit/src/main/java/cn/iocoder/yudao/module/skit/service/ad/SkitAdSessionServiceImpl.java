@@ -267,7 +267,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         }
 
         SkitContentScopeService.UnlockScope contentScope =
-                contentScopeService.resolveUnlockScopeForUpdate(
+                contentScopeService.resolveUnlockScope(
                         memberId, command.getDramaId(), command.getEpisodeNo());
         validateContentScope(contentScope, tenantId, command);
         if (contentScope.isAlreadyEntitled()) {
@@ -278,23 +278,16 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                         tenantId, memberId, contentScope.getDramaId(),
                         contentScope.getEpisodeFrom(), contentScope.getEpisodeTo()),
                 tenantId, memberId, account, contentScope, nativeGrantId, recoveryReferenceTime);
-        if (overlappingResult != null) {
-            return overlappingResult;
-        }
         contentScope = revalidateContentScopeAfterSessionLock(
                 memberId, command, tenantId, contentScope);
         if (contentScope.isAlreadyEntitled()) {
             return alreadyEntitled();
         }
+        if (overlappingResult != null) {
+            return overlappingResult;
+        }
         String unlockScope = contentScope.getCanonicalScope();
         byte[] activeScopeHash = activeScopeHash(tenantId, memberId, unlockScope);
-        SkitAdSessionDO existing = sessionMapper.selectActiveScopeForUpdate(
-                tenantId, memberId, activeScopeHash);
-        CreateResult existingResult = resolveExisting(existing, tenantId, memberId, account,
-                contentScope, nativeGrantId, recoveryReferenceTime);
-        if (existingResult != null) {
-            return existingResult;
-        }
         SkitAdCredentialVersionService.CredentialMetadata callbackKey =
                 credentialService.getActiveCallbackKeyVersion(tenantId, account.getId());
         SkitAdCredentialVersionService.CredentialMetadata rewardSecret =
@@ -332,19 +325,6 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         return new CreateResult("CREATED", PROTOCOL_VERSION, sessionId, PROVIDER, placementId,
                 row.getPseudonymousUserId(), issuedToken.consumeCustomData(), SCENE,
                 row.getLoadExpiresAt(), row.getRewardAcceptUntil());
-    }
-
-    private CreateResult resolveExisting(SkitAdSessionDO row, Long tenantId, Long memberId,
-                                         SkitAdAccountDO account,
-                                         SkitContentScopeService.UnlockScope contentScope,
-                                         Long currentNativePlayerGrantId,
-                                         LocalDateTime requestStartedAt) {
-        if (row == null) {
-            return null;
-        }
-        validateExistingEnvelope(row, tenantId, memberId, account, contentScope);
-        return resolveExistingLifecycle(
-                row, tenantId, memberId, currentNativePlayerGrantId, requestStartedAt);
     }
 
     private CreateResult resolveOverlappingActiveScope(

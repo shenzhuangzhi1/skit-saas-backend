@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.member;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -13,6 +14,34 @@ import java.util.List;
 
 @Mapper
 public interface SkitContentEntitlementMapper {
+
+    @Select("SELECT * FROM `skit_content_entitlement` WHERE `tenant_id`=#{tenantId} "
+            + "AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
+            + "ORDER BY `episode_no` ASC")
+    List<SkitContentEntitlementDO> selectEntitlementHistory(@Param("tenantId") Long tenantId,
+                                                            @Param("memberId") Long memberId,
+                                                            @Param("dramaId") Long dramaId);
+
+    @Select("SELECT * FROM `skit_content_entitlement` WHERE `tenant_id`=#{tenantId} "
+            + "AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
+            + "AND `episode_no` BETWEEN 1 AND #{episodeTo} "
+            + "ORDER BY `episode_no` ASC")
+    List<SkitContentEntitlementDO> selectEpisodeHistory(
+            @Param("tenantId") Long tenantId,
+            @Param("memberId") Long memberId,
+            @Param("dramaId") Long dramaId,
+            @Param("episodeTo") Integer episodeTo);
+
+    @Select("SELECT * FROM `skit_content_entitlement` WHERE `tenant_id`=#{tenantId} "
+            + "AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "
+            + "AND `episode_no` BETWEEN 1 AND #{episodeTo} "
+            + "ORDER BY `episode_no` ASC FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve ORDER BY ... FOR UPDATE
+    List<SkitContentEntitlementDO> selectEpisodeHistoryForUpdate(
+            @Param("tenantId") Long tenantId,
+            @Param("memberId") Long memberId,
+            @Param("dramaId") Long dramaId,
+            @Param("episodeTo") Integer episodeTo);
 
     @Select("SELECT * FROM `skit_content_entitlement` WHERE `tenant_id`=#{tenantId} "
             + "AND `member_id`=#{memberId} AND `drama_id`=#{dramaId} "

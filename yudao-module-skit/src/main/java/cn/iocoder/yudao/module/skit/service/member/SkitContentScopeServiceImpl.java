@@ -12,7 +12,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -83,19 +82,39 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
     }
 
     @Override
+    public UnlockScope resolveUnlockScope(Long memberId, Long dramaId,
+                                          Integer requestedEpisodeNo) {
+        return resolveUnlockScope(memberId, dramaId, requestedEpisodeNo, false);
+    }
+
+    @Override
     public UnlockScope resolveUnlockScopeForUpdate(Long memberId, Long dramaId,
                                                    Integer requestedEpisodeNo) {
+        return resolveUnlockScope(memberId, dramaId, requestedEpisodeNo, true);
+    }
+
+    private UnlockScope resolveUnlockScope(Long memberId, Long dramaId,
+                                           Integer requestedEpisodeNo, boolean forUpdate) {
         requirePositive(memberId);
         requirePositive(requestedEpisodeNo);
         AccessibleDrama drama = requireAccessibleDrama(dramaId);
         if (requestedEpisodeNo > drama.getTotalEpisodes()) {
             throw exception(AD_SESSION_INVALID);
         }
-        List<Integer> candidates = Collections.singletonList(requestedEpisodeNo);
-        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodesForUpdate(
-                drama.getTenantId(), memberId, dramaId, candidates);
+        List<SkitContentEntitlementDO> rows = forUpdate
+                ? entitlementMapper.selectEpisodeHistoryForUpdate(
+                drama.getTenantId(), memberId, dramaId, requestedEpisodeNo)
+                : entitlementMapper.selectEpisodeHistory(
+                drama.getTenantId(), memberId, dramaId, requestedEpisodeNo);
         Map<Integer, SkitContentEntitlementDO> existing = validateEntitlements(
-                rows, drama.getTenantId(), memberId, dramaId, candidates);
+                rows, drama.getTenantId(), memberId, dramaId, requestedEpisodeNo);
+        for (int historicalEpisodeNo = 1;
+             historicalEpisodeNo < requestedEpisodeNo; historicalEpisodeNo++) {
+            SkitContentEntitlementDO historical = existing.get(historicalEpisodeNo);
+            if (historical == null || !"GRANTED".equals(historical.getStatus())) {
+                throw exception(AD_SESSION_INVALID);
+            }
+        }
         SkitContentEntitlementDO requested = existing.get(requestedEpisodeNo);
         LocalDateTime currentTime = now();
         if (requested != null) {
@@ -132,7 +151,7 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
 
     private Map<Integer, SkitContentEntitlementDO> validateEntitlements(
             List<SkitContentEntitlementDO> rows, Long tenantId, Long memberId, Long dramaId,
-            List<Integer> candidates) {
+            Integer episodeTo) {
         Map<Integer, SkitContentEntitlementDO> result = new HashMap<>();
         if (rows == null) {
             return result;
@@ -141,7 +160,8 @@ public class SkitContentScopeServiceImpl implements SkitContentScopeService {
             if (row == null || row.getId() == null || row.getId() <= 0
                     || !tenantId.equals(row.getTenantId()) || !memberId.equals(row.getMemberId())
                     || !dramaId.equals(row.getDramaId()) || row.getEpisodeNo() == null
-                    || !candidates.contains(row.getEpisodeNo()) || Boolean.TRUE.equals(row.getDeleted())
+                    || row.getEpisodeNo() <= 0 || row.getEpisodeNo() > episodeTo
+                    || Boolean.TRUE.equals(row.getDeleted())
                     || !("GRANTED".equals(row.getStatus())
                     || "SECURITY_REVOKED".equals(row.getStatus()))
                     || row.getGrantedAt() == null || row.getLeaseActivatedAt() == null

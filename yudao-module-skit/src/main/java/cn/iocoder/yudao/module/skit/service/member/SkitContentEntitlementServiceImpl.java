@@ -197,46 +197,185 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         return new PlayerGrantScope(tenantId, row.getId(), row.getMemberId(), row.getDramaId());
     }
 
-    private List<Integer> listGrantedEpisodesInsideTenant(Long memberId, Long dramaId) {
-        requirePositive(memberId, "memberId");
-        requirePositive(dramaId, "dramaId");
+    private PlayerGrantScope readPlayerGrant(PlayerGrantReference reference, Long expectedDramaId) {
+        Objects.requireNonNull(reference, "reference");
+        requirePositive(expectedDramaId, "dramaId");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
-        List<SkitContentEntitlementDO> rows = entitlementMapper.selectGrantedEpisodes(
-                tenantId, memberId, dramaId,
-                now().minusMinutes(CONTENT_ENTITLEMENT_MINUTES));
-        if (rows == null || rows.isEmpty()) {
+        if (!tenantId.equals(reference.getTenantId())
+                || !expectedDramaId.equals(reference.getDramaId())) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        requireEnabledTenant(tenantId, tenantService.getTenantForShare(tenantId));
+        tenantService.validTenant(tenantId);
+        requireEnabledAgent(tenantId, agentMapper.selectByTenantId(tenantId));
+        requireEnabledMember(tenantId, reference.getMemberId(),
+                memberMapper.selectByTenantAndIdForShare(tenantId, reference.getMemberId()));
+        SkitNativePlayerGrantDO row = nativeGrantMapper.selectExact(
+                tenantId, reference.getGrantId(), reference.getMemberId(), reference.getDramaId());
+        LocalDateTime snapshotTime = now();
+        if (!sameGrant(reference, row) || !"ACTIVE".equals(row.getStatus())
+                || row.getRevokedAt() != null || row.getExpiresAt() == null
+                || !row.getExpiresAt().isAfter(snapshotTime)
+                || row.getVersion() == null || row.getVersion() < 0) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        return new PlayerGrantScope(tenantId, row.getId(), row.getMemberId(), row.getDramaId());
+    }
+
+    private List<SkitContentEntitlementDO> loadEntitlementHistory(
+            Long memberId, Long dramaId) {
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        List<SkitContentEntitlementDO> selected =
+                entitlementMapper.selectEntitlementHistory(tenantId, memberId, dramaId);
+        if (selected == null || selected.isEmpty()) {
             return Collections.emptyList();
         }
-        List<Integer> episodes = new ArrayList<>(rows.size());
+        List<SkitContentEntitlementDO> rows = new ArrayList<>(selected);
         for (SkitContentEntitlementDO row : rows) {
-            validateEntitlementScope(row, tenantId, memberId, dramaId);
-            if (isActiveGrantedEntitlement(row, now())) {
-                episodes.add(row.getEpisodeNo());
+            validateEntitlementHistoryRow(row, tenantId, memberId, dramaId);
+        }
+        rows.sort((left, right) -> Integer.compare(
+                left.getEpisodeNo(), right.getEpisodeNo()));
+        for (int index = 1; index < rows.size(); index++) {
+            if (rows.get(index - 1).getEpisodeNo().equals(rows.get(index).getEpisodeNo())) {
+                throw new IllegalStateException("Entitlement uniqueness was violated");
             }
         }
-        return episodes;
+        return rows;
+    }
+
+    private List<Integer> deriveTargetPlayerSnapshot(
+            List<SkitContentEntitlementDO> rows, int targetEpisodeNo,
+            LocalDateTime snapshotTime) {
+        int rowIndex = 0;
+        for (int episodeNo = 1; episodeNo <= targetEpisodeNo; episodeNo++) {
+            if (rowIndex >= rows.size()) {
+                return Collections.emptyList();
+            }
+            SkitContentEntitlementDO row = rows.get(rowIndex);
+            if (row.getEpisodeNo() != episodeNo || !"GRANTED".equals(row.getStatus())) {
+                return Collections.emptyList();
+            }
+            if (episodeNo == targetEpisodeNo
+                    && !isActiveGrantedEntitlement(row, snapshotTime)) {
+                return Collections.emptyList();
+            }
+            rowIndex++;
+        }
+        return strictEpisodePrefix(targetEpisodeNo);
+    }
+
+    private List<Integer> deriveLegacyPlayerSnapshot(
+            List<SkitContentEntitlementDO> rows, LocalDateTime snapshotTime) {
+        int expectedEpisode = 1;
+        int highestActiveEpisode = 0;
+        for (SkitContentEntitlementDO row : rows) {
+            if (row.getEpisodeNo() != expectedEpisode
+                    || !"GRANTED".equals(row.getStatus())) {
+                break;
+            }
+            if (isActiveGrantedEntitlement(row, snapshotTime)) {
+                highestActiveEpisode = expectedEpisode;
+            }
+            expectedEpisode++;
+        }
+        return strictEpisodePrefix(highestActiveEpisode);
+    }
+
+    private List<Integer> strictEpisodePrefix(int episodeTo) {
+        if (episodeTo <= 0) {
+            return Collections.emptyList();
+        }
+        List<Integer> snapshot = new ArrayList<>(episodeTo);
+        for (int episodeNo = 1; episodeNo <= episodeTo; episodeNo++) {
+            snapshot.add(episodeNo);
+        }
+        return Collections.unmodifiableList(snapshot);
+    }
+
+    private EntitlementSnapshot getEntitlementSnapshotInsideTenant(Long memberId, Long dramaId) {
+        requirePositive(memberId, "memberId");
+        requirePositive(dramaId, "dramaId");
+        LocalDateTime snapshotTime = now();
+        List<SkitContentEntitlementDO> rows = loadEntitlementHistory(memberId, dramaId);
+        List<Integer> episodes = new ArrayList<>(rows.size());
+        int earnedPrefixEnd = 0;
+        int nextPrefixEpisode = 1;
+        boolean prefixOpen = true;
+        for (SkitContentEntitlementDO row : rows) {
+            if (isActiveGrantedEntitlement(row, snapshotTime)) {
+                episodes.add(row.getEpisodeNo());
+            }
+            if (prefixOpen) {
+                if (row.getEpisodeNo() == nextPrefixEpisode
+                        && "GRANTED".equals(row.getStatus())) {
+                    earnedPrefixEnd = nextPrefixEpisode;
+                    nextPrefixEpisode++;
+                } else {
+                    prefixOpen = false;
+                }
+            }
+        }
+        return new EntitlementSnapshot(episodes, earnedPrefixEnd);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public List<Integer> listGrantedEpisodes(
+    public EntitlementSnapshot getEntitlementSnapshot(
             Long memberId, Long dramaId, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         requireClientAccess(memberId, runtime,
                 SkitTenantAdCapabilityService.AccessOperation.PROTECTED_CONTENT);
-        return listGrantedEpisodesInsideTenant(memberId, dramaId);
+        return getEntitlementSnapshotInsideTenant(memberId, dramaId);
     }
 
     @Override
-    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(readOnly = true)
     public List<Integer> listGrantedEpisodesForPlayerGrant(
+            String grantToken, Integer targetEpisodeNo,
+            SkitTenantAdCapabilityService.ClientRuntime runtime) {
+        requirePositive(targetEpisodeNo, "episodeNo");
+        PlayerGrantReference reference = resolvePlayerGrant(grantToken);
+        AtomicReference<List<Integer>> result = new AtomicReference<>();
+        TenantUtils.execute(reference.getTenantId(), () -> {
+            requireClientAccess(reference.getMemberId(), runtime,
+                    SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
+            PlayerGrantScope scope = readPlayerGrant(reference, reference.getDramaId());
+            SkitContentScopeService.AccessibleDrama drama =
+                    contentScopeService.requireAccessibleDrama(scope.getDramaId());
+            if (drama == null || !scope.getTenantId().equals(drama.getTenantId())
+                    || !scope.getDramaId().equals(drama.getDramaId())
+                    || drama.getTotalEpisodes() == null
+                    || targetEpisodeNo > drama.getTotalEpisodes()) {
+                throw exception(AD_PLAYER_GRANT_INVALID);
+            }
+            List<SkitContentEntitlementDO> rows = loadEntitlementHistory(
+                    scope.getMemberId(), scope.getDramaId());
+            result.set(deriveTargetPlayerSnapshot(rows, targetEpisodeNo, now()));
+        });
+        return result.get();
+    }
+
+    @Override
+    @Deprecated
+    @Transactional(readOnly = true)
+    public List<Integer> listGrantedEpisodesForLegacyPlayerGrant(
             String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime) {
         PlayerGrantReference reference = resolvePlayerGrant(grantToken);
         AtomicReference<List<Integer>> result = new AtomicReference<>();
         TenantUtils.execute(reference.getTenantId(), () -> {
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
-            PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
-            result.set(listGrantedEpisodesInsideTenant(scope.getMemberId(), scope.getDramaId()));
+            PlayerGrantScope scope = readPlayerGrant(reference, reference.getDramaId());
+            SkitContentScopeService.AccessibleDrama drama =
+                    contentScopeService.requireAccessibleDrama(scope.getDramaId());
+            if (drama == null || !scope.getTenantId().equals(drama.getTenantId())
+                    || !scope.getDramaId().equals(drama.getDramaId())
+                    || drama.getTotalEpisodes() == null || drama.getTotalEpisodes() <= 0) {
+                throw exception(AD_PLAYER_GRANT_INVALID);
+            }
+            List<SkitContentEntitlementDO> rows = loadEntitlementHistory(
+                    scope.getMemberId(), scope.getDramaId());
+            result.set(deriveLegacyPlayerSnapshot(rows, now()));
         });
         return result.get();
     }
@@ -295,13 +434,15 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         requirePositive(episodeNo, "episodeNo");
         Objects.requireNonNull(closedAt, "closedAt");
         Long tenantId = TenantContextHolder.getRequiredTenantId();
-        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodesForUpdate(
-                tenantId, memberId, dramaId, Collections.singletonList(episodeNo));
-        if (rows == null || rows.size() != 1) {
-            throw new IllegalStateException("Verified reward has no exact entitlement projection");
+        List<SkitContentEntitlementDO> rows = entitlementMapper.selectEpisodeHistoryForUpdate(
+                tenantId, memberId, dramaId, episodeNo);
+        SkitContentEntitlementDO entitlement = lockedContinuousGrantedTarget(
+                rows, tenantId, memberId, dramaId, episodeNo);
+        if (entitlement == null) {
+            // CLOSED telemetry remains canonical even when the entitlement was independently
+            // revoked, tombstoned, or its historical prefix is no longer complete.
+            return;
         }
-        SkitContentEntitlementDO entitlement = rows.get(0);
-        validateEntitlementEnvelope(entitlement, tenantId, memberId, dramaId, episodeNo);
         SkitEntitlementGrantDO grant = entitlementGrantMapper
                 .selectBySessionAndEpisodeForUpdate(tenantId, adSessionId, episodeNo);
         if (grant == null || !tenantId.equals(grant.getTenantId())
@@ -334,6 +475,41 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
             throw new IllegalStateException("Verified reward lease changed before close settlement");
         }
         entitlement.setLeaseActivatedAt(closedAt).setVersion(expectedVersion + 1);
+    }
+
+    private SkitContentEntitlementDO lockedContinuousGrantedTarget(
+            List<SkitContentEntitlementDO> rows, Long tenantId, Long memberId, Long dramaId,
+            int targetEpisode) {
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        java.util.Map<Integer, SkitContentEntitlementDO> byEpisode = new java.util.HashMap<>();
+        for (SkitContentEntitlementDO row : rows) {
+            if (row == null || row.getId() == null || row.getId() <= 0
+                    || row.getEpisodeNo() == null || row.getEpisodeNo() <= 0
+                    || row.getEpisodeNo() > targetEpisode) {
+                throw new IllegalStateException("Entitlement history row is malformed");
+            }
+            validateEntitlementEnvelope(
+                    row, tenantId, memberId, dramaId, row.getEpisodeNo());
+            if (byEpisode.put(row.getEpisodeNo(), row) != null) {
+                throw new IllegalStateException("Entitlement uniqueness was violated");
+            }
+        }
+        for (int episode = 1; episode <= targetEpisode; episode++) {
+            SkitContentEntitlementDO row = byEpisode.get(episode);
+            if (row == null || Boolean.TRUE.equals(row.getDeleted())
+                    || "SECURITY_REVOKED".equals(row.getStatus())) {
+                return null;
+            }
+            if (!"GRANTED".equals(row.getStatus()) || row.getGrantedAt() == null
+                    || row.getLeaseActivatedAt() == null || row.getVersion() == null
+                    || row.getVersion() < 0) {
+                throw new IllegalStateException(
+                        "Entitlement status is outside the supported state machine");
+            }
+        }
+        return byEpisode.get(targetEpisode);
     }
 
     private boolean sameGrant(PlayerGrantReference reference, SkitNativePlayerGrantDO row) {
@@ -386,11 +562,15 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         }
     }
 
-    private void validateEntitlementScope(SkitContentEntitlementDO row, Long tenantId,
-                                          Long memberId, Long dramaId) {
-        if (row == null || row.getEpisodeNo() == null || row.getEpisodeNo() <= 0
-                || !"GRANTED".equals(row.getStatus())) {
-            throw new IllegalStateException("Granted entitlement row is malformed");
+    private void validateEntitlementHistoryRow(SkitContentEntitlementDO row, Long tenantId,
+                                               Long memberId, Long dramaId) {
+        if (row == null || row.getId() == null || row.getId() <= 0
+                || row.getEpisodeNo() == null || row.getEpisodeNo() <= 0
+                || !("GRANTED".equals(row.getStatus())
+                || "SECURITY_REVOKED".equals(row.getStatus()))
+                || row.getGrantedAt() == null || row.getLeaseActivatedAt() == null
+                || Boolean.TRUE.equals(row.getDeleted())) {
+            throw new IllegalStateException("Entitlement history row is malformed");
         }
         validateEntitlementEnvelope(row, tenantId, memberId, dramaId, row.getEpisodeNo());
     }

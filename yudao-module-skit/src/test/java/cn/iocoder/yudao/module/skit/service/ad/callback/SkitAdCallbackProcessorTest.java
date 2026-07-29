@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -173,8 +174,8 @@ class SkitAdCallbackProcessorTest {
         when(inboxMapper.selectByTenantAccountAndIdForUpdate(
                 TENANT_ID, ACCOUNT_ID, IMPRESSION_INBOX_ID))
                 .thenReturn(impressionAuthorityInbox(IMPRESSION_INBOX_ID, 66, ADSOURCE));
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Collections.singletonList(3))).thenReturn(Collections.emptyList());
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(null));
         AtomicLong entitlementId = new AtomicLong(500);
         doAnswer(invocation -> {
             SkitContentEntitlementDO row = invocation.getArgument(0);
@@ -262,12 +263,24 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void rewardCallbackLocksSessionBeforeItsOrderedEntitlementPrefix() {
+        processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        org.mockito.InOrder lockOrder = org.mockito.Mockito.inOrder(
+                sessionMapper, entitlementMapper);
+        lockOrder.verify(sessionMapper).selectByTenantAccountAndIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, SESSION_ID);
+        lockOrder.verify(entitlementMapper).selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3);
+    }
+
+    @Test
     void newSignedRewardCreatesANewLeaseForAnExpiredEpisodeInsteadOfReportingAlreadyOwned() {
         SkitContentEntitlementDO expired = entitlement(3, "GRANTED", 503L)
                 .setGrantedAt(PROCESSING_AT.minusMinutes(5))
                 .setLeaseActivatedAt(PROCESSING_AT.minusMinutes(5));
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Collections.singletonList(3))).thenReturn(Collections.singletonList(expired));
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(expired));
 
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
@@ -288,8 +301,8 @@ class SkitAdCallbackProcessorTest {
         LocalDateTime olderProof = PROCESSING_AT.minusMinutes(1);
         SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
                 .setGrantedAt(olderProof).setLeaseActivatedAt(olderProof).setVersion(7);
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(active));
 
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
@@ -311,8 +324,8 @@ class SkitAdCallbackProcessorTest {
         LocalDateTime serializedRewardAt = PROCESSING_AT.plusSeconds(1);
         SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
                 .setGrantedAt(priorProof).setLeaseActivatedAt(PROCESSING_AT).setVersion(7);
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(active));
         when(sessionMapper.markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
                 INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
                 serializedRewardAt)).thenReturn(1);
@@ -340,8 +353,8 @@ class SkitAdCallbackProcessorTest {
         LocalDateTime priorProof = PROCESSING_AT.minusMinutes(1);
         SkitContentEntitlementDO active = entitlement(3, "GRANTED", 503L)
                 .setGrantedAt(priorProof).setLeaseActivatedAt(priorProof).setVersion(7);
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Collections.singletonList(3))).thenReturn(Collections.singletonList(active));
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(active));
         when(entitlementMapper.advanceVerifiedRewardLeaseCas(TENANT_ID, active.getId(), MEMBER_ID,
                 DRAMA_ID, 3, 7, priorProof, PROCESSING_AT)).thenReturn(0);
 
@@ -600,8 +613,8 @@ class SkitAdCallbackProcessorTest {
     @Test
     void revokedExistingEntitlementFailsClosedAndCannotBeRegranted() {
         SkitContentEntitlementDO revoked = entitlement(3, "SECURITY_REVOKED", 301L);
-        when(entitlementMapper.selectEpisodesForUpdate(TENANT_ID, MEMBER_ID, DRAMA_ID,
-                Collections.singletonList(3))).thenReturn(Collections.singletonList(revoked));
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(revoked));
 
         SkitAdCallbackProcessor.ProcessResult result =
                 processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
@@ -610,6 +623,58 @@ class SkitAdCallbackProcessorTest {
         assertEquals("ENTITLEMENT_SECURITY_REVOKED", result.getErrorCode());
         verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
         verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void missingHistoricalPrefixIsABusinessRejectionAndNeverEntersRetry() {
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3))
+                .thenReturn(Collections.singletonList(entitlement(1, "GRANTED", 301L)));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("ENTITLEMENT_PREFIX_GAP", result.getErrorCode());
+        verify(inboxMapper).markRejectedCas(
+                TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER, "ENTITLEMENT_PREFIX_GAP");
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void revokedHistoricalPrefixIsABusinessRejectionAndCannotGrantTheTarget() {
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(Arrays.asList(
+                entitlement(1, "GRANTED", 301L),
+                entitlement(2, "SECURITY_REVOKED", 302L)));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("ENTITLEMENT_SECURITY_REVOKED", result.getErrorCode());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void softDeletedTargetIsObservedAndBusinessRejectedWithoutRetryOrRevival() {
+        SkitContentEntitlementDO tombstone = entitlement(3, "GRANTED", 303L);
+        tombstone.setDeleted(true);
+        when(entitlementMapper.selectEpisodeHistoryForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3)).thenReturn(rewardPrefix(tombstone));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("ENTITLEMENT_TOMBSTONE_REJECTED", result.getErrorCode());
+        verify(inboxMapper).markRejectedCas(
+                TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER, "ENTITLEMENT_TOMBSTONE_REJECTED");
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(entitlementMapper, never()).advanceVerifiedRewardLeaseCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), anyInt(), anyInt(), any(), any());
     }
 
     @Test
@@ -1032,6 +1097,13 @@ class SkitAdCallbackProcessorTest {
                 "selectByTenantAccountAndIdForUpdate");
         assertContainsAll(sessionLock, "tenant_id`=#{tenantid}", "ad_account_id`=#{adaccountid}",
                 "id`=#{id}", "for update");
+        String prefixLock = selectSql(SkitContentEntitlementMapper.class,
+                "selectEpisodeHistoryForUpdate");
+        assertContainsAll(prefixLock, "tenant_id`=#{tenantid}", "member_id`=#{memberid}",
+                "drama_id`=#{dramaid}", "episode_no` between 1 and #{episodeto}",
+                "order by `episode_no` asc", "for update");
+        assertFalse(prefixLock.contains("deleted`=b'0'"),
+                "callback prefix revalidation must observe entitlement tombstones");
         String reward = updateSql(SkitAdSessionMapper.class, "markSignedRewardAndGrantCas");
         assertContainsAll(reward, "reward_callback_inbox_id`=#{callbackinboxid}",
                 "reward_callback_received_at`=#{callbackreceivedat}",
@@ -1190,7 +1262,18 @@ class SkitAdCallbackProcessorTest {
                 .setDramaId(DRAMA_ID).setEpisodeNo(episode).setStatus(status)
                 .setGrantedAt(PROCESSING_AT).setLeaseActivatedAt(PROCESSING_AT).setVersion(0);
         row.setTenantId(TENANT_ID);
+        row.setDeleted(false);
         return row;
+    }
+
+    private List<SkitContentEntitlementDO> rewardPrefix(SkitContentEntitlementDO target) {
+        List<SkitContentEntitlementDO> rows = new ArrayList<>(Arrays.asList(
+                entitlement(1, "GRANTED", 301L),
+                entitlement(2, "GRANTED", 302L)));
+        if (target != null) {
+            rows.add(target);
+        }
+        return rows;
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId) {

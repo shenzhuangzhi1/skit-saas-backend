@@ -104,6 +104,10 @@ class SkitAdSessionServiceImplTest {
                         anyLong(), anyLong(), any()))
                 .thenAnswer(invocation -> contentScope(invocation.getArgument(1),
                         invocation.getArgument(2), false));
+        org.mockito.Mockito.lenient().when(contentScopeService.resolveUnlockScope(
+                        anyLong(), anyLong(), any()))
+                .thenAnswer(invocation -> contentScope(invocation.getArgument(1),
+                        invocation.getArgument(2), false));
         org.mockito.Mockito.lenient().when(sessionMapper.selectDatabaseNow()).thenReturn(now());
         tokenService = new SkitHmacAdSessionTokenService(1, Collections.singletonMap(1, TOKEN_KEY));
         service = new SkitAdSessionServiceImpl(sessionMapper, clientEventMapper, revenueEventMapper, accountMapper,
@@ -158,6 +162,28 @@ class SkitAdSessionServiceImplTest {
     }
 
     @Test
+    void createLocksAllOverlappingSessionsBeforeTheEntitlementPrefixAndNeverRelocksExactScope() {
+        stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
+        when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitAdSessionDO>getArgument(0).setId(91L);
+            return 1;
+        });
+
+        service.createForMember(MEMBER_ID, command(DRAMA_ID, 3));
+
+        org.mockito.InOrder lockOrder = org.mockito.Mockito.inOrder(
+                contentScopeService, sessionMapper);
+        lockOrder.verify(contentScopeService)
+                .resolveUnlockScope(MEMBER_ID, DRAMA_ID, 3);
+        lockOrder.verify(sessionMapper).selectActiveScopesOverlappingRangeForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 3);
+        lockOrder.verify(contentScopeService)
+                .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
+        verify(sessionMapper, never()).selectActiveScopeForUpdate(
+                anyLong(), anyLong(), any(byte[].class));
+    }
+
+    @Test
     void arbitraryClientDramaCannotCreateARevenueBearingSession() {
         long forgedDramaId = DRAMA_ID + 999;
         when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent(TENANT_ID));
@@ -184,7 +210,7 @@ class SkitAdSessionServiceImplTest {
     @Test
     void missingTenantCatalogSynchronizesThenRetriesTheWholeSessionTransaction() {
         stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
-        when(contentScopeService.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3))
+        when(contentScopeService.resolveUnlockScope(MEMBER_ID, DRAMA_ID, 3))
                 .thenThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
                         AD_CONTENT_CATALOG_MISSING))
                 .thenReturn(contentScope(DRAMA_ID, 3, false));
@@ -198,7 +224,9 @@ class SkitAdSessionServiceImplTest {
 
         assertEquals("CREATED", result.getOutcome());
         verify(catalogSyncService).syncDrama(TENANT_ID, DRAMA_ID);
-        verify(contentScopeService, org.mockito.Mockito.times(3))
+        verify(contentScopeService, org.mockito.Mockito.times(2))
+                .resolveUnlockScope(MEMBER_ID, DRAMA_ID, 3);
+        verify(contentScopeService)
                 .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
         verify(sessionMapper).insert(any(SkitAdSessionDO.class));
     }
@@ -206,7 +234,7 @@ class SkitAdSessionServiceImplTest {
     @Test
     void staleTenantCatalogSynchronizesThenRetriesTheWholeSessionTransaction() {
         stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
-        when(contentScopeService.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3))
+        when(contentScopeService.resolveUnlockScope(MEMBER_ID, DRAMA_ID, 3))
                 .thenThrow(cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
                         cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_CONTENT_CATALOG_STALE))
                 .thenReturn(contentScope(DRAMA_ID, 3, false));
@@ -220,7 +248,9 @@ class SkitAdSessionServiceImplTest {
 
         assertEquals("CREATED", result.getOutcome());
         verify(catalogSyncService).syncDrama(TENANT_ID, DRAMA_ID);
-        verify(contentScopeService, org.mockito.Mockito.times(3))
+        verify(contentScopeService, org.mockito.Mockito.times(2))
+                .resolveUnlockScope(MEMBER_ID, DRAMA_ID, 3);
+        verify(contentScopeService)
                 .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
         verify(sessionMapper).insert(any(SkitAdSessionDO.class));
     }
@@ -338,8 +368,7 @@ class SkitAdSessionServiceImplTest {
                 .setSessionTokenHash(tokenService.restore(SESSION_ID, 1).getTokenHash())
                 .setClientLifecycleStatus("LOADING").setLastCallbackSequence(0)
                 .setLastClientEvent("LOAD_STARTED").setSdkRequestId("request-1");
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -382,8 +411,7 @@ class SkitAdSessionServiceImplTest {
         stubCreateNativeGrant("grant-a", TENANT_ID, MEMBER_ID, DRAMA_ID, 101L);
         stubSessionEnvelopeDependencies();
         SkitAdSessionDO grantASession = nativeLoadStartedSession(101L);
-        when(sessionMapper.selectActiveScopeForUpdate(
-                eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class))).thenReturn(grantASession);
+        stubOverlappingSession(grantASession);
 
         SkitAdSessionService.CreateResult result = service.createForNativeGrant(
                 "grant-a", command(DRAMA_ID, 3));
@@ -444,8 +472,7 @@ class SkitAdSessionServiceImplTest {
                 .setLastClientEvent("CLOSED").setProtocolVersion(7).setVersion(4);
         byte[] activeScopeHash = existing.getActiveScopeHash();
         SkitAdClientEventDO closeEvidence = closedEvidence(existing, false);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 2)).thenReturn(closeEvidence);
         when(sessionMapper.rejectLegacyUnrewardedClosedAndReleaseScopeCas(
                 TENANT_ID, 92L, MEMBER_ID, 4, 2, DRAMA_ID, 3, 3,
@@ -474,8 +501,7 @@ class SkitAdSessionServiceImplTest {
                 .setClientLifecycleStatus("CLOSED").setProviderShowId("show-1")
                 .setSdkRequestId("request-1").setLastCallbackSequence(2)
                 .setLastClientEvent("CLOSED").setProtocolVersion(7).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         when(clientEventMapper.selectBySequence(TENANT_ID, 92L, 2))
                 .thenReturn(closedEvidence(existing, true));
 
@@ -501,8 +527,7 @@ class SkitAdSessionServiceImplTest {
                 .setSdkRequestId("request-1").setLastCallbackSequence(2)
                 .setLastClientEvent("CLOSED").setVersion(4)
                 .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusSeconds(1));
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -521,8 +546,7 @@ class SkitAdSessionServiceImplTest {
         stubSessionEnvelopeDependencies();
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
                 .setClientLifecycleStatus("FAILED").setProviderShowId("show-1").setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -540,8 +564,7 @@ class SkitAdSessionServiceImplTest {
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
                 .setClientLifecycleStatus("FAILED").setLastCallbackSequence(1)
                 .setLastClientEvent("FAILED").setSdkRequestId("request-1").setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         when(sessionMapper.rejectPreShowFailedAndReleaseScopeCas(
                 TENANT_ID, 92L, MEMBER_ID, 4, now())).thenReturn(1);
         when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
@@ -560,8 +583,7 @@ class SkitAdSessionServiceImplTest {
     void freshPureCreatedSessionIsReusedWithoutCreatingAnotherSnapshot() {
         stubSessionEnvelopeDependencies();
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -578,8 +600,7 @@ class SkitAdSessionServiceImplTest {
         stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID).setVersion(4);
         existing.setCreateTime(now().minusSeconds(6));
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         when(sessionMapper.rejectPureCreatedAndReleaseScopeCas(
                 TENANT_ID, 92L, MEMBER_ID, 4, now(), now().minusSeconds(5))).thenReturn(1);
         when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
@@ -601,8 +622,7 @@ class SkitAdSessionServiceImplTest {
         SkitAdSessionDO leaderSession = activeSession(TENANT_ID, MEMBER_ID).setVersion(4);
         leaderSession.setCreateTime(now().minusSeconds(10));
         when(sessionMapper.selectDatabaseNow()).thenReturn(requestStartedAt);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(leaderSession);
+        stubOverlappingSession(leaderSession);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -619,8 +639,7 @@ class SkitAdSessionServiceImplTest {
         stubSessionEnvelopeDependencies();
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID).setVersion(4);
         existing.setCreateTime(now().minusSeconds(6));
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         ServiceException conflict = assertThrows(ServiceException.class,
                 () -> service.createForMember(MEMBER_ID, command(DRAMA_ID, 3)));
@@ -708,8 +727,7 @@ class SkitAdSessionServiceImplTest {
                 .setClientLifecycleStatus("LOADING").setLastCallbackSequence(0)
                 .setLastClientEvent("LOAD_STARTED").setSdkRequestId("request-1")
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         org.mockito.Mockito.lenient().when(sessionMapper.markLoadExpiredCas(
                 TENANT_ID, 92L, MEMBER_ID, 4, now())).thenReturn(1);
         org.mockito.Mockito.lenient().when(sessionMapper.rejectUnstartedLoadExpiredAndReleaseScopeCas(
@@ -735,8 +753,7 @@ class SkitAdSessionServiceImplTest {
                 .setSessionTokenHash(tokenService.restore(expiredSessionId, 1).getTokenHash())
                 .setClientLifecycleStatus("LOAD_EXPIRED")
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         when(sessionMapper.rejectUnstartedLoadExpiredAndReleaseScopeCas(
                 TENANT_ID, 92L, MEMBER_ID, 4, now())).thenReturn(1);
         when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
@@ -759,8 +776,7 @@ class SkitAdSessionServiceImplTest {
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
                 .setClientLifecycleStatus("LOAD_EXPIRED")
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
         when(sessionMapper.rejectUnstartedLoadExpiredAndReleaseScopeCas(
                 TENANT_ID, 92L, MEMBER_ID, 4, now())).thenReturn(0);
 
@@ -777,8 +793,7 @@ class SkitAdSessionServiceImplTest {
         SkitAdSessionDO existing = activeSession(TENANT_ID, MEMBER_ID)
                 .setClientLifecycleStatus("LOAD_EXPIRED").setProviderShowId("show-1")
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -796,8 +811,7 @@ class SkitAdSessionServiceImplTest {
                 .setClientLifecycleStatus("LOAD_EXPIRED")
                 .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusSeconds(1))
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -815,8 +829,7 @@ class SkitAdSessionServiceImplTest {
                 .setClientLifecycleStatus("LOAD_EXPIRED")
                 .setRevenueStatus("IMPRESSION_PENDING_REWARD")
                 .setLoadExpiresAt(now().minusSeconds(1)).setVersion(4);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(existing);
+        stubOverlappingSession(existing);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -872,8 +885,7 @@ class SkitAdSessionServiceImplTest {
     void rewardSettlementBetweenScopeReadAndSessionLockCannotCreateAnotherRevenueSession() {
         stubSessionEnvelopeDependencies();
         when(contentScopeService.resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3))
-                .thenReturn(contentScope(DRAMA_ID, 3, false),
-                        contentScope(DRAMA_ID, 3, true));
+                .thenReturn(contentScope(DRAMA_ID, 3, true));
         when(sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
                 TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 3))
                 .thenReturn(Collections.emptyList());
@@ -882,8 +894,8 @@ class SkitAdSessionServiceImplTest {
                 MEMBER_ID, command(DRAMA_ID, 3));
 
         assertEquals("ALREADY_ENTITLED", result.getOutcome());
-        verify(contentScopeService, org.mockito.Mockito.times(2))
-                .resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
+        verify(contentScopeService).resolveUnlockScope(MEMBER_ID, DRAMA_ID, 3);
+        verify(contentScopeService).resolveUnlockScopeForUpdate(MEMBER_ID, DRAMA_ID, 3);
         verify(sessionMapper, never()).insert(any());
         verify(snapshotService, never()).createSnapshot(any());
     }
@@ -896,8 +908,9 @@ class SkitAdSessionServiceImplTest {
                 .setSessionTokenHash(tokenService.restore(SESSION_ID, 1).getTokenHash())
                 .setClientLifecycleStatus("LOADING").setLastCallbackSequence(0)
                 .setLastClientEvent("LOAD_STARTED").setSdkRequestId("request-1");
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(null, canonical);
+        when(sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 3))
+                .thenReturn(Collections.emptyList(), Collections.singletonList(canonical));
         when(sessionMapper.insert(any(SkitAdSessionDO.class)))
                 .thenThrow(new DuplicateKeyException("active scope raced"));
 
@@ -907,7 +920,8 @@ class SkitAdSessionServiceImplTest {
         assertEquals("REUSED", result.getOutcome());
         assertEquals(SESSION_ID, result.getSessionId());
         verify(sessionMapper, org.mockito.Mockito.times(2))
-                .selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class));
+                .selectActiveScopesOverlappingRangeForUpdate(
+                        TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 3);
         verify(snapshotService, org.mockito.Mockito.times(1)).createSnapshot(MEMBER_ID);
     }
 
@@ -923,7 +937,8 @@ class SkitAdSessionServiceImplTest {
         assertThrows(RuntimeException.class,
                 () -> service.createForMember(MEMBER_ID, command(DRAMA_ID, 3)));
 
-        verify(sessionMapper, never()).selectActiveScopeForUpdate(anyLong(), anyLong(), any(byte[].class));
+        verify(sessionMapper, never()).selectActiveScopesOverlappingRangeForUpdate(
+                anyLong(), anyLong(), anyLong(), anyInt(), anyInt());
     }
 
     @Test
@@ -931,8 +946,7 @@ class SkitAdSessionServiceImplTest {
         stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
         SkitAdSessionDO expired = activeSession(TENANT_ID, MEMBER_ID)
                 .setRewardAcceptUntil(now().minusSeconds(1)).setVersion(7);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(expired);
+        stubOverlappingSession(expired);
         when(sessionMapper.markRewardVerifyTimeoutAndReleaseScopeCas(
                 TENANT_ID, 92L, MEMBER_ID, 7, now())).thenReturn(1);
         when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
@@ -957,8 +971,7 @@ class SkitAdSessionServiceImplTest {
                 .setProviderShowId("show-1").setRewardAcceptUntil(now().minusSeconds(1))
                 .setRewardCallbackInboxId(901L).setRewardCallbackReceivedAt(now().minusMinutes(2))
                 .setVersion(7);
-        when(sessionMapper.selectActiveScopeForUpdate(eq(TENANT_ID), eq(MEMBER_ID), any(byte[].class)))
-                .thenReturn(received);
+        stubOverlappingSession(received);
 
         SkitAdSessionService.CreateResult result = service.createForMember(
                 MEMBER_ID, command(DRAMA_ID, 3));
@@ -1702,8 +1715,9 @@ class SkitAdSessionServiceImplTest {
         when(accountMapper.selectEnabledTakuForShare(tenantId))
                 .thenReturn(Collections.singletonList(enabledTaku(tenantId)));
         org.mockito.Mockito.lenient().when(
-                sessionMapper.selectActiveScopeForUpdate(eq(tenantId), eq(memberId), any(byte[].class)))
-                .thenReturn(null);
+                sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
+                        eq(tenantId), eq(memberId), anyLong(), anyInt(), anyInt()))
+                .thenReturn(Collections.emptyList());
         when(credentialService.getActiveCallbackKeyVersion(tenantId, ACCOUNT_ID))
                 .thenReturn(new SkitAdCredentialVersionService.CredentialMetadata(
                         tenantId, ACCOUNT_ID, 2, true, null));
@@ -1724,6 +1738,12 @@ class SkitAdSessionServiceImplTest {
                 .thenReturn(enabledMember(TENANT_ID, MEMBER_ID));
         when(accountMapper.selectEnabledTakuForShare(TENANT_ID))
                 .thenReturn(Collections.singletonList(enabledTaku(TENANT_ID)));
+    }
+
+    private void stubOverlappingSession(SkitAdSessionDO session) {
+        when(sessionMapper.selectActiveScopesOverlappingRangeForUpdate(
+                TENANT_ID, MEMBER_ID, DRAMA_ID, 3, 3))
+                .thenReturn(Collections.singletonList(session));
     }
 
     private SkitAdSessionService.ClientEventCommand loadStartedEvent(int sequence) {

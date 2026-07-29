@@ -4,6 +4,8 @@ import cn.iocoder.yudao.module.skit.service.ad.SkitTenantAdCapabilityService;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public interface SkitContentEntitlementService {
@@ -15,10 +17,18 @@ public interface SkitContentEntitlementService {
 
     PlayerGrantScope lockAndUsePlayerGrant(PlayerGrantReference reference, Long expectedDramaId);
 
-    List<Integer> listGrantedEpisodes(Long memberId, Long dramaId,
-                                      SkitTenantAdCapabilityService.ClientRuntime runtime);
+    EntitlementSnapshot getEntitlementSnapshot(
+            Long memberId, Long dramaId, SkitTenantAdCapabilityService.ClientRuntime runtime);
 
     List<Integer> listGrantedEpisodesForPlayerGrant(
+            String grantToken, Integer targetEpisodeNo,
+            SkitTenantAdCapabilityService.ClientRuntime runtime);
+
+    /**
+     * Compatibility snapshot for native clients predating target-specific entitlement reads.
+     */
+    @Deprecated
+    List<Integer> listGrantedEpisodesForLegacyPlayerGrant(
             String grantToken, SkitTenantAdCapabilityService.ClientRuntime runtime);
 
     /**
@@ -34,6 +44,30 @@ public interface SkitContentEntitlementService {
     /** Activates one exact signed reward lease after its canonical rewarded close is committed. */
     void activateVerifiedRewardLeaseOnClose(Long memberId, Long adSessionId, Long dramaId,
                                             Integer episodeNo, LocalDateTime closedAt);
+
+    final class EntitlementSnapshot {
+
+        private final List<Integer> grantedEpisodeNos;
+        private final int earnedPrefixEnd;
+
+        public EntitlementSnapshot(List<Integer> grantedEpisodeNos, int earnedPrefixEnd) {
+            if (earnedPrefixEnd < 0) {
+                throw new IllegalArgumentException("earnedPrefixEnd must not be negative");
+            }
+            this.grantedEpisodeNos = grantedEpisodeNos == null || grantedEpisodeNos.isEmpty()
+                    ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(grantedEpisodeNos));
+            this.earnedPrefixEnd = earnedPrefixEnd;
+        }
+
+        public List<Integer> getGrantedEpisodeNos() {
+            return grantedEpisodeNos;
+        }
+
+        public int getEarnedPrefixEnd() {
+            return earnedPrefixEnd;
+        }
+    }
 
     final class VerifiedRewardProvenance {
 

@@ -91,16 +91,37 @@ public class SkitNativeAdSessionController {
                         grantToken, sessionId, clientRuntimeResolver.resolve())));
     }
 
+    @Deprecated
     @GetMapping("/entitlements")
+    @RateLimiter(time = 60, count = 120, keyResolver = SkitClientIpRateLimiterKeyResolver.class)
+    @ApiAccessLog(requestEnable = false, responseEnable = false)
+    @Operation(summary = "兼容旧版客户端查询其固定短剧的连续服务端权益")
+    public CommonResult<SkitGrantedEpisodesRespVO> getLegacyEntitlements(
+            @RequestHeader("X-Skit-Player-Grant")
+            @Pattern(regexp = "[A-Za-z0-9_-]{43}", message = "播放器权限令牌格式错误") String grantToken,
+            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Pragma", "no-cache");
+        return success(SkitGrantedEpisodesRespVO.of(
+                entitlementService.listGrantedEpisodesForLegacyPlayerGrant(
+                        grantToken, clientRuntimeResolver.resolve())));
+    }
+
+    @GetMapping("/entitlements/{episodeNo}")
     @RateLimiter(time = 60, count = 120, keyResolver = SkitClientIpRateLimiterKeyResolver.class)
     @ApiAccessLog(requestEnable = false, responseEnable = false)
     @Operation(summary = "使用短时播放器权限查询其固定短剧的服务端逐集权益")
     public CommonResult<SkitGrantedEpisodesRespVO> getEntitlements(
             @RequestHeader("X-Skit-Player-Grant")
-            @Pattern(regexp = "[A-Za-z0-9_-]{43}", message = "播放器权限令牌格式错误") String grantToken) {
+            @Pattern(regexp = "[A-Za-z0-9_-]{43}", message = "播放器权限令牌格式错误") String grantToken,
+            @PathVariable("episodeNo")
+            @Positive(message = "剧集编号必须大于 0") Integer episodeNo,
+            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Pragma", "no-cache");
         return success(SkitGrantedEpisodesRespVO.of(
                 entitlementService.listGrantedEpisodesForPlayerGrant(
-                        grantToken, clientRuntimeResolver.resolve())));
+                        grantToken, episodeNo, clientRuntimeResolver.resolve())));
     }
 
     @GetMapping("/entitlements/{episodeNo}/reward-provenance")
