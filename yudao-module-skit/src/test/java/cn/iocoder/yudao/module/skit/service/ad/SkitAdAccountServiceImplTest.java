@@ -98,6 +98,8 @@ class SkitAdAccountServiceImplTest {
                 .path("placementId").asText());
         assertEquals("rewarded_video", objectMapper.readTree(taku.getConfigData())
                 .path("adFormat").asText());
+        assertEquals("splash-slot", objectMapper.readTree(taku.getConfigData())
+                .path("splashPlacementId").asText());
         assertEquals("checkin-old", objectMapper.readTree(taku.getConfigData())
                 .path("checkInEntryInterstitialPlacementId").asText());
         assertEquals("drama-old", objectMapper.readTree(taku.getConfigData())
@@ -119,6 +121,7 @@ class SkitAdAccountServiceImplTest {
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleEnabled(false);
         objectMapper.readerForUpdating(settings).readValue("{"
+                + "\"splashPlacementId\":\" splash-new \","
                 + "\"checkInEntryInterstitialPlacementId\":\" checkin-new \","
                 + "\"postCheckInDramaInterstitialPlacementId\":\" drama-new \","
                 + "\"homeBannerPlacementId\":\" banner-new \"}");
@@ -128,10 +131,12 @@ class SkitAdAccountServiceImplTest {
         JsonNode stored = objectMapper.readTree(taku.getConfigData());
         assertEquals("taku-slot", stored.path("placementId").asText());
         assertEquals("rewarded_video", stored.path("adFormat").asText());
+        assertEquals("splash-new", stored.path("splashPlacementId").asText());
         assertEquals("checkin-new", stored.path("checkInEntryInterstitialPlacementId").asText());
         assertEquals("drama-new", stored.path("postCheckInDramaInterstitialPlacementId").asText());
         assertEquals("banner-new", stored.path("homeBannerPlacementId").asText());
         JsonNode roundTrip = objectMapper.valueToTree(accountService.getSettings());
+        assertEquals("splash-new", roundTrip.path("splashPlacementId").asText());
         assertEquals("checkin-new", roundTrip.path("checkInEntryInterstitialPlacementId").asText());
         assertEquals("drama-new", roundTrip.path("postCheckInDramaInterstitialPlacementId").asText());
         assertEquals("banner-new", roundTrip.path("homeBannerPlacementId").asText());
@@ -146,6 +151,7 @@ class SkitAdAccountServiceImplTest {
                 .setAppKey("private-app-key")
                 .setSecret("private-server-secret")
                 .setConfigData("{\"placementId\":\"reward-slot\",\"adFormat\":\"rewarded_video\","
+                        + "\"splashPlacementId\":\"splash-slot\","
                         + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
                         + "\"postCheckInDramaInterstitialPlacementId\":\" \","
                         + "\"homeBannerPlacementId\":\"banner-slot\"}")
@@ -157,6 +163,7 @@ class SkitAdAccountServiceImplTest {
         assertEquals(1, result.size());
         JsonNode published = objectMapper.valueToTree(result.get(0));
         assertEquals("reward-slot", published.path("placementId").asText());
+        assertEquals("splash-slot", published.path("splashPlacementId").asText());
         assertEquals("checkin-slot",
                 published.path("checkInEntryInterstitialPlacementId").asText());
         assertTrue(published.path("postCheckInDramaInterstitialPlacementId").isNull());
@@ -181,29 +188,30 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
-    void enabledTakuRequiresAllThreeDisplayPlacementsOnEverySave() {
+    void enabledTakuRequiresAllFourDisplayPlacementsOnEverySave() {
         SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
         SkitAdAccountDO taku = account(PROVIDER_TAKU);
         mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleEnabled(false);
-        settings.setCheckInEntryInterstitialPlacementId(" ");
+        settings.setSplashPlacementId(" ");
 
         assertServiceException(() -> accountService.saveSettings(settings),
                 AD_ACCOUNT_CONFIG_INVALID,
-                "TAKU 启用前必须配置签到页插屏、签到后短剧插屏和首页 Banner 广告位");
+                "TAKU 启用前必须配置开屏、签到页插屏、签到后短剧插屏和首页 Banner 广告位");
 
+        settings.setSplashPlacementId("splash-slot");
         settings.setCheckInEntryInterstitialPlacementId("checkin-slot");
         settings.setPostCheckInDramaInterstitialPlacementId(null);
         assertServiceException(() -> accountService.saveSettings(settings),
                 AD_ACCOUNT_CONFIG_INVALID,
-                "TAKU 启用前必须配置签到页插屏、签到后短剧插屏和首页 Banner 广告位");
+                "TAKU 启用前必须配置开屏、签到页插屏、签到后短剧插屏和首页 Banner 广告位");
 
         settings.setPostCheckInDramaInterstitialPlacementId("drama-slot");
         settings.setHomeBannerPlacementId("");
         assertServiceException(() -> accountService.saveSettings(settings),
                 AD_ACCOUNT_CONFIG_INVALID,
-                "TAKU 启用前必须配置签到页插屏、签到后短剧插屏和首页 Banner 广告位");
+                "TAKU 启用前必须配置开屏、签到页插屏、签到后短剧插屏和首页 Banner 广告位");
         verify(accountMapper, never()).updateById(taku);
     }
 
@@ -214,17 +222,18 @@ class SkitAdAccountServiceImplTest {
         mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleEnabled(false);
-        settings.setCheckInEntryInterstitialPlacementId(" taku-slot ");
+        settings.setSplashPlacementId(" taku-slot ");
 
         assertServiceException(() -> accountService.saveSettings(settings),
                 AD_ACCOUNT_CONFIG_INVALID,
-                "TAKU 激励视频、签到页插屏、签到后短剧插屏和首页 Banner 必须使用不同广告位");
+                "TAKU 激励视频、开屏、签到页插屏、签到后短剧插屏和首页 Banner 必须使用不同广告位");
 
+        settings.setSplashPlacementId("splash-slot");
         settings.setCheckInEntryInterstitialPlacementId("checkin-slot");
         settings.setPostCheckInDramaInterstitialPlacementId(" banner-slot ");
         assertServiceException(() -> accountService.saveSettings(settings),
                 AD_ACCOUNT_CONFIG_INVALID,
-                "TAKU 激励视频、签到页插屏、签到后短剧插屏和首页 Banner 必须使用不同广告位");
+                "TAKU 激励视频、开屏、签到页插屏、签到后短剧插屏和首页 Banner 必须使用不同广告位");
         verify(accountMapper, never()).updateById(taku);
     }
 
@@ -255,6 +264,7 @@ class SkitAdAccountServiceImplTest {
                 .setStatus(CommonStatusEnum.ENABLE.getStatus());
         mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
+        settings.setSplashPlacementId(null);
         settings.setPangleAppSecret("rotated-pangle-secret");
         settings.setCheckInEntryInterstitialPlacementId("");
         settings.setPostCheckInDramaInterstitialPlacementId("");
@@ -281,6 +291,7 @@ class SkitAdAccountServiceImplTest {
         SkitAdAccountService.Settings settings = accountService.getSettings();
 
         assertEquals("legacy-reward", settings.getTakuPlacementId());
+        assertEquals("", settings.getSplashPlacementId());
         assertEquals("", settings.getCheckInEntryInterstitialPlacementId());
         assertEquals("", settings.getPostCheckInDramaInterstitialPlacementId());
         assertEquals("", settings.getHomeBannerPlacementId());
@@ -326,6 +337,55 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
+    void legacyEnabledAccountAllowsUnrelatedSaveButDisplayEditRequiresSplash() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAppId("pangle-app").setSecret("pangle-secret")
+                .setConfigData("{\"placementId\":\"pangle-slot\",\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        SkitAdAccountDO taku = account(PROVIDER_TAKU)
+                .setAppId("taku-app").setAppKey("taku-key")
+                .setConfigData("{\"placementId\":\"taku-slot\",\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings unchanged = completeSettings();
+        unchanged.setSplashPlacementId(null);
+        unchanged.setCheckInEntryInterstitialPlacementId(null);
+        unchanged.setPostCheckInDramaInterstitialPlacementId(null);
+        unchanged.setHomeBannerPlacementId(null);
+
+        accountService.saveSettings(unchanged);
+
+        SkitAdAccountService.Settings edited = completeSettings();
+        edited.setSplashPlacementId("");
+        edited.setHomeBannerPlacementId("changed-banner-slot");
+        assertServiceException(() -> accountService.saveSettings(edited), AD_ACCOUNT_CONFIG_INVALID,
+                "TAKU 启用前必须配置开屏、签到页插屏、签到后短剧插屏和首页 Banner 广告位");
+        verify(accountMapper, never()).hasHistoricalTakuReportFacts(anyLong(), anyLong());
+    }
+
+    @Test
+    void splashOnlyMigrationDoesNotChangeRewardReportingScope() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        SkitAdAccountDO taku = account(PROVIDER_TAKU)
+                .setAppId("taku-app").setAppKey("taku-key")
+                .setConfigData("{\"placementId\":\"taku-slot\",\"adFormat\":\"rewarded_video\","
+                        + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
+                        + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
+                        + "\"homeBannerPlacementId\":\"banner-slot\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings migration = completeSettings();
+        migration.setPangleEnabled(false);
+        migration.setSplashPlacementId(" splash-slot ");
+
+        accountService.saveSettings(migration);
+
+        assertEquals("splash-slot", objectMapper.readTree(taku.getConfigData())
+                .path("splashPlacementId").asText());
+        verify(accountMapper, never()).hasHistoricalTakuReportFacts(anyLong(), anyLong());
+    }
+
+    @Test
     void rotatingPangleServerKeyDoesNotRewriteUnchangedTakuAccount() {
         SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
                 .setAccountName("pangle-user")
@@ -346,6 +406,7 @@ class SkitAdAccountServiceImplTest {
         mockAccounts(pangle, taku);
         SkitAdAccountService.Settings settings = completeSettings();
         settings.setPangleAppSecret("new-pangle-secret");
+        settings.setSplashPlacementId(null);
         settings.setTakuAppKey("");
         settings.setTakuAppSecret(null);
 
@@ -516,6 +577,7 @@ class SkitAdAccountServiceImplTest {
         settings.setTakuAppId("taku-app");
         settings.setTakuAppKey("new-taku-key");
         settings.setTakuPlacementId("taku-slot");
+        settings.setSplashPlacementId("splash-slot");
         settings.setCheckInEntryInterstitialPlacementId("checkin-slot");
         settings.setPostCheckInDramaInterstitialPlacementId("drama-slot");
         settings.setHomeBannerPlacementId("banner-slot");

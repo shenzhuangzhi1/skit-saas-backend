@@ -75,9 +75,10 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         ensureDefaultAccounts();
         saveProvider(PROVIDER_PANGLE, settings.getPangleUsername(), settings.getPangleAppId(), null,
                 settings.getPangleAppSecret(), settings.getPanglePlacementId(),
-                null, null, null, settings.getPangleEnabled());
+                null, null, null, null, settings.getPangleEnabled());
         saveProvider(PROVIDER_TAKU, settings.getTakuUsername(), settings.getTakuAppId(), settings.getTakuAppKey(),
                 settings.getTakuAppSecret(), settings.getTakuPlacementId(),
+                settings.getSplashPlacementId(),
                 settings.getCheckInEntryInterstitialPlacementId(),
                 settings.getPostCheckInDramaInterstitialPlacementId(),
                 settings.getHomeBannerPlacementId(), settings.getTakuEnabled());
@@ -116,6 +117,8 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             config.setAppId(account.getAppId());
             config.setPlacementId(readPlacementId(account.getConfigData()));
             if (PROVIDER_TAKU.equals(account.getProvider())) {
+                config.setSplashPlacementId(publicPlacement(
+                        readConfigValue(account.getConfigData(), "splashPlacementId")));
                 config.setCheckInEntryInterstitialPlacementId(publicPlacement(
                         readConfigValue(account.getConfigData(),
                                 "checkInEntryInterstitialPlacementId")));
@@ -158,7 +161,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             return;
         }
         SkitAdAccountDO account = SkitAdAccountDO.builder().provider(provider).accountName("").accountId("")
-                .appId("").appKey("").configData(writePlacementConfig(provider, "", "", "", ""))
+                .appId("").appKey("").configData(writePlacementConfig(provider, "", "", "", "", ""))
                 .status(CommonStatusEnum.DISABLE.getStatus()).build();
         // TenantLineInnerInterceptor fills SQL in normal requests, but the
         // entity must carry the tenant explicitly for delegated writes and for
@@ -168,7 +171,8 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     }
 
     private void saveProvider(String provider, String username, String appId, String appKey, String appSecret,
-                              String placementId, String checkInEntryInterstitialPlacementId,
+                              String placementId, String splashPlacementId,
+                              String checkInEntryInterstitialPlacementId,
                               String postCheckInDramaInterstitialPlacementId,
                               String homeBannerPlacementId, Boolean enabled) {
         long tenantId = TenantContextHolder.getRequiredTenantId();
@@ -181,6 +185,8 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         String normalizedAppId = trimToEmpty(appId);
         String normalizedPlacementId = resolveOptionalMetadata(
                 placementId, readPlacementId(account.getConfigData()));
+        String effectiveSplashPlacementId = resolveScenePlacement(provider,
+                splashPlacementId, account.getConfigData(), "splashPlacementId");
         String effectiveCheckInEntryInterstitialPlacementId = resolveScenePlacement(provider,
                 checkInEntryInterstitialPlacementId, account.getConfigData(),
                 "checkInEntryInterstitialPlacementId");
@@ -191,6 +197,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
                 homeBannerPlacementId, account.getConfigData(), "homeBannerPlacementId");
         String currentCheckInEntryInterstitialPlacementId = readConfigValue(
                 account.getConfigData(), "checkInEntryInterstitialPlacementId");
+        String currentSplashPlacementId = readConfigValue(account.getConfigData(), "splashPlacementId");
         String currentPostCheckInDramaInterstitialPlacementId = readConfigValue(
                 account.getConfigData(), "postCheckInDramaInterstitialPlacementId");
         String currentHomeBannerPlacementId = readConfigValue(
@@ -213,11 +220,13 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
                         "TAKU 启用前必须配置 App ID、激励视频广告位和 App Key");
             }
             boolean existingDisplayConfigurationComplete = StrUtil.isAllNotBlank(
+                    currentSplashPlacementId,
                     currentCheckInEntryInterstitialPlacementId,
                     currentPostCheckInDramaInterstitialPlacementId,
                     currentHomeBannerPlacementId);
             boolean displayConfigurationChanged =
-                    !Objects.equals(currentCheckInEntryInterstitialPlacementId,
+                    !Objects.equals(currentSplashPlacementId, effectiveSplashPlacementId)
+                    || !Objects.equals(currentCheckInEntryInterstitialPlacementId,
                             effectiveCheckInEntryInterstitialPlacementId)
                     || !Objects.equals(currentPostCheckInDramaInterstitialPlacementId,
                             effectivePostCheckInDramaInterstitialPlacementId)
@@ -229,19 +238,21 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
                     && (enablingProvider || existingDisplayConfigurationComplete
                     || displayConfigurationChanged);
             if (requireDisplayConfiguration
-                    && !StrUtil.isAllNotBlank(effectiveCheckInEntryInterstitialPlacementId,
+                    && !StrUtil.isAllNotBlank(effectiveSplashPlacementId,
+                    effectiveCheckInEntryInterstitialPlacementId,
                     effectivePostCheckInDramaInterstitialPlacementId,
                     effectiveHomeBannerPlacementId)) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
-                        "TAKU 启用前必须配置签到页插屏、签到后短剧插屏和首页 Banner 广告位");
+                        "TAKU 启用前必须配置开屏、签到页插屏、签到后短剧插屏和首页 Banner 广告位");
             }
             if (requireDisplayConfiguration
                     && new HashSet<>(Arrays.asList(normalizedPlacementId,
+                    effectiveSplashPlacementId,
                     effectiveCheckInEntryInterstitialPlacementId,
                     effectivePostCheckInDramaInterstitialPlacementId,
-                    effectiveHomeBannerPlacementId)).size() != 4) {
+                    effectiveHomeBannerPlacementId)).size() != 5) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
-                        "TAKU 激励视频、签到页插屏、签到后短剧插屏和首页 Banner 必须使用不同广告位");
+                        "TAKU 激励视频、开屏、签到页插屏、签到后短剧插屏和首页 Banner 必须使用不同广告位");
             }
         }
         guardTakuReportScopeMutation(account, normalizedAppId, normalizedPlacementId);
@@ -249,6 +260,8 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         boolean changed = !Objects.equals(account.getAccountName(), normalizedUsername)
                 || !Objects.equals(account.getAppId(), normalizedAppId)
                 || !Objects.equals(readPlacementId(account.getConfigData()), normalizedPlacementId)
+                || !Objects.equals(readConfigValue(account.getConfigData(), "splashPlacementId"),
+                        effectiveSplashPlacementId)
                 || !Objects.equals(readConfigValue(account.getConfigData(),
                         "checkInEntryInterstitialPlacementId"),
                         effectiveCheckInEntryInterstitialPlacementId)
@@ -268,6 +281,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         account.setAppKey(effectiveAppKey);
         account.setSecret(effectiveAppSecret);
         account.setConfigData(writePlacementConfig(provider, normalizedPlacementId,
+                effectiveSplashPlacementId,
                 effectiveCheckInEntryInterstitialPlacementId,
                 effectivePostCheckInDramaInterstitialPlacementId,
                 effectiveHomeBannerPlacementId));
@@ -319,6 +333,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         validateLength(settings.getTakuAppKey(), 255, "TAKU App Key 最长 255 个字符");
         validateLength(settings.getTakuAppSecret(), 2048, "TAKU 服务端密钥最长 2048 个字符");
         validateLength(settings.getTakuPlacementId(), 128, "TAKU 广告位最长 128 个字符");
+        validateLength(settings.getSplashPlacementId(), 128, "TAKU 开屏广告位最长 128 个字符");
         validateLength(settings.getCheckInEntryInterstitialPlacementId(), 128,
                 "TAKU 签到页插屏广告位最长 128 个字符");
         validateLength(settings.getPostCheckInDramaInterstitialPlacementId(), 128,
@@ -326,6 +341,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         validateLength(settings.getHomeBannerPlacementId(), 128,
                 "TAKU 首页 Banner 广告位最长 128 个字符");
         validateDisplayPlacementId(settings.getCheckInEntryInterstitialPlacementId());
+        validateDisplayPlacementId(settings.getSplashPlacementId());
         validateDisplayPlacementId(settings.getPostCheckInDramaInterstitialPlacementId());
         validateDisplayPlacementId(settings.getHomeBannerPlacementId());
     }
@@ -370,6 +386,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             result.setTakuAppId(account.getAppId());
             result.setTakuAppKeyConfigured(StrUtil.isNotBlank(account.getAppKey()));
             result.setTakuPlacementId(readPlacementId(account.getConfigData()));
+            result.setSplashPlacementId(readConfigValue(account.getConfigData(), "splashPlacementId"));
             result.setCheckInEntryInterstitialPlacementId(readConfigValue(
                     account.getConfigData(), "checkInEntryInterstitialPlacementId"));
             result.setPostCheckInDramaInterstitialPlacementId(readConfigValue(
@@ -382,6 +399,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     }
 
     private String writePlacementConfig(String provider, String placementId,
+                                        String splashPlacementId,
                                         String checkInEntryInterstitialPlacementId,
                                         String postCheckInDramaInterstitialPlacementId,
                                         String homeBannerPlacementId) {
@@ -390,6 +408,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             config.put("placementId", placementId);
             config.put("adFormat", "rewarded_video");
             if (PROVIDER_TAKU.equals(provider)) {
+                config.put("splashPlacementId", trimToEmpty(splashPlacementId));
                 config.put("checkInEntryInterstitialPlacementId",
                         trimToEmpty(checkInEntryInterstitialPlacementId));
                 config.put("postCheckInDramaInterstitialPlacementId",

@@ -38,6 +38,7 @@ public class SkitMemberAdConfigController {
             } else if (PROVIDER_TAKU.equals(config.getProvider())) {
                 result.setTaku(config);
                 result.setTakuPlacementId(config.getPlacementId());
+                result.setSplashPlacementId(config.getSplashPlacementId());
                 result.setCheckInEntryInterstitialPlacementId(
                         config.getCheckInEntryInterstitialPlacementId());
                 result.setPostCheckInDramaInterstitialPlacementId(
@@ -62,6 +63,7 @@ public class SkitMemberAdConfigController {
         private String provider;
         private String panglePlacementId;
         private String takuPlacementId;
+        private String splashPlacementId;
         private String checkInEntryInterstitialPlacementId;
         private String postCheckInDramaInterstitialPlacementId;
         private String homeBannerPlacementId;

@@ -49,6 +49,7 @@ public interface SkitAdAccountService {
         private String takuAppSecret;
         /** Existing rewarded-video placement. It remains the reporting and reward-session scope. */
         private String takuPlacementId;
+        private String splashPlacementId;
         private String checkInEntryInterstitialPlacementId;
         private String postCheckInDramaInterstitialPlacementId;
         private String homeBannerPlacementId;
@@ -61,6 +62,7 @@ public interface SkitAdAccountService {
         private String provider;
         private String appId;
         private String placementId;
+        private String splashPlacementId;
         private String checkInEntryInterstitialPlacementId;
         private String postCheckInDramaInterstitialPlacementId;
         private String homeBannerPlacementId;

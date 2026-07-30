@@ -42,6 +42,7 @@ class SkitMemberAdConfigControllerTest {
                 + "\"provider\":\"TAKU\","
                 + "\"appId\":\"public-app\","
                 + "\"placementId\":\"reward-slot\","
+                + "\"splashPlacementId\":\"splash-slot\","
                 + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
                 + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
                 + "\"homeBannerPlacementId\":\"banner-slot\","
@@ -55,6 +56,7 @@ class SkitMemberAdConfigControllerTest {
 
         assertEquals(PROVIDER_TAKU, response.path("provider").asText());
         assertEquals("reward-slot", response.path("takuPlacementId").asText());
+        assertEquals("splash-slot", response.path("splashPlacementId").asText());
         assertEquals("checkin-slot",
                 response.path("checkInEntryInterstitialPlacementId").asText());
         assertEquals("drama-slot",
@@ -62,6 +64,9 @@ class SkitMemberAdConfigControllerTest {
         assertEquals("banner-slot", response.path("homeBannerPlacementId").asText());
         assertEquals("checkin-slot",
                 response.path("taku").path("checkInEntryInterstitialPlacementId").asText());
+        assertEquals("splash-slot", response.path("taku").path("splashPlacementId").asText());
+        assertFalse(response.has("takuAppKey"));
+        assertFalse(response.has("takuAppSecret"));
         String serialized = objectMapper.writeValueAsString(response);
         assertFalse(serialized.toLowerCase().contains("appkey"));
         assertFalse(serialized.toLowerCase().contains("secret"));
