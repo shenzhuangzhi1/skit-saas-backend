@@ -82,11 +82,11 @@ class SkitAdManagementRequestValidationTest {
         assertFalse(VALIDATOR.validate(legacy).isEmpty());
         legacy.setPangleRewardSecurityKey("😀😀");
         assertTrue(VALIDATOR.validate(legacy).isEmpty());
-        legacy.setPangleRewardSecurityKey("😀".repeat(512));
+        legacy.setPangleRewardSecurityKey(repeat("😀", 512));
         assertTrue(VALIDATOR.validate(legacy).isEmpty());
-        legacy.setPangleRewardSecurityKey("😀".repeat(513));
+        legacy.setPangleRewardSecurityKey(repeat("😀", 513));
         assertFalse(VALIDATOR.validate(legacy).isEmpty());
-        legacy.setPangleRewardSecurityKey(" ".repeat(2049));
+        legacy.setPangleRewardSecurityKey(repeat(" ", 2049));
         assertFalse(VALIDATOR.validate(legacy).isEmpty());
 
         SkitAdRewardSecretRotateReqVO rotate = new SkitAdRewardSecretRotateReqVO();
@@ -99,10 +99,18 @@ class SkitAdManagementRequestValidationTest {
         assertFalse(VALIDATOR.validate(rotate).isEmpty());
         rotate.setRewardSecret("😀😀".toCharArray());
         assertTrue(VALIDATOR.validate(rotate).isEmpty());
-        rotate.setRewardSecret("😀".repeat(512).toCharArray());
+        rotate.setRewardSecret(repeat("😀", 512).toCharArray());
         assertTrue(VALIDATOR.validate(rotate).isEmpty());
-        rotate.setRewardSecret("😀".repeat(513).toCharArray());
+        rotate.setRewardSecret(repeat("😀", 513).toCharArray());
         assertFalse(VALIDATOR.validate(rotate).isEmpty());
+    }
+
+    private static String repeat(String value, int count) {
+        StringBuilder result = new StringBuilder(value.length() * count);
+        for (int i = 0; i < count; i++) {
+            result.append(value);
+        }
+        return result.toString();
     }
 
     private void assertInvalidEventPage(SkitAdEventController controller, Method method,
