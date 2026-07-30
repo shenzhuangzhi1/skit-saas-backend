@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Update;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -60,6 +61,104 @@ class SkitAdCallbackDrainPersistenceContractTest {
                 "processed_at=current_timestamp", "processing_status='processing'",
                 "lease_owner=#{leaseowner}", "lease_until>=current_timestamp",
                 "processing_attempt_count>=#{maxattempts}");
+    }
+
+    @Test
+    void pangleAttestationWakeCasOnlyRequeuesTheExactLivePendingReward() throws Exception {
+        String sql = sql(SkitAdCallbackInboxMapper.class.getMethod(
+                "wakePangleAttestationPendingRewardCas", Long.class, Long.class,
+                Long.class, Integer.class), Update.class);
+
+        assertContains(sql, "update skit_ad_callback_inbox i",
+                "join skit_ad_session s on s.tenant_id=i.tenant_id",
+                "s.ad_account_id=i.ad_account_id", "s.id=i.ad_session_id",
+                "s.callback_key_version=i.callback_key_version",
+                "join skit_pangle_reward_attestation a on a.tenant_id=i.tenant_id",
+                "a.taku_ad_account_id=i.ad_account_id", "a.ad_session_id=i.ad_session_id",
+                "a.callback_key_version=i.callback_key_version",
+                "set i.processing_status='pending'", "i.error_code=null",
+                "i.lease_owner=null", "i.lease_until=null", "i.next_attempt_at=null",
+                "i.processed_at=null", "i.tenant_id=#{tenantid}",
+                "i.ad_account_id=#{adaccountid}", "i.ad_session_id=#{adsessionid}",
+                "i.callback_key_version=#{callbackkeyversion}", "i.provider='taku'",
+                "i.callback_type='reward'", "i.network_firm_id=15",
+                "i.processing_status='retry_wait'",
+                "i.error_code='pangle_attestation_pending'",
+                "s.reward_verification_status='pending'", "s.entitlement_status='none'",
+                "s.reward_accept_until>=current_timestamp",
+                "s.reward_callback_inbox_id=i.id", "a.provider='pangle'");
+        assertFalse(sql.contains("processing_status in"),
+                "wake must never broaden into terminal or unrelated states");
+        assertFalse(sql.contains("processing_attempt_count="),
+                "wake must preserve the accumulated attempt count");
+    }
+
+    @Test
+    void panglePrerequisiteRetryUsesSessionExpiryInsteadOfTheGenericAttemptLimit()
+            throws Exception {
+        String sql = sql(SkitAdCallbackInboxMapper.class.getMethod(
+                "markPanglePrerequisiteRetryWaitCas", Long.class, Long.class,
+                Long.class, String.class, int.class, int.class), Update.class);
+
+        assertContains(sql, "update skit_ad_callback_inbox i",
+                "join skit_ad_session s on s.tenant_id=i.tenant_id",
+                "s.ad_account_id=i.ad_account_id", "s.id=i.ad_session_id",
+                "s.callback_key_version=i.callback_key_version",
+                "set i.processing_status='retry_wait'",
+                "i.error_code='pangle_attestation_pending'",
+                "case when exists(select 1 from skit_pangle_reward_attestation a",
+                "a.tenant_id=i.tenant_id", "a.taku_ad_account_id=i.ad_account_id",
+                "a.ad_session_id=i.ad_session_id",
+                "a.callback_key_version=i.callback_key_version",
+                "then current_timestamp else timestampadd(second",
+                "i.tenant_id=#{tenantid}", "i.ad_account_id=#{adaccountid}",
+                "i.id=#{id}", "i.processing_status='processing'",
+                "i.lease_owner=#{leaseowner}", "i.lease_until>=current_timestamp",
+                "i.provider='taku'", "i.callback_type='reward'", "i.network_firm_id=15",
+                "s.reward_verification_status='pending'", "s.entitlement_status='none'",
+                "s.reward_accept_until>=current_timestamp",
+                "s.reward_callback_inbox_id=i.id");
+        assertFalse(sql.contains("maxattempt"),
+                "a live prerequisite must not dead-letter because a generic attempt budget elapsed");
+        assertFalse(sql.contains("processing_attempt_count="),
+                "scheduling prerequisite retry must not rewrite its attempt count");
+    }
+
+    @Test
+    void expiredLiveFirm15LeaseRecoversBeforeTheGenericAttemptLimit() {
+        Method recovery = Arrays.stream(SkitAdCallbackInboxMapper.class.getMethods())
+                .filter(method -> "recoverExpiredPanglePrerequisiteRetryWaitCas"
+                        .equals(method.getName()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "missing expired firm15 prerequisite recovery CAS"));
+        String sql = sql(recovery, Update.class);
+
+        assertContains(sql, "update skit_ad_callback_inbox i",
+                "join skit_ad_session s on s.tenant_id=i.tenant_id",
+                "s.ad_account_id=i.ad_account_id", "s.id=i.ad_session_id",
+                "s.callback_key_version=i.callback_key_version",
+                "set i.processing_status='retry_wait'",
+                "i.error_code='pangle_attestation_pending'",
+                "i.lease_owner=null", "i.lease_until=null",
+                "case when exists(select 1 from skit_pangle_reward_attestation a",
+                "a.tenant_id=i.tenant_id", "a.taku_ad_account_id=i.ad_account_id",
+                "a.ad_session_id=i.ad_session_id",
+                "then current_timestamp else timestampadd(second",
+                "i.tenant_id=#{tenantid}", "i.ad_account_id=#{adaccountid}",
+                "i.id=#{id}", "i.processing_status='processing'",
+                "i.lease_until<=current_timestamp", "i.provider='taku'",
+                "i.callback_type='reward'", "i.network_firm_id=15",
+                "s.reward_verification_status='pending'", "s.entitlement_status='none'",
+                "s.reward_accept_until>=current_timestamp",
+                "s.reward_callback_inbox_id=i.id",
+                "i.payload_expires_at>current_timestamp");
+        assertFalse(sql.contains("maxattempt"),
+                "live firm15 recovery must not use the generic attempt budget");
+        assertFalse(sql.contains("processing_attempt_count="),
+                "lease recovery must preserve the accumulated attempt count");
+        assertFalse(sql.contains("processing_status='dead_letter'"),
+                "the prerequisite recovery CAS must never terminalize a live callback");
     }
 
     @Test

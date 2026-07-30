@@ -30,6 +30,9 @@ public class SkitAdSessionDO extends TenantBaseDO {
     private Long policySnapshotId;
     private Integer callbackKeyVersion;
     private Integer rewardSecretVersion;
+    private Long pangleAdAccountId;
+    private Integer pangleRewardSecretVersion;
+    private String pangleRewardPlacementId;
     private String provider;
     private String placementId;
     private String scenarioId;

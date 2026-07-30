@@ -21,6 +21,9 @@ class SkitCallbackPublicUrlServiceTest {
                 "https://ads.example.com/app-api/skit/ad-callback/taku/" + callbackKey + "/reward?"));
         assertTrue(service.impressionCallbackUrl(callbackKey).startsWith(
                 "https://ads.example.com/app-api/skit/ad-callback/taku/" + callbackKey + "/impression?"));
+        assertEquals("https://ads.example.com/app-api/skit/ad-callback/pangle/"
+                        + callbackKey + "/reward",
+                service.pangleRewardCallbackUrl(callbackKey));
         assertFalse(service.rewardCallbackUrl(callbackKey).contains("Host"));
     }
 

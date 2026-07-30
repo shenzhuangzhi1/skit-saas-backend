@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.service.ad;
 
 import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportRequestScopeFingerprint;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -16,11 +17,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class SkitJdbcTenantAdReadinessEvidenceReaderTest {
 
     private static final long TENANT_ID = 42L;
     private static final long ACCOUNT_ID = 4201L;
+    private static final long PANGLE_ACCOUNT_ID = 4215L;
     private static final int CREDENTIAL_VERSION = 7;
     private static final LocalDate REPORT_DATE = LocalDate.of(2026, 7, 14);
     private static final LocalDateTime PULLED_AT = LocalDateTime.of(2026, 7, 15, 1, 30);
@@ -175,6 +184,99 @@ class SkitJdbcTenantAdReadinessEvidenceReaderTest {
         assertFalse(evidence.getBlockers().contains("PAIRED_SOURCE_EVIDENCE_MISSING"));
     }
 
+    @Test
+    void firm15RequiresExactlyOneEnabledTenantScopedPangleAccount() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        SkitJdbcTenantAdReadinessEvidenceReader reader = reader(jdbcTemplate);
+        when(jdbcTemplate.queryForList(contains(
+                        "WHERE `tenant_id`=? AND `provider`='PANGLE' AND `status`=0"),
+                eq(TENANT_ID))).thenReturn(Collections.emptyList(),
+                Arrays.asList(pangleAccount(PANGLE_ACCOUNT_ID, "reward-slot-15"),
+                        pangleAccount(PANGLE_ACCOUNT_ID + 1, "reward-slot-15-b")));
+
+        assertEquals(Collections.singletonList("PANGLE_ENABLED_ACCOUNT_MISSING"),
+                reader.readNetworkPrerequisiteBlockers(TENANT_ID, 15));
+        assertEquals(Collections.singletonList("PANGLE_ENABLED_ACCOUNT_AMBIGUOUS"),
+                reader.readNetworkPrerequisiteBlockers(TENANT_ID, 15));
+
+        verify(jdbcTemplate, never()).queryForList(
+                argThat(SkitJdbcTenantAdReadinessEvidenceReaderTest
+                        ::isActiveRewardSecurityKeyMetadataQuery),
+                eq(TENANT_ID), eq(PANGLE_ACCOUNT_ID));
+    }
+
+    @Test
+    void firm15RequiresNonBlankRewardPlacement() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        SkitJdbcTenantAdReadinessEvidenceReader reader = reader(jdbcTemplate);
+        when(jdbcTemplate.queryForList(contains(
+                        "WHERE `tenant_id`=? AND `provider`='PANGLE' AND `status`=0"),
+                eq(TENANT_ID))).thenReturn(
+                Collections.singletonList(pangleAccount(PANGLE_ACCOUNT_ID, " ")));
+        when(jdbcTemplate.queryForList(
+                argThat(SkitJdbcTenantAdReadinessEvidenceReaderTest
+                        ::isActiveRewardSecurityKeyMetadataQuery),
+                eq(TENANT_ID), eq(PANGLE_ACCOUNT_ID))).thenReturn(
+                Collections.singletonList(activeRewardSecurityKey()));
+
+        assertEquals(Collections.singletonList("PANGLE_REWARD_PLACEMENT_MISSING"),
+                reader.readNetworkPrerequisiteBlockers(TENANT_ID, 15));
+    }
+
+    @Test
+    void firm15RequiresOneActiveRewardSecurityKey() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        SkitJdbcTenantAdReadinessEvidenceReader reader = reader(jdbcTemplate);
+        when(jdbcTemplate.queryForList(contains(
+                        "WHERE `tenant_id`=? AND `provider`='PANGLE' AND `status`=0"),
+                eq(TENANT_ID))).thenReturn(
+                Collections.singletonList(
+                        pangleAccount(PANGLE_ACCOUNT_ID, "reward-slot-15")));
+        when(jdbcTemplate.queryForList(
+                argThat(SkitJdbcTenantAdReadinessEvidenceReaderTest
+                        ::isActiveRewardSecurityKeyMetadataQuery),
+                eq(TENANT_ID), eq(PANGLE_ACCOUNT_ID))).thenReturn(Collections.emptyList());
+
+        assertEquals(Collections.singletonList(
+                        "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING"),
+                reader.readNetworkPrerequisiteBlockers(TENANT_ID, 15));
+    }
+
+    @Test
+    void firm15PrerequisiteBlockerMakesVerifiedCapabilityNonSelectable() {
+        List<SkitTenantAdReadinessEvidence.NetworkEvidence> evidence =
+                SkitJdbcTenantAdReadinessEvidenceReader.evaluateNetworkEvidence(
+                        TENANT_ID, ACCOUNT_ID, Collections.singleton(15),
+                        Collections.singletonList(capability(15, PULLED_AT.minusDays(2))),
+                        Collections.emptyList(), Collections.emptyList(),
+                        Collections.singletonMap(15, Collections.singletonList(
+                                "PANGLE_REWARD_PLACEMENT_MISSING")));
+
+        assertEquals(1, evidence.size());
+        assertFalse(evidence.get(0).isAuthoritative());
+        assertFalse(evidence.get(0).isSelectable());
+        assertTrue(evidence.get(0).getCapabilityBlockers()
+                .contains("PANGLE_REWARD_PLACEMENT_MISSING"));
+    }
+
+    @Test
+    void readyFirm15AndEveryNon15NetworkHaveNoPrerequisiteBlockers() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        SkitJdbcTenantAdReadinessEvidenceReader reader = reader(jdbcTemplate);
+        when(jdbcTemplate.queryForList(contains(
+                        "WHERE `tenant_id`=? AND `provider`='PANGLE' AND `status`=0"),
+                eq(TENANT_ID))).thenReturn(Collections.singletonList(
+                pangleAccount(PANGLE_ACCOUNT_ID, "reward-slot-15")));
+        when(jdbcTemplate.queryForList(
+                argThat(SkitJdbcTenantAdReadinessEvidenceReaderTest
+                        ::isActiveRewardSecurityKeyMetadataQuery),
+                eq(TENANT_ID), eq(PANGLE_ACCOUNT_ID))).thenReturn(
+                Collections.singletonList(activeRewardSecurityKey()));
+
+        assertTrue(reader.readNetworkPrerequisiteBlockers(TENANT_ID, 15).isEmpty());
+        assertTrue(reader.readNetworkPrerequisiteBlockers(TENANT_ID, 66).isEmpty());
+    }
+
     private static Map<String, Object> account(String placementId) {
         Map<String, Object> result = new HashMap<>();
         result.put("app_id", "taku-app");
@@ -219,6 +321,36 @@ class SkitJdbcTenantAdReadinessEvidenceReaderTest {
         result.put("adsource_id", adsourceId);
         result.put("observed_at", observedAt);
         return result;
+    }
+
+    private static SkitJdbcTenantAdReadinessEvidenceReader reader(JdbcTemplate jdbcTemplate) {
+        return new SkitJdbcTenantAdReadinessEvidenceReader(jdbcTemplate,
+                mock(cn.iocoder.yudao.module.skit.service.app
+                        .SkitRuntimeUpdateManifestVerifier.class),
+                mock(SkitCallbackPublicUrlService.class));
+    }
+
+    private static Map<String, Object> pangleAccount(long accountId, String placementId) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("id", accountId);
+        result.put("placement_id", placementId);
+        return result;
+    }
+
+    private static Map<String, Object> activeRewardSecurityKey() {
+        Map<String, Object> result = new HashMap<>();
+        result.put("version", CREDENTIAL_VERSION);
+        result.put("create_time", PULLED_AT.minusDays(3));
+        return result;
+    }
+
+    private static boolean isActiveRewardSecurityKeyMetadataQuery(String sql) {
+        return sql != null
+                && sql.contains("FROM `skit_ad_reward_secret_version`")
+                && sql.contains("WHERE `tenant_id`=? AND `ad_account_id`=?")
+                && sql.contains("AND `active`=b'1'")
+                && sql.contains("AND `revoked_at` IS NULL")
+                && sql.contains("AND `deleted`=b'0'");
     }
 
     private static byte[] fingerprint(String placementId, int credentialVersion) {

@@ -33,6 +33,11 @@ public interface SkitAdAccountService {
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
         @ToString.Exclude
         private String pangleAppSecret;
+        /** Pangle rewarded-placement callback Security Key; unrelated to the content Server Key. */
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String pangleRewardSecurityKey;
+        private Boolean pangleRewardSecurityKeyConfigured;
         private String panglePlacementId;
         private Boolean pangleEnabled;
         private Boolean pangleSecretConfigured;

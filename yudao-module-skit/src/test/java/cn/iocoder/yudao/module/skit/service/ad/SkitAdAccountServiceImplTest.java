@@ -3,7 +3,9 @@ package cn.iocoder.yudao.module.skit.service.ad;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,12 +14,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Collections;
 import java.util.List;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static cn.iocoder.yudao.framework.test.core.util.AssertUtils.assertServiceException;
 import static cn.iocoder.yudao.module.skit.enums.ErrorCodeConstants.AD_ACCOUNT_CONFIG_INVALID;
@@ -28,6 +34,7 @@ import static cn.iocoder.yudao.module.skit.enums.SkitDomainConstants.PROVIDER_TA
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
@@ -40,6 +47,10 @@ class SkitAdAccountServiceImplTest {
     private SkitAdAccountMapper accountMapper;
     @Mock
     private SkitPlatformAdminGuard platformAdminGuard;
+    @Mock
+    private SkitAdCredentialVersionService credentialService;
+    @Mock
+    private SkitTenantAdCapabilityMapper tenantCapabilityMapper;
     @Spy
     private ObjectMapper objectMapper = new ObjectMapper();
 
@@ -420,6 +431,80 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
+    void rewardSecurityKeyRotatesOnlyTheVersionedPangleCredentialAndNeverEchoes() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setSecret("content-server-key");
+        SkitAdAccountDO taku = account(PROVIDER_TAKU);
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleAppSecret("");
+        settings.setPangleRewardSecurityKey("reward-security-key");
+        AtomicReference<byte[]> observedSecret = new AtomicReference<>();
+        when(credentialService.rotateRewardSecret(
+                eq(17L), eq(pangle.getId()), any(byte[].class), eq(Duration.ofHours(24))))
+                .thenAnswer(invocation -> {
+                    observedSecret.set(invocation.<byte[]>getArgument(2).clone());
+                    return new SkitAdCredentialVersionService.CredentialMetadata(
+                            17L, pangle.getId(), 4, true, null);
+                });
+        when(credentialService.getActiveRewardSecretVersion(17L, pangle.getId()))
+                .thenReturn(new SkitAdCredentialVersionService.CredentialMetadata(
+                        17L, pangle.getId(), 4, true, null));
+
+        SkitAdAccountService.Settings saved = accountService.saveSettings(settings);
+
+        verify(credentialService).rotateRewardSecret(
+                eq(17L), eq(pangle.getId()), any(byte[].class), eq(Duration.ofHours(24)));
+        assertArrayEquals("reward-security-key".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                observedSecret.get());
+        assertEquals("content-server-key", pangle.getSecret());
+        assertTrue(saved.getPangleRewardSecurityKeyConfigured());
+        String serialized = objectMapper.writeValueAsString(saved);
+        assertFalse(serialized.contains("reward-security-key"));
+        assertFalse(saved.toString().contains("reward-security-key"));
+    }
+
+    @Test
+    void blankRewardSecurityKeyPreservesTheCurrentVersion() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        mockAccounts(pangle, account(PROVIDER_TAKU));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleRewardSecurityKey("  ");
+
+        accountService.saveSettings(settings);
+
+        verify(credentialService, never()).rotateRewardSecret(
+                anyLong(), anyLong(), any(byte[].class), any(Duration.class));
+    }
+
+    @Test
+    void rewardSecurityKeyRejectsUtf8ThatCannotFitTheEncryptedCredentialColumn() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        mockAccounts(pangle, account(PROVIDER_TAKU));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleRewardSecurityKey(String.join("", Collections.nCopies(513, "😀")));
+
+        assertServiceException(() -> accountService.saveSettings(settings),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "PANGLE 奖励回调 Security Key 的 UTF-8 编码必须为 8 到 2048 字节");
+        verify(credentialService, never()).rotateRewardSecret(
+                anyLong(), anyLong(), any(byte[].class), any(Duration.class));
+    }
+
+    @Test
+    void rewardSecurityKeyRejectsNonBlankUtf8ShorterThanEightBytes() {
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleRewardSecurityKey("1234567");
+
+        assertServiceException(() -> accountService.saveSettings(settings),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "PANGLE 奖励回调 Security Key 的 UTF-8 编码必须为 8 到 2048 字节");
+        verifyNoInteractions(accountMapper);
+        verify(credentialService, never()).rotateRewardSecret(
+                anyLong(), anyLong(), any(byte[].class), any(Duration.class));
+    }
+
+    @Test
     void takuAccountWithoutHistoricalFactsMayChangeItsReportScopeAfterTheLockedGuardPasses() throws Exception {
         SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
         SkitAdAccountDO taku = account(PROVIDER_TAKU).setAppId("old-taku-app")
@@ -447,9 +532,108 @@ class SkitAdAccountServiceImplTest {
         settings.setPangleAppSecret(null);
 
         assertServiceException(() -> accountService.saveSettings(settings), AD_ACCOUNT_CONFIG_INVALID,
-                "PANGLE 启用前必须配置 App ID 和内容接口 Server Key");
+                "PANGLE 启用前必须配置 App ID、内容接口 Server Key 和激励视频广告位");
 
         verify(accountMapper, never()).updateById(pangle);
+    }
+
+    @Test
+    void enabledPangleRequiresRewardPlacementEvenWhenFirm15RolloutIsOff() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAppId("pangle-app").setSecret("pangle-secret")
+                .setConfigData("{\"placementId\":\"existing-pangle-slot\","
+                        + "\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        mockAccounts(pangle, account(PROVIDER_TAKU));
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("OFF", "[15]"));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPanglePlacementId(" ");
+
+        assertServiceException(() -> accountService.saveSettings(settings),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "PANGLE 启用前必须配置 App ID、内容接口 Server Key 和激励视频广告位");
+
+        InOrder order = inOrder(tenantCapabilityMapper, accountMapper);
+        order.verify(tenantCapabilityMapper).selectByTenantForUpdate(17L);
+        order.verify(accountMapper).selectByProviderForUpdate(17L, PROVIDER_PANGLE);
+        verify(accountMapper, never()).updateById(pangle);
+    }
+
+    @Test
+    void panglePlacementClearFailsBeforeAccountLockWhileFirm15IsInShadow() {
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("SHADOW_TEST_USERS", "[15]"));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPanglePlacementId("");
+
+        assertServiceException(() -> accountService.saveSettings(settings),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "先将穿山甲 15 从授奖网络移除并把发布状态切换为 OFF");
+
+        verify(accountMapper, never()).selectByProviderForUpdate(anyLong(), anyString());
+        verify(accountMapper, never()).updateById(any(SkitAdAccountDO.class));
+    }
+
+    @Test
+    void panglePlacementClearFailsBeforeAccountLockWhileFirm15IsEnforced() {
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("ENFORCED", "[15]"));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPanglePlacementId(" ");
+
+        assertServiceException(() -> accountService.saveSettings(settings),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "先将穿山甲 15 从授奖网络移除并把发布状态切换为 OFF");
+
+        verify(accountMapper, never()).selectByProviderForUpdate(anyLong(), anyString());
+        verify(accountMapper, never()).updateById(any(SkitAdAccountDO.class));
+    }
+
+    @Test
+    void panglePlacementMayBeClearedTogetherWithDisableWhenFirm15RolloutIsOff() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAppId("pangle-app").setSecret("pangle-secret")
+                .setConfigData("{\"placementId\":\"existing-pangle-slot\","
+                        + "\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        SkitAdAccountDO taku = account(PROVIDER_TAKU);
+        mockAccounts(pangle, taku);
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("OFF", "[15]"));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleEnabled(false);
+        settings.setPanglePlacementId("");
+        settings.setTakuEnabled(false);
+
+        accountService.saveSettings(settings);
+
+        InOrder order = inOrder(tenantCapabilityMapper, accountMapper);
+        order.verify(tenantCapabilityMapper).selectByTenantForUpdate(17L);
+        order.verify(accountMapper).selectByProviderForUpdate(17L, PROVIDER_PANGLE);
+        assertEquals("", objectMapper.readTree(pangle.getConfigData())
+                .path("placementId").asText());
+        assertEquals(CommonStatusEnum.DISABLE.getStatus(), pangle.getStatus());
+    }
+
+    @Test
+    void liveFirm15AllowsReplacingOneNonBlankPanglePlacementWithAnother() throws Exception {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE)
+                .setAppId("pangle-app").setSecret("pangle-secret")
+                .setConfigData("{\"placementId\":\"existing-pangle-slot\","
+                        + "\"adFormat\":\"rewarded_video\"}")
+                .setStatus(CommonStatusEnum.ENABLE.getStatus());
+        SkitAdAccountDO taku = account(PROVIDER_TAKU);
+        mockAccounts(pangle, taku);
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPanglePlacementId("replacement-pangle-slot");
+        settings.setTakuEnabled(false);
+
+        accountService.saveSettings(settings);
+
+        verifyNoInteractions(tenantCapabilityMapper);
+        assertEquals("replacement-pangle-slot",
+                objectMapper.readTree(pangle.getConfigData()).path("placementId").asText());
     }
 
     @Test
@@ -538,18 +722,77 @@ class SkitAdAccountServiceImplTest {
     }
 
     @Test
-    void explicitPangleClearRemovesOnlyPangleSecretAndForcesDisabled() {
-        when(accountMapper.selectByProvider(PROVIDER_PANGLE)).thenReturn(account(PROVIDER_PANGLE));
+    void explicitPangleClearImmediatelyRevokesRewardSecurityKeyThenDisablesAccount() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_PANGLE))
+                .thenReturn(pangle);
+        when(credentialService.revokeAllRewardSecrets(17L, pangle.getId()))
+                .thenReturn(true);
 
         accountService.clearCredentials(PROVIDER_PANGLE);
 
+        InOrder order = inOrder(accountMapper, credentialService);
+        order.verify(accountMapper).selectByProviderForUpdate(17L, PROVIDER_PANGLE);
+        order.verify(credentialService).revokeAllRewardSecrets(17L, pangle.getId());
+        order.verify(accountMapper).clearPangleCredentials();
         verify(accountMapper).clearPangleCredentials();
         verify(accountMapper, never()).clearTakuCredentials();
     }
 
     @Test
+    void pangleClearFailsBeforeAccountLockWhileFirm15IsSelectedInShadow() {
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("SHADOW_TEST_USERS", "[15]"));
+
+        assertServiceException(
+                () -> accountService.clearCredentials(PROVIDER_PANGLE),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "先将穿山甲 15 从授奖网络移除并把发布状态切换为 OFF");
+
+        verify(accountMapper, never()).selectByProviderForUpdate(anyLong(), anyString());
+        verifyNoInteractions(credentialService);
+    }
+
+    @Test
+    void pangleClearKeepsCapabilityThenAccountLockOrderAndIsAllowedWhenRolloutIsOff() {
+        SkitAdAccountDO pangle = account(PROVIDER_PANGLE);
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("OFF", "[15]"));
+        when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_PANGLE))
+                .thenReturn(pangle);
+        when(credentialService.revokeAllRewardSecrets(17L, pangle.getId()))
+                .thenReturn(true);
+
+        accountService.clearCredentials(PROVIDER_PANGLE);
+
+        InOrder order = inOrder(
+                tenantCapabilityMapper, accountMapper, credentialService);
+        order.verify(tenantCapabilityMapper).selectByTenantForUpdate(17L);
+        order.verify(accountMapper).selectByProviderForUpdate(17L, PROVIDER_PANGLE);
+        order.verify(credentialService).revokeAllRewardSecrets(17L, pangle.getId());
+        order.verify(accountMapper).clearPangleCredentials();
+    }
+
+    @Test
+    void pangleDisableFailsBeforeAccountMutationWhileFirm15IsSelectedInEnforced() {
+        when(tenantCapabilityMapper.selectByTenantForUpdate(17L))
+                .thenReturn(capability("ENFORCED", "[15]"));
+        SkitAdAccountService.Settings settings = completeSettings();
+        settings.setPangleEnabled(false);
+
+        assertServiceException(
+                () -> accountService.saveSettings(settings),
+                AD_ACCOUNT_CONFIG_INVALID,
+                "先将穿山甲 15 从授奖网络移除并把发布状态切换为 OFF");
+
+        verify(accountMapper, never()).selectByProviderForUpdate(anyLong(), anyString());
+        verify(accountMapper, never()).updateById(any(SkitAdAccountDO.class));
+    }
+
+    @Test
     void explicitTakuClearRemovesAppKeyAndSecretAndForcesDisabled() {
-        when(accountMapper.selectByProvider(PROVIDER_TAKU)).thenReturn(account(PROVIDER_TAKU));
+        when(accountMapper.selectByProviderForUpdate(17L, PROVIDER_TAKU))
+                .thenReturn(account(PROVIDER_TAKU));
 
         accountService.clearCredentials(" taku ");
 
@@ -593,6 +836,15 @@ class SkitAdAccountServiceImplTest {
                 .status(CommonStatusEnum.DISABLE.getStatus()).build();
         account.setTenantId(17L);
         return account;
+    }
+
+    private static SkitTenantAdCapabilityDO capability(
+            String rolloutState, String unlockNetworkFirmIdsJson) {
+        SkitTenantAdCapabilityDO capability = new SkitTenantAdCapabilityDO()
+                .setId(71L).setRolloutState(rolloutState)
+                .setUnlockNetworkFirmIdsJson(unlockNetworkFirmIdsJson);
+        capability.setTenantId(17L);
+        return capability;
     }
 
     private void mockAccounts(SkitAdAccountDO pangle, SkitAdAccountDO taku) {

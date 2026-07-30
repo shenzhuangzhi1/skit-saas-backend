@@ -70,6 +70,7 @@ class SkitAdSessionServiceImplTest {
     private static final long MEMBER_ID = 51L;
     private static final long DRAMA_ID = 61L;
     private static final long ACCOUNT_ID = 71L;
+    private static final long PANGLE_ACCOUNT_ID = 72L;
     private static final String SESSION_ID = "AAECAwQFBgcICQoLDA0ODw";
     private static final Instant NOW = Instant.parse("2026-07-14T06:00:00Z");
     private static final SkitTenantAdCapabilityService.ClientRuntime RUNTIME =
@@ -159,6 +160,34 @@ class SkitAdSessionServiceImplTest {
         assertEquals("PENDING", row.getValue().getRewardVerificationStatus());
         assertEquals(-1, row.getValue().getLastCallbackSequence());
         assertTrue(tokenService.matches(result.getCustomData(), row.getValue().getSessionTokenHash()));
+    }
+
+    @Test
+    void newSessionSnapshotsTheSameTenantPanglePlacementAndCredentialVersion() {
+        stubNewSessionDependencies(TENANT_ID, MEMBER_ID);
+        SkitAdAccountDO pangle = SkitAdAccountDO.builder()
+                .id(PANGLE_ACCOUNT_ID).provider("PANGLE").accountName("tenant-pangle")
+                .appId("pangle-app")
+                .configData("{\"placementId\":\"pangle-reward-slot\"}")
+                .status(CommonStatusEnum.ENABLE.getStatus()).build();
+        pangle.setTenantId(TENANT_ID);
+        when(accountMapper.selectEnabledPangleSnapshotForShare(TENANT_ID))
+                .thenReturn(Collections.singletonList(pangle));
+        when(credentialService.getActiveRewardSecretVersion(TENANT_ID, PANGLE_ACCOUNT_ID))
+                .thenReturn(new SkitAdCredentialVersionService.CredentialMetadata(
+                        TENANT_ID, PANGLE_ACCOUNT_ID, 9, true, null));
+        when(sessionMapper.insert(any(SkitAdSessionDO.class))).thenAnswer(invocation -> {
+            invocation.<SkitAdSessionDO>getArgument(0).setId(91L);
+            return 1;
+        });
+
+        service.createForMember(MEMBER_ID, command(DRAMA_ID, 3));
+
+        ArgumentCaptor<SkitAdSessionDO> row = ArgumentCaptor.forClass(SkitAdSessionDO.class);
+        verify(sessionMapper).insert(row.capture());
+        assertEquals(PANGLE_ACCOUNT_ID, row.getValue().getPangleAdAccountId());
+        assertEquals(9, row.getValue().getPangleRewardSecretVersion());
+        assertEquals("pangle-reward-slot", row.getValue().getPangleRewardPlacementId());
     }
 
     @Test

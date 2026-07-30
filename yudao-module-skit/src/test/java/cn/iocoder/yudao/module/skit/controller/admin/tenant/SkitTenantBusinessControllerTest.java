@@ -138,6 +138,8 @@ class SkitTenantBusinessControllerTest {
         ObjectMapper objectMapper = new ObjectMapper();
         SkitTenantBusinessController.AdAccountSaveReqVO save = validAdAccountSave();
         objectMapper.readerForUpdating(save).readValue("{"
+                + "\"panglePlacementId\":\"pangle-reward-slot\","
+                + "\"pangleRewardSecurityKey\":\"pangle-reward-key\","
                 + "\"takuPlacementId\":\"reward-slot\","
                 + "\"splashPlacementId\":\"splash-slot\","
                 + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
@@ -162,6 +164,9 @@ class SkitTenantBusinessControllerTest {
                 ArgumentCaptor.forClass(SkitAdAccountService.Settings.class);
         verify(adAccountService).saveSettings(captor.capture());
         JsonNode mapped = objectMapper.valueToTree(captor.getValue());
+        assertEquals("pangle-reward-slot", mapped.path("panglePlacementId").asText());
+        assertFalse(mapped.has("pangleRewardSecurityKey"));
+        assertEquals("pangle-reward-key", captor.getValue().getPangleRewardSecurityKey());
         assertEquals("reward-slot", mapped.path("takuPlacementId").asText());
         assertEquals("splash-slot", mapped.path("splashPlacementId").asText());
         assertEquals("checkin-slot",
@@ -175,6 +180,10 @@ class SkitTenantBusinessControllerTest {
                 eq("20"), eq(save.getReason()), snapshots.capture(), snapshots.capture(), any());
         assertTrue(snapshots.getAllValues().get(0).contains("splashPlacement=splash-before"));
         assertTrue(snapshots.getAllValues().get(1).contains("splashPlacement=splash-slot"));
+        Method saveMethod = SkitTenantBusinessController.class.getDeclaredMethod(
+                "saveAdAccount", SkitTenantBusinessController.AdAccountSaveReqVO.class);
+        assertTrue(Arrays.asList(saveMethod.getAnnotation(ApiAccessLog.class).sanitizeKeys())
+                .contains("pangleRewardSecurityKey"));
     }
 
     @Test

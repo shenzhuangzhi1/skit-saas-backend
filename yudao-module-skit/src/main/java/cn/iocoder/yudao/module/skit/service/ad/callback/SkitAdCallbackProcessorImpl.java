@@ -4,12 +4,14 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitPangleRewardAttestationDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitPangleRewardAttestationMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.revenue.SkitAdRevenueEventMapper;
@@ -48,10 +50,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private static final String SIGNED_REWARD = "SIGNED_REWARD";
     private static final long SIGNED_REWARD_FIELD_MASK = 0x3fL;
     private static final int LEGACY_GROSS_SCALE = 8;
+    private static final int PANGLE_OVERSEAS_NETWORK_FIRM_ID = 50;
 
     private final SkitAdCallbackInboxMapper inboxMapper;
     private final SkitAdSessionMapper sessionMapper;
     private final SkitAdNetworkCapabilityMapper capabilityMapper;
+    private final SkitPangleRewardAttestationMapper pangleAttestationMapper;
     private final SkitContentEntitlementMapper entitlementMapper;
     private final SkitEntitlementGrantMapper grantMapper;
     private final SkitAdRevenueEventMapper revenueMapper;
@@ -69,6 +73,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     public SkitAdCallbackProcessorImpl(SkitAdCallbackInboxMapper inboxMapper,
                                        SkitAdSessionMapper sessionMapper,
                                        SkitAdNetworkCapabilityMapper capabilityMapper,
+                                       SkitPangleRewardAttestationMapper pangleAttestationMapper,
                                        SkitContentEntitlementMapper entitlementMapper,
                                        SkitEntitlementGrantMapper grantMapper,
                                        SkitAdRevenueEventMapper revenueMapper,
@@ -80,7 +85,8 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                        TakuCallbackCanonicalizer canonicalizer,
                                        TakuRewardSignatureVerifier signatureVerifier,
                                        SkitRewardAuthorityPolicy rewardAuthorityPolicy) {
-        this(inboxMapper, sessionMapper, capabilityMapper, entitlementMapper, grantMapper,
+        this(inboxMapper, sessionMapper, capabilityMapper, pangleAttestationMapper,
+                entitlementMapper, grantMapper,
                 revenueMapper, payloadCrypto, credentialService, tokenService, snapshotService,
                 projectionService, canonicalizer, signatureVerifier, rewardAuthorityPolicy,
                 Clock.systemDefaultZone());
@@ -89,6 +95,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     SkitAdCallbackProcessorImpl(SkitAdCallbackInboxMapper inboxMapper,
                                 SkitAdSessionMapper sessionMapper,
                                 SkitAdNetworkCapabilityMapper capabilityMapper,
+                                SkitPangleRewardAttestationMapper pangleAttestationMapper,
                                 SkitContentEntitlementMapper entitlementMapper,
                                 SkitEntitlementGrantMapper grantMapper,
                                 SkitAdRevenueEventMapper revenueMapper,
@@ -104,6 +111,8 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         this.inboxMapper = Objects.requireNonNull(inboxMapper, "inboxMapper");
         this.sessionMapper = Objects.requireNonNull(sessionMapper, "sessionMapper");
         this.capabilityMapper = Objects.requireNonNull(capabilityMapper, "capabilityMapper");
+        this.pangleAttestationMapper = Objects.requireNonNull(
+                pangleAttestationMapper, "pangleAttestationMapper");
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
         this.grantMapper = Objects.requireNonNull(grantMapper, "grantMapper");
         this.revenueMapper = Objects.requireNonNull(revenueMapper, "revenueMapper");
@@ -184,6 +193,10 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             return rejectReward(inbox, session, authorityDecision.getErrorCode(), processedAt);
         }
         int networkFirmId = authorityDecision.getNetworkFirmId();
+        if (networkFirmId == PANGLE_OVERSEAS_NETWORK_FIRM_ID) {
+            return rejectReward(inbox, session,
+                    "PANGLE_OVERSEAS_FIRM_UNAUTHORIZED", processedAt);
+        }
 
         LockedImpressionAuthority impressionAuthority = lockExistingImpressionAuthority(session);
         String sourceAuthorityError = impressionAuthorityError(impressionAuthority, authority);
@@ -209,6 +222,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         SkitAdRevenueEventDO rewardedEstimate = prepareRewardEstimate(
                 session, impressionAuthority, authority, inbox.getReceivedAt());
 
+        requirePangleAttestationForFirm15(inbox, session, networkFirmId);
         String signedShowId = authority.getSignedIlrdEvidence().getShowId();
         int updated = sessionMapper.markSignedRewardAndGrantCas(
                 inbox.getTenantId(), session.getId(), inbox.getAdAccountId(), inbox.getId(),
@@ -225,6 +239,43 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         }
         finishSucceeded(inbox);
         return ProcessResult.succeeded();
+    }
+
+    private void requirePangleAttestationForFirm15(
+            SkitAdCallbackInboxDO inbox, SkitAdSessionDO session, int networkFirmId) {
+        if (networkFirmId != 15) {
+            return;
+        }
+        SkitPangleRewardAttestationDO attestation =
+                pangleAttestationMapper.selectBySession(
+                        inbox.getTenantId(), inbox.getAdAccountId(), session.getId());
+        if (!pangleAttestationMatches(inbox, session, attestation)) {
+            throw new SkitRewardPrerequisitePendingException();
+        }
+    }
+
+    private static boolean pangleAttestationMatches(
+            SkitAdCallbackInboxDO inbox, SkitAdSessionDO session,
+            SkitPangleRewardAttestationDO attestation) {
+        return attestation != null
+                && Objects.equals(attestation.getTenantId(), inbox.getTenantId())
+                && Objects.equals(attestation.getTakuAdAccountId(), inbox.getAdAccountId())
+                && Objects.equals(attestation.getAdSessionId(), session.getId())
+                && Objects.equals(attestation.getCallbackKeyVersion(),
+                inbox.getCallbackKeyVersion())
+                && Objects.equals(attestation.getCallbackKeyVersion(),
+                session.getCallbackKeyVersion())
+                && Objects.equals(attestation.getPangleAdAccountId(),
+                session.getPangleAdAccountId())
+                && Objects.equals(attestation.getPangleRewardSecretVersion(),
+                session.getPangleRewardSecretVersion())
+                && Objects.equals(attestation.getPangleRewardPlacementId(),
+                session.getPangleRewardPlacementId())
+                && "PANGLE".equals(attestation.getProvider())
+                && Objects.equals(attestation.getProviderUserId(), inbox.getProviderUserId())
+                && Objects.equals(attestation.getProviderUserId(),
+                session.getPseudonymousUserId())
+                && sameHash(attestation.getExtraDataHash(), inbox.getExtraDataHash());
     }
 
     private ProcessResult processImpression(SkitAdCallbackInboxDO inbox, LocalDateTime processedAt) {

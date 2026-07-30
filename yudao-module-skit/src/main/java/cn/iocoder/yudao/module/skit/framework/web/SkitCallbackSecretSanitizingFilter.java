@@ -14,33 +14,40 @@ import java.util.regex.Pattern;
 /** Marks provider callbacks as parameter-suppressed before any logging filter can inspect them. */
 public class SkitCallbackSecretSanitizingFilter extends OncePerRequestFilter {
 
-    static final String CALLBACK_PATH = "/skit/ad-callback/taku/";
+    static final String TAKU_CALLBACK_PATH = "/skit/ad-callback/taku/";
+    static final String PANGLE_CALLBACK_PATH = "/skit/ad-callback/pangle/";
     static final String REDACTED_KEY = "{callback-key}";
     private static final int DETERMINISTIC_REJECTION_STATUS = 602;
+    private static final String PANGLE_FALSE_JSON = "{\"isValid\":false}";
 
-    private final String callbackPrefix;
-    private final Pattern allowedCallbackPath;
+    private final ProviderRoute takuRoute;
+    private final ProviderRoute pangleRoute;
 
     public SkitCallbackSecretSanitizingFilter(WebProperties webProperties) {
         String appPrefix = webProperties.getAppApi().getPrefix();
-        this.callbackPrefix = stripTrailingSlash(appPrefix) + CALLBACK_PATH;
-        this.allowedCallbackPath = Pattern.compile("^" + Pattern.quote(callbackPrefix)
-                + "[A-Za-z0-9_-]{43}/(?:reward|impression)$");
+        String normalizedPrefix = stripTrailingSlash(appPrefix);
+        this.takuRoute = new ProviderRoute(
+                normalizedPrefix + TAKU_CALLBACK_PATH, "(?:reward|impression)", false);
+        this.pangleRoute = new ProviderRoute(
+                normalizedPrefix + PANGLE_CALLBACK_PATH, "reward", true);
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String apiUri = withoutContextPath(request);
-        String endpoint = resolveEndpoint(apiUri.substring(callbackPrefix.length()));
+        ProviderRoute route = route(apiUri);
+        if (route == null) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+        String endpoint = resolveEndpoint(apiUri.substring(route.callbackPrefix.length()));
         ApiRequestUrlResolver.setSafeRequestUrl(request,
-                request.getContextPath() + callbackPrefix + REDACTED_KEY + "/" + endpoint);
+                request.getContextPath() + route.callbackPrefix + REDACTED_KEY + "/" + endpoint);
         ApiRequestUrlResolver.suppressParameters(request);
         response.setHeader("Cache-Control", "no-store");
-        if (!"GET".equals(request.getMethod()) || !allowedCallbackPath.matcher(apiUri).matches()) {
-            response.setStatus(DETERMINISTIC_REJECTION_STATUS);
-            response.setContentType("text/plain;charset=UTF-8");
-            response.getWriter().write(Integer.toString(DETERMINISTIC_REJECTION_STATUS));
+        if (!"GET".equals(request.getMethod()) || !route.allowedCallbackPath.matcher(apiUri).matches()) {
+            reject(route, response);
             return;
         }
         filterChain.doFilter(request, response);
@@ -48,7 +55,30 @@ public class SkitCallbackSecretSanitizingFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !withoutContextPath(request).startsWith(callbackPrefix);
+        return route(withoutContextPath(request)) == null;
+    }
+
+    private ProviderRoute route(String apiUri) {
+        if (apiUri.startsWith(takuRoute.callbackPrefix)) {
+            return takuRoute;
+        }
+        if (apiUri.startsWith(pangleRoute.callbackPrefix)) {
+            return pangleRoute;
+        }
+        return null;
+    }
+
+    private static void reject(ProviderRoute route, HttpServletResponse response)
+            throws IOException {
+        if (route.pangle) {
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(PANGLE_FALSE_JSON);
+            return;
+        }
+        response.setStatus(DETERMINISTIC_REJECTION_STATUS);
+        response.setContentType("text/plain;charset=UTF-8");
+        response.getWriter().write(Integer.toString(DETERMINISTIC_REJECTION_STATUS));
     }
 
     private static String withoutContextPath(HttpServletRequest request) {
@@ -82,4 +112,17 @@ public class SkitCallbackSecretSanitizingFilter extends OncePerRequestFilter {
         return value;
     }
 
+    private static final class ProviderRoute {
+
+        private final String callbackPrefix;
+        private final Pattern allowedCallbackPath;
+        private final boolean pangle;
+
+        private ProviderRoute(String callbackPrefix, String endpointPattern, boolean pangle) {
+            this.callbackPrefix = callbackPrefix;
+            this.allowedCallbackPath = Pattern.compile("^" + Pattern.quote(callbackPrefix)
+                    + "[A-Za-z0-9_-]{43}/" + endpointPattern + "$");
+            this.pangle = pangle;
+        }
+    }
 }

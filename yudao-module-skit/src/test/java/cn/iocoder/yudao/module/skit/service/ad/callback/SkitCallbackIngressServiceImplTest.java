@@ -592,7 +592,8 @@ class SkitCallbackIngressServiceImplTest {
     @Test
     void rateLimitIsTransientAndCannotBecomePermanent602OrDatabaseWriteAmplification() {
         doThrow(new SkitCallbackRateLimiter.RateLimitExceededException())
-                .when(rateLimiter).check(anyString(), eq("203.0.113.10"), anyString());
+                .when(rateLimiter).check(eq("TAKU"), anyString(),
+                        eq("203.0.113.10"), anyString());
 
         assertThrows(SkitCallbackRateLimiter.RateLimitExceededException.class,
                 () -> service.receiveImpression(

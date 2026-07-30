@@ -1,46 +1,49 @@
 package cn.iocoder.yudao.module.skit.controller.admin.tenant;
 
+import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
+import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
-import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
-import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.validation.InEnum;
-import cn.iocoder.yudao.module.skit.framework.security.SkitAdminTenantScopeGuard;
-import cn.iocoder.yudao.module.skit.framework.security.SkitManagementCommandType;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitUtf8ByteSize;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.agent.SkitAgentMapper;
+import cn.iocoder.yudao.module.skit.framework.security.SkitAdminTenantScopeGuard;
+import cn.iocoder.yudao.module.skit.framework.security.SkitManagementCommandType;
 import cn.iocoder.yudao.module.skit.service.ad.SkitAdAccountService;
-import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.app.SkitAppBuildMaterialService;
-import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
+import cn.iocoder.yudao.module.skit.service.app.SkitAppReleaseService;
 import cn.iocoder.yudao.module.skit.service.management.SkitManagementCommandExecutor;
+import cn.iocoder.yudao.module.skit.service.member.SkitMemberService;
 import cn.iocoder.yudao.module.skit.service.reconciliation.SkitReportingConfigurationService;
 import cn.iocoder.yudao.module.system.dal.dataobject.tenant.TenantDO;
 import cn.iocoder.yudao.module.system.service.tenant.TenantService;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.ToString;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import org.hibernate.validator.constraints.Length;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.validation.Valid;
+import javax.validation.constraints.Max;
+import javax.validation.constraints.Min;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Pattern;
 import javax.validation.constraints.Positive;
 import javax.validation.constraints.PositiveOrZero;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.Max;
 import javax.validation.constraints.Size;
-import org.hibernate.validator.constraints.Length;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
+import static cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService.MAX_REWARD_SECRET_PLAINTEXT_BYTES;
+import static cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService.MIN_REWARD_SECRET_PLAINTEXT_BYTES;
 
 @Tag(name = "管理后台 - 短剧租户业务")
 @RestController
@@ -98,7 +101,8 @@ public class SkitTenantBusinessController {
     }
 
     @PutMapping("/ad-account")
-    @ApiAccessLog(sanitizeKeys = {"pangleAppSecret", "takuAppKey", "takuAppSecret"})
+    @ApiAccessLog(sanitizeKeys = {"pangleAppSecret", "pangleRewardSecurityKey",
+            "takuAppKey", "takuAppSecret"})
     @Operation(summary = "保存穿山甲与 Taku 广告账号配置")
     public CommonResult<SkitAdAccountService.Settings> saveAdAccount(@Valid @RequestBody AdAccountSaveReqVO reqVO) {
         return success(adminTenantScopeGuard.writeTenant(reqVO.getTenantId(),
@@ -324,6 +328,7 @@ public class SkitTenantBusinessController {
         settings.setPangleUsername(request.getPangleUsername());
         settings.setPangleAppId(request.getPangleAppId());
         settings.setPangleAppSecret(request.getPangleAppSecret());
+        settings.setPangleRewardSecurityKey(request.getPangleRewardSecurityKey());
         settings.setPanglePlacementId(request.getPanglePlacementId());
         settings.setPangleEnabled(request.getPangleEnabled());
         settings.setTakuUsername(request.getTakuUsername());
@@ -347,6 +352,8 @@ public class SkitTenantBusinessController {
                 + ";panglePlacement=" + value.getPanglePlacementId()
                 + ";pangleEnabled=" + value.getPangleEnabled()
                 + ";pangleSecretConfigured=" + value.getPangleSecretConfigured()
+                + ";pangleRewardSecurityKeyConfigured="
+                + value.getPangleRewardSecurityKeyConfigured()
                 + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
                 + ";takuPlacement=" + value.getTakuPlacementId()
                 + ";splashPlacement=" + value.getSplashPlacementId()
@@ -365,6 +372,8 @@ public class SkitTenantBusinessController {
                 + ";panglePlacement=" + value.getPanglePlacementId()
                 + ";pangleEnabled=" + value.getPangleEnabled()
                 + ";pangleSecretProvided=" + (value.getPangleAppSecret() != null)
+                + ";pangleRewardSecurityKeyProvided="
+                + (value.getPangleRewardSecurityKey() != null)
                 + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
                 + ";takuPlacement=" + value.getTakuPlacementId()
                 + ";splashPlacement=" + value.getSplashPlacementId()
@@ -434,6 +443,12 @@ public class SkitTenantBusinessController {
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
         @ToString.Exclude
         private String pangleAppSecret;
+        @SkitUtf8ByteSize(min = MIN_REWARD_SECRET_PLAINTEXT_BYTES,
+                max = MAX_REWARD_SECRET_PLAINTEXT_BYTES, allowBlank = true,
+                message = "穿山甲奖励回调 Security Key 的 UTF-8 编码必须为 8 到 2048 字节")
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @ToString.Exclude
+        private String pangleRewardSecurityKey;
         @Size(max = 128, message = "穿山甲广告位长度不能超过 128 个字符")
         private String panglePlacementId;
         @NotNull(message = "穿山甲启用状态不能为空")

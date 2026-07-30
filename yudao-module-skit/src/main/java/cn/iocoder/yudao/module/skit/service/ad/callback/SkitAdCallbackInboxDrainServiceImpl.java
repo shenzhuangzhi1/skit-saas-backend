@@ -29,6 +29,8 @@ import java.util.function.Supplier;
 public class SkitAdCallbackInboxDrainServiceImpl implements SkitAdCallbackInboxDrainService {
 
     private static final String UNEXPECTED_ERROR_CODE = "CALLBACK_PROCESSOR_EXCEPTION";
+    private static final String PANGLE_ATTESTATION_PENDING_ERROR_CODE =
+            "PANGLE_ATTESTATION_PENDING";
     private static final String EXHAUSTED_LEASE_ERROR_CODE = "CALLBACK_LEASE_EXHAUSTED";
 
     private final SkitAdCallbackInboxMapper inboxMapper;
@@ -104,6 +106,17 @@ public class SkitAdCallbackInboxDrainServiceImpl implements SkitAdCallbackInboxD
             List<SkitAdCallbackClaimDO> claimed = new ArrayList<>(candidates.size());
             for (SkitAdCallbackClaimDO candidate : candidates) {
                 validateRoute(candidate);
+                int recoveredPrerequisite =
+                        inboxMapper.recoverExpiredPanglePrerequisiteRetryWaitCas(
+                                candidate.getTenantId(), candidate.getAdAccountId(),
+                                candidate.getId(), baseBackoffSeconds, maxBackoffSeconds);
+                if (recoveredPrerequisite == 1) {
+                    continue;
+                }
+                if (recoveredPrerequisite != 0) {
+                    throw new IllegalStateException(
+                            "Expired Pangle prerequisite recovery CAS changed multiple rows");
+                }
                 int exhausted = inboxMapper.markExpiredProcessingDeadLetterCas(
                         candidate.getTenantId(), candidate.getAdAccountId(), candidate.getId(),
                         EXHAUSTED_LEASE_ERROR_CODE, maxAttempts);
@@ -135,23 +148,55 @@ public class SkitAdCallbackInboxDrainServiceImpl implements SkitAdCallbackInboxD
             TenantUtils.execute(claim.getTenantId(), (Runnable) () ->
                     transactionTemplate.executeWithoutResult(status -> processor.process(
                             claim.getTenantId(), claim.getAdAccountId(), claim.getId(), leaseOwner)));
+        } catch (SkitRewardPrerequisitePendingException prerequisitePending) {
+            if (transitionPanglePrerequisite(claim, leaseOwner)) {
+                alertDeadLetter(claim);
+            }
         } catch (RuntimeException unexpected) {
             log.warn("[processClaim][unexpected callback processor failure; applying lease-bound retry. "
                             + "tenantId={}, adAccountId={}, inboxId={}, exceptionType={}]",
                     claim.getTenantId(), claim.getAdAccountId(), claim.getId(),
                     unexpected.getClass().getSimpleName());
-            if (transitionUnexpectedFailure(claim, leaseOwner)) {
+            if (transitionFailure(claim, leaseOwner, UNEXPECTED_ERROR_CODE)) {
                 alertDeadLetter(claim);
             }
         }
     }
 
-    private boolean transitionUnexpectedFailure(SkitAdCallbackClaimDO claim, String leaseOwner) {
+    /**
+     * A live firm-15 session waits for Pangle evidence until its reward window expires, regardless
+     * of the generic infrastructure retry budget. The mapper also schedules an immediate retry if
+     * the attestation committed between processor rollback and this transition.
+     */
+    private boolean transitionPanglePrerequisite(
+            SkitAdCallbackClaimDO claim, String leaseOwner) {
+        Boolean scheduled = TenantUtils.execute(claim.getTenantId(), () ->
+                transactionTemplate.execute(status -> {
+                    int changed = inboxMapper.markPanglePrerequisiteRetryWaitCas(
+                            claim.getTenantId(), claim.getAdAccountId(), claim.getId(), leaseOwner,
+                            baseBackoffSeconds, maxBackoffSeconds);
+                    if (changed != 0 && changed != 1) {
+                        throw new IllegalStateException(
+                                "Pangle prerequisite retry CAS changed multiple rows");
+                    }
+                    return changed == 1;
+                }));
+        if (Boolean.TRUE.equals(scheduled)) {
+            return false;
+        }
+        // A zero means that the lease was lost or the session is no longer eligible. Reuse the
+        // ordinary bounded terminal policy; it cannot dead-letter a still-live prerequisite
+        // because the strict mapper above would have won that state.
+        return transitionFailure(claim, leaseOwner, PANGLE_ATTESTATION_PENDING_ERROR_CODE);
+    }
+
+    private boolean transitionFailure(
+            SkitAdCallbackClaimDO claim, String leaseOwner, String errorCode) {
         Boolean transitionedToDeadLetter = TenantUtils.execute(claim.getTenantId(), () ->
                 transactionTemplate.execute(status -> {
                     int deadLettered = inboxMapper.markDeadLetterCas(claim.getTenantId(),
                             claim.getAdAccountId(), claim.getId(), leaseOwner,
-                            UNEXPECTED_ERROR_CODE, maxAttempts);
+                            errorCode, maxAttempts);
                     if (deadLettered == 1) {
                         return true;
                     }
@@ -160,7 +205,7 @@ public class SkitAdCallbackInboxDrainServiceImpl implements SkitAdCallbackInboxD
                     }
                     int retryScheduled = inboxMapper.markRetryWaitCas(claim.getTenantId(),
                             claim.getAdAccountId(), claim.getId(), leaseOwner,
-                            UNEXPECTED_ERROR_CODE, maxAttempts,
+                            errorCode, maxAttempts,
                             baseBackoffSeconds, maxBackoffSeconds);
                     if (retryScheduled != 0 && retryScheduled != 1) {
                         throw new IllegalStateException("Callback retry CAS changed multiple rows");

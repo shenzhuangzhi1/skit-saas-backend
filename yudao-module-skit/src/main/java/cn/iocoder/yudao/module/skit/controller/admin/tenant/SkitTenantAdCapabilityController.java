@@ -165,7 +165,8 @@ public class SkitTenantAdCapabilityController {
     @PostMapping("/callback-key/rotate")
     @Operation(summary = "签发或轮换回调密钥（原文和回调地址只返回一次）")
     @ApiAccessLog(responseEnable = false,
-            sanitizeKeys = {"callbackKey", "rewardCallbackUrl", "impressionCallbackUrl"})
+            sanitizeKeys = {"callbackKey", "rewardCallbackUrl", "impressionCallbackUrl",
+                    "pangleRewardCallbackUrl"})
     @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<CommonResult<SkitAdCallbackKeyRotateRespVO>> rotateCallbackKey(
             @Valid @RequestBody SkitAdCallbackKeyRotateReqVO request) {
@@ -229,6 +230,8 @@ public class SkitTenantAdCapabilityController {
                     result.setCallbackKey(rawKey);
                     result.setRewardCallbackUrl(callbackPublicUrlService.rewardCallbackUrl(rawKey));
                     result.setImpressionCallbackUrl(callbackPublicUrlService.impressionCallbackUrl(rawKey));
+                    result.setPangleRewardCallbackUrl(
+                            callbackPublicUrlService.pangleRewardCallbackUrl(rawKey));
                     return new SkitManagementCommandExecutor.CommandResult<>(
                             result, canonical(result));
                 });

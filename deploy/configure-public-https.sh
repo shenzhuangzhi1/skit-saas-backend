@@ -150,6 +150,30 @@ server {
         try_files \$uri =404;
     }
 
+    location ^~ /app-api/skit/ad-callback/taku/ {
+        access_log off;
+        error_log /dev/null crit;
+        proxy_pass http://${callback_upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location ^~ /app-api/skit/ad-callback/pangle/ {
+        access_log off;
+        error_log /dev/null crit;
+        proxy_pass http://${callback_upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     location / {
         proxy_pass http://${frontend_upstream};
         proxy_http_version 1.1;
@@ -183,6 +207,18 @@ server {
         try_files \$uri =404;
     }
 
+    location ^~ /app-api/skit/ad-callback/taku/ {
+        access_log off;
+        error_log /dev/null crit;
+        return 308 https://\$host\$request_uri;
+    }
+
+    location ^~ /app-api/skit/ad-callback/pangle/ {
+        access_log off;
+        error_log /dev/null crit;
+        return 308 https://\$host\$request_uri;
+    }
+
     location / {
         return 308 https://\$host\$request_uri;
     }
@@ -203,6 +239,19 @@ server {
 
     location ^~ /app-api/skit/ad-callback/taku/ {
         access_log off;
+        error_log /dev/null crit;
+        proxy_pass http://${callback_upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ^~ /app-api/skit/ad-callback/pangle/ {
+        access_log off;
+        error_log /dev/null crit;
         proxy_pass http://${callback_upstream};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;

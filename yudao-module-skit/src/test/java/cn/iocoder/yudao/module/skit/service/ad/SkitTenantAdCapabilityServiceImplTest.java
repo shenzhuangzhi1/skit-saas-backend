@@ -236,6 +236,27 @@ class SkitTenantAdCapabilityServiceImplTest {
     }
 
     @Test
+    void readinessExposesFirm15PanglePrerequisiteBlockerAtTheRolloutBoundary() {
+        SkitTenantAdCapabilityDO capability = shadowCapability()
+                .setUnlockNetworkFirmIdsJson("[15]");
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(TENANT_ID, capability)).thenReturn(
+                firm15BlockedEvidence("PANGLE_REWARD_PLACEMENT_MISSING"));
+
+        SkitTenantAdCapabilityService.ReadinessView view = service.getReadiness();
+
+        assertFalse(view.isShadowReady());
+        assertFalse(view.isProductionReady());
+        assertTrue(view.getBlockers().contains("PANGLE_REWARD_PLACEMENT_MISSING"));
+        assertFalse(view.getNetworkReadiness().get(0).isAuthoritative());
+        assertTrue(view.getNetworkReadiness().get(0).getBlockers()
+                .contains("PANGLE_REWARD_PLACEMENT_MISSING"));
+        assertFalse(view.getAvailableNetworkCapabilities().get(0).isSelectable());
+        assertTrue(view.getAvailableNetworkCapabilities().get(0).getBlockers()
+                .contains("PANGLE_REWARD_PLACEMENT_MISSING"));
+    }
+
+    @Test
     void directOffToEnforcedIsRejectedBeforeAnyWrite() {
         SkitTenantAdCapabilityDO capability = offCapability();
         when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
@@ -253,13 +274,21 @@ class SkitTenantAdCapabilityServiceImplTest {
     void credentialRotationLocksTheCapabilityAccountAndOptimisticVersion() {
         SkitTenantAdCapabilityDO capability = shadowCapability();
         when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(adAccountMapper.selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID))
+                .thenReturn("taku-reward-slot");
 
         service.lockCredentialMutationTarget(ACCOUNT_ID, 8);
 
         verify(capabilityMapper).selectByTenantForUpdate(TENANT_ID);
+        verify(adAccountMapper).selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
         assertServiceException(() -> service.lockCredentialMutationTarget(ACCOUNT_ID, 7),
                 AD_ROLLOUT_VERSION_CONFLICT);
         assertServiceException(() -> service.lockCredentialMutationTarget(9999L, 8),
+                AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
+
+        when(adAccountMapper.selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID))
+                .thenReturn(null);
+        assertServiceException(() -> service.lockCredentialMutationTarget(ACCOUNT_ID, 8),
                 AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
     }
 
@@ -276,6 +305,27 @@ class SkitTenantAdCapabilityServiceImplTest {
                 "SHADOW_TEST_MEMBERS_MISSING");
 
         verify(capabilityMapper, never()).transitionCas(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void firm15PanglePrerequisiteBlocksBothShadowAndEnforcedTransitions() {
+        SkitTenantAdCapabilityDO off = offCapability().setUnlockNetworkFirmIdsJson("[15]");
+        SkitTenantAdCapabilityDO shadow = shadowCapability().setUnlockNetworkFirmIdsJson("[15]");
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(off, shadow);
+        when(evidenceReader.read(TENANT_ID, off)).thenReturn(
+                firm15BlockedEvidence("PANGLE_ENABLED_ACCOUNT_MISSING"));
+        when(evidenceReader.read(TENANT_ID, shadow)).thenReturn(
+                firm15BlockedEvidence("PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING"));
+
+        assertServiceException(() -> service.transition(transition(
+                        "SHADOW_TEST_USERS", 3, "2.4.0", 1)),
+                AD_ROLLOUT_NOT_READY, "PANGLE_ENABLED_ACCOUNT_MISSING");
+        assertServiceException(() -> service.transition(transition(
+                        "ENFORCED", 8, "2.4.0", 1)),
+                AD_ROLLOUT_NOT_READY, "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING");
+
+        verify(capabilityMapper, never()).transitionCas(any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(releaseProfileMapper, nativePlayerGrantMapper, adSessionMapper);
     }
 
     @Test
@@ -412,6 +462,53 @@ class SkitTenantAdCapabilityServiceImplTest {
     }
 
     @Test
+    void configurationCannotSelectFirm15WithoutItsPanglePrerequisites() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(firm15BlockedEvidence(
+                        "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING"));
+        SkitTenantAdCapabilityService.ConfigurationCommand command = configuration(3);
+        command.setUnlockNetworkFirmIds(Collections.singleton(15));
+
+        assertServiceException(() -> service.configure(command), AD_ROLLOUT_NOT_READY,
+                "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING");
+
+        verify(networkCapabilityMapper, never()).selectAllForShare(any(), any());
+        verify(capabilityMapper, never()).updateConfigurationCas(any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void configurationCanSelectFirm15AfterItsPanglePrerequisitesAreReady() {
+        SkitTenantAdCapabilityDO capability = offCapability();
+        SkitTenantAdReadinessEvidence evidence = readyEvidence()
+                .setAvailableNetworkCapabilities(Collections.singletonList(
+                        networkEvidence(15)))
+                .setNetworkReadiness(Collections.singletonList(networkEvidence(15)));
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(capability);
+        when(evidenceReader.read(eq(TENANT_ID), any(SkitTenantAdCapabilityDO.class)))
+                .thenReturn(evidence);
+        when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID))
+                .thenReturn(Collections.singletonList(networkCapability(15, true)));
+        when(capabilityMapper.updateConfigurationCas(TENANT_ID, capability.getId(), 3,
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[15]",
+                "[101,102]", "2.4.0", 1)).thenReturn(1);
+        when(capabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(offCapability().setUnlockNetworkFirmIdsJson("[15]")
+                        .setReadinessVersion(4));
+        SkitTenantAdCapabilityService.ConfigurationCommand command = configuration(3);
+        command.setUnlockNetworkFirmIds(Collections.singleton(15));
+
+        SkitTenantAdCapabilityService.CapabilityView saved = service.configure(command);
+
+        assertEquals(Collections.singleton(15), saved.getUnlockNetworkFirmIds());
+        verify(capabilityMapper).updateConfigurationCas(TENANT_ID, capability.getId(), 3,
+                ACCOUNT_ID, "unlock-placement-42", true, true, true, "[15]",
+                "[101,102]", "2.4.0", 1);
+    }
+
+    @Test
     void offConfigurationRejectsDisabledUnverifiedOrWrongAuthorityCapability() {
         SkitTenantAdCapabilityDO capability = offCapability();
         SkitAdNetworkCapabilityDO unverified = networkCapability(67, true).setVerifiedAt(null);
@@ -544,6 +641,86 @@ class SkitTenantAdCapabilityServiceImplTest {
         lockOrder.verify(adAccountMapper)
                 .selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
         lockOrder.verify(networkCapabilityMapper).selectForUpdate(TENANT_ID, ACCOUNT_ID, 46);
+        verify(evidenceReader, never()).readNetworkPrerequisiteBlockers(any(), any());
+    }
+
+    @Test
+    void firm15VerificationFailsClosedBeforeItsCapabilityRowIsWritten() {
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(offCapability());
+        when(evidenceReader.readNetworkPrerequisiteBlockers(TENANT_ID, 15))
+                .thenReturn(Collections.singletonList(
+                        "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING"));
+
+        assertServiceException(() -> service.verifyNetworkCapability(networkCommand(15, true)),
+                AD_ROLLOUT_NOT_READY, "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING");
+
+        verify(networkCapabilityMapper, never()).selectForUpdate(any(), any(), any());
+        verify(networkCapabilityMapper, never()).upsertVerified(
+                any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(capabilityMapper, never()).bumpNetworkCapabilityVersionCas(any(), any(), any(), any());
+    }
+
+    @Test
+    void firm15VerificationFailsClosedWhenPrerequisiteEvidenceIsUnavailable() {
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(offCapability());
+        when(evidenceReader.readNetworkPrerequisiteBlockers(TENANT_ID, 15)).thenReturn(null);
+
+        assertServiceException(() -> service.verifyNetworkCapability(networkCommand(15, true)),
+                AD_ROLLOUT_NOT_READY, "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+
+        verifyNoInteractions(networkCapabilityMapper);
+    }
+
+    @Test
+    void firm15VerificationProceedsOnlyAfterPrerequisitesAreReady() {
+        SkitAdNetworkCapabilityDO network15 = networkCapability(15, true);
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(offCapability());
+        when(evidenceReader.readNetworkPrerequisiteBlockers(TENANT_ID, 15))
+                .thenReturn(Collections.emptyList());
+        when(networkCapabilityMapper.selectForUpdate(TENANT_ID, ACCOUNT_ID, 15))
+                .thenReturn(null);
+        when(networkCapabilityMapper.upsertVerified(TENANT_ID, ACCOUNT_ID, 15,
+                "SIGNED_REWARD", true, true, true, true, true)).thenReturn(1);
+        when(capabilityMapper.bumpNetworkCapabilityVersionCas(
+                TENANT_ID, 700L, ACCOUNT_ID, 3)).thenReturn(1);
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 15))
+                .thenReturn(network15);
+
+        SkitTenantAdCapabilityService.NetworkCapabilityView saved =
+                service.verifyNetworkCapability(networkCommand(15, true));
+
+        assertEquals(15, saved.getNetworkFirmId());
+        assertTrue(saved.isSelectable());
+        verify(networkCapabilityMapper).upsertVerified(TENANT_ID, ACCOUNT_ID, 15,
+                "SIGNED_REWARD", true, true, true, true, true);
+    }
+
+    @Test
+    void firm15CanAlwaysBeDisabledToRecoverFromMissingPrerequisites() {
+        SkitAdNetworkCapabilityDO existing = networkCapability(15, true);
+        when(capabilityMapper.selectByTenantForUpdate(TENANT_ID)).thenReturn(offCapability());
+        when(networkCapabilityMapper.selectForUpdate(TENANT_ID, ACCOUNT_ID, 15))
+                .thenReturn(existing);
+        when(networkCapabilityMapper.disable(TENANT_ID, ACCOUNT_ID, 15)).thenReturn(1);
+        when(capabilityMapper.bumpNetworkCapabilityVersionCas(
+                TENANT_ID, 700L, ACCOUNT_ID, 3)).thenReturn(1);
+        when(networkCapabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 15))
+                .thenReturn(networkCapability(15, false));
+
+        SkitTenantAdCapabilityService.NetworkCapabilityView saved =
+                service.verifyNetworkCapability(networkCommand(15, false));
+
+        assertFalse(saved.isEnabled());
+        verify(evidenceReader, never()).readNetworkPrerequisiteBlockers(any(), any());
+        verify(networkCapabilityMapper).disable(TENANT_ID, ACCOUNT_ID, 15);
+    }
+
+    @Test
+    void overseasPangleFirm50IsRejectedAtConfigurationBoundary() {
+        assertServiceException(() -> service.verifyNetworkCapability(networkCommand(50, true)),
+                AD_ROLLOUT_CONFIG_INVALID, "PANGLE_OVERSEAS_FIRM_UNAUTHORIZED");
+
+        verifyNoInteractions(networkCapabilityMapper);
     }
 
     @Test
@@ -560,6 +737,28 @@ class SkitTenantAdCapabilityServiceImplTest {
         verify(adAccountMapper).selectEnabledTakuPlacementId(TENANT_ID, ACCOUNT_ID);
         verify(adAccountMapper, never())
                 .selectEnabledTakuPlacementIdForUpdate(TENANT_ID, ACCOUNT_ID);
+    }
+
+    @Test
+    void capabilityListingMakesOnlyBlockedFirm15NonSelectable() {
+        when(networkCapabilityMapper.selectAllForShare(TENANT_ID, ACCOUNT_ID)).thenReturn(
+                Arrays.asList(networkCapability(66, true), networkCapability(15, true)));
+        when(evidenceReader.readNetworkPrerequisiteBlockers(TENANT_ID, 15))
+                .thenReturn(Collections.singletonList(
+                        "PANGLE_REWARD_PLACEMENT_MISSING"));
+
+        List<SkitTenantAdCapabilityService.NetworkCapabilityView> capabilities =
+                service.listNetworkCapabilities(ACCOUNT_ID);
+
+        assertEquals(Arrays.asList(15, 66), capabilities.stream()
+                .map(SkitTenantAdCapabilityService.NetworkCapabilityView::getNetworkFirmId)
+                .collect(Collectors.toList()));
+        assertFalse(capabilities.get(0).isSelectable());
+        assertTrue(capabilities.get(0).getBlockers()
+                .contains("PANGLE_REWARD_PLACEMENT_MISSING"));
+        assertTrue(capabilities.get(1).isSelectable());
+        assertTrue(capabilities.get(1).getBlockers().isEmpty());
+        verify(evidenceReader).readNetworkPrerequisiteBlockers(TENANT_ID, 15);
     }
 
     @Test
@@ -818,6 +1017,21 @@ class SkitTenantAdCapabilityServiceImplTest {
                 .setSignedRewardSourceRefs(Collections.singletonList("012345abcdef"))
                 .setImpressionSourceRefs(Collections.singletonList("012345abcdef"))
                 .setPairedSourceRefs(Collections.singletonList("012345abcdef"));
+    }
+
+    private SkitTenantAdReadinessEvidence firm15BlockedEvidence(String blocker) {
+        SkitTenantAdReadinessEvidence.NetworkEvidence network = networkEvidence(15)
+                .setAuthoritative(false).setSelectable(false)
+                .setSignedRewardObserved(false).setImpressionObserved(false)
+                .setPairedSourceObserved(false)
+                .setCapabilityBlockers(Collections.singletonList(blocker))
+                .setBlockers(Collections.singletonList(blocker));
+        return readyEvidence().setUnlockNetworksAuthoritative(false)
+                .setSignedRewardCallbackObserved(false)
+                .setImpressionCallbackObserved(false)
+                .setPairedSourceEvidenceObserved(false)
+                .setAvailableNetworkCapabilities(Collections.singletonList(network))
+                .setNetworkReadiness(Collections.singletonList(network));
     }
 
 }

@@ -157,9 +157,17 @@ public final class SkitAdSchemaSignature {
                 "tenant_id,ad_account_id,report_date,final_window,status");
         addIndex(releasedIndexes, "skit_ad_revenue_event", "idx_skit_revenue_report_pending", false,
                 "tenant_id,ad_account_id,reconciliation_revision_id,occurred_time,id");
+        addIndex(releasedIndexes, "skit_ad_session", "idx_skit_ad_session_pangle_credential", false,
+                "tenant_id,pangle_ad_account_id,pangle_reward_secret_version");
         RELEASED_ADDITIVE_INDEXES = immutableIndexMap(releasedIndexes);
 
         Map<String, Map<String, List<String>>> columnDefinitions = new LinkedHashMap<>();
+        addColumnDefinition(columnDefinitions, "skit_ad_session", "pangle_ad_account_id",
+                "bigint|YES|<NULL>||<NULL>");
+        addColumnDefinition(columnDefinitions, "skit_ad_session", "pangle_reward_secret_version",
+                "int|YES|<NULL>||<NULL>");
+        addColumnDefinition(columnDefinitions, "skit_ad_session", "pangle_reward_placement_id",
+                "varchar(128)|YES|<NULL>||<NULL>");
         addColumnDefinition(columnDefinitions, "skit_content_entitlement", "lease_activated_at",
                 "datetime|NO|<NULL>||<NULL>", "datetime|YES|<NULL>||<NULL>",
                 "datetime|NO|<NULL>||", "datetime|YES|<NULL>||");
@@ -216,6 +224,17 @@ public final class SkitAdSchemaSignature {
         RELEASED_COLUMN_DEFINITIONS = immutableIndexMap(columnDefinitions);
 
         Map<String, Map<String, List<String>>> foreignKeyDefinitions = new LinkedHashMap<>();
+        foreignKeyDefinitions.computeIfAbsent("skit_ad_session", ignored -> new LinkedHashMap<>())
+                .put("fk_skit_ad_session_pangle_account", Collections.unmodifiableList(foreignKeyRows(
+                        "fk_skit_ad_session_pangle_account", "tenant_id,pangle_ad_account_id",
+                        "skit_ad_account", "tenant_id,id")));
+        foreignKeyDefinitions.get("skit_ad_session")
+                .put("fk_skit_ad_session_pangle_reward_secret",
+                        Collections.unmodifiableList(foreignKeyRows(
+                                "fk_skit_ad_session_pangle_reward_secret",
+                                "tenant_id,pangle_ad_account_id,pangle_reward_secret_version",
+                                "skit_ad_reward_secret_version",
+                                "tenant_id,ad_account_id,secret_version")));
         foreignKeyDefinitions.computeIfAbsent("skit_ad_report_pull", ignored -> new LinkedHashMap<>())
                 .put("fk_skit_report_pull_credential", Collections.unmodifiableList(foreignKeyRows(
                         "fk_skit_report_pull_credential", "tenant_id,ad_account_id,credential_version",
@@ -224,6 +243,14 @@ public final class SkitAdSchemaSignature {
         RELEASED_FOREIGN_KEY_DEFINITIONS = immutableIndexMap(foreignKeyDefinitions);
 
         Map<String, Map<String, String>> checkDefinitions = new LinkedHashMap<>();
+        addCheckDefinition(checkDefinitions, "skit_ad_session", "ck_skit_ad_session_pangle_snapshot",
+                "((`pangle_ad_account_id` IS NULL AND `pangle_reward_secret_version` IS NULL "
+                        + "AND `pangle_reward_placement_id` IS NULL) OR "
+                        + "(`pangle_ad_account_id` IS NOT NULL "
+                        + "AND `pangle_reward_secret_version` IS NOT NULL "
+                        + "AND `pangle_reward_secret_version`>0 "
+                        + "AND `pangle_reward_placement_id` IS NOT NULL "
+                        + "AND CHAR_LENGTH(`pangle_reward_placement_id`)>0))");
         addCheckDefinition(checkDefinitions, "skit_ad_report_pull", "ck_skit_report_pull_money",
                 "REGEXP_LIKE(`currency`,'^[A-Z]{3}$') AND `amount_scale` BETWEEN 0 AND 18");
         addCheckDefinition(checkDefinitions, "skit_ad_report_pull", "ck_skit_report_pull_timezone",

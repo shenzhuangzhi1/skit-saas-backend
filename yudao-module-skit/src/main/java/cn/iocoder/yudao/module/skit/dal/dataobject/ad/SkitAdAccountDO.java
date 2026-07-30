@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.skit.dal.dataobject.ad;
 import cn.iocoder.yudao.framework.mybatis.core.type.EncryptTypeHandler;
 import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
 import java.time.LocalDateTime;
@@ -22,8 +23,12 @@ public class SkitAdAccountDO extends TenantBaseDO {
     private String accountName;
     private String accountId;
     private String appId;
+    @JsonIgnore
+    @ToString.Exclude
     @TableField(typeHandler = EncryptTypeHandler.class)
     private String appKey;
+    @JsonIgnore
+    @ToString.Exclude
     @TableField(typeHandler = EncryptTypeHandler.class)
     private String secret;
     private String configData;

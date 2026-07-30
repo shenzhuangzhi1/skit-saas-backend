@@ -51,4 +51,13 @@ public interface SkitAdRewardSecretVersionMapper {
                             @Param("id") Long id,
                             @Param("acceptUntil") LocalDateTime acceptUntil);
 
+    @Update("UPDATE `skit_ad_reward_secret_version` SET `active`=b'0',"
+            + "`revoked_at`=#{revokedAt},`updater`='credential-revocation',"
+            + "`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `ad_account_id`=#{adAccountId} "
+            + "AND `revoked_at` IS NULL")
+    int revokeAllUnrevokedVersions(@Param("tenantId") Long tenantId,
+                                   @Param("adAccountId") Long adAccountId,
+                                   @Param("revokedAt") LocalDateTime revokedAt);
+
 }

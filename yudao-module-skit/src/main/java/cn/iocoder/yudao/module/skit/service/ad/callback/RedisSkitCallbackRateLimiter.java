@@ -24,11 +24,12 @@ public class RedisSkitCallbackRateLimiter implements SkitCallbackRateLimiter {
     }
 
     @Override
-    public void check(String callbackKey, String clientIp, String callbackType) {
+    public void check(String provider, String callbackKey, String clientIp, String callbackType) {
+        String providerNamespace = requireProvider(provider);
         String type = requireType(callbackType);
         String ipGateKey = "skit:ad-callback:ddos:ip:"
                 + sha256Hex("client-ip\0" + requireValue(clientIp));
-        String businessKey = "skit:ad-callback:" + type + ":key:"
+        String businessKey = "skit:ad-callback:" + providerNamespace + ":" + type + ":key:"
                 + sha256Hex("callback-key\0" + requireValue(callbackKey));
         if (!Boolean.TRUE.equals(redis.tryAcquire(ipGateKey, GLOBAL_IP_REQUESTS_PER_MINUTE,
                 60, TimeUnit.SECONDS))) {
@@ -38,6 +39,14 @@ public class RedisSkitCallbackRateLimiter implements SkitCallbackRateLimiter {
                 60, TimeUnit.SECONDS))) {
             throw new RateLimitExceededException();
         }
+    }
+
+    private static String requireProvider(String value) {
+        String normalized = requireValue(value).toUpperCase(Locale.ROOT);
+        if (!"TAKU".equals(normalized) && !"PANGLE".equals(normalized)) {
+            throw new IllegalArgumentException("Unsupported callback provider");
+        }
+        return normalized.toLowerCase(Locale.ROOT);
     }
 
     private static String requireType(String value) {

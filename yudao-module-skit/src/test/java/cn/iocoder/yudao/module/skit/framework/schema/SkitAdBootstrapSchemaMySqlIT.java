@@ -61,8 +61,10 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         assertPolicySnapshotImmutabilityTriggers();
         executeBootstrap(standalone);
         executeBootstrap(standalone);
+        validatePangleRewardCallbackSchema();
         initializeSkitSchema();
         validateCanonicalSchema();
+        validatePangleRewardCallbackSchema();
         assertLegacySingletonIndexes();
         assertPolicySnapshotImmutabilityTriggers();
     }
@@ -110,6 +112,7 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         initializeSkitSchema();
         initializeSkitSchema();
         validateCanonicalSchema();
+        validatePangleRewardCallbackSchema();
         assertEquals(directFingerprints, task7HardenedFingerprints(),
                 "initializer must accept the final bootstrap without reshaping hardened tables");
         assertLegacySingletonIndexes();
@@ -123,6 +126,10 @@ class SkitAdBootstrapSchemaMySqlIT extends SkitMySqlIntegrationTestBase {
         initializer.validateTask5SchemaHardening(true);
         initializer.validateTask7SchemaHardening(true);
         initializer.validateContentEntitlementLeaseActivationSchema(true);
+    }
+
+    private void validatePangleRewardCallbackSchema() {
+        new SkitSchemaInitializer(jdbc()).validatePangleRewardCallbackSchema(true);
     }
 
     private Map<String, String> task7HardenedFingerprints() {

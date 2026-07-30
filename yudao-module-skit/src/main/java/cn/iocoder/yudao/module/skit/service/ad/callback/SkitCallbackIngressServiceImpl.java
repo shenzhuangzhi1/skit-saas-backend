@@ -433,7 +433,7 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
     private void applyRateLimit(String callbackKey, String clientIp, String callbackType) {
         // A rate limit is transient overload, never a deterministic Taku 602. Propagating keeps
         // provider retry semantics while still stopping routing and durable edge/inbox writes.
-        rateLimiter.check(callbackKey, clientIp, callbackType);
+        rateLimiter.check(PROVIDER, callbackKey, clientIp, callbackType);
     }
 
     private SkitCallbackRoutingService.CallbackRoute resolveRoute(

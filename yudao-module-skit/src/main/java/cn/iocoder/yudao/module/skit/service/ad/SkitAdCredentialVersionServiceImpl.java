@@ -115,8 +115,13 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
     public CredentialMetadata rotateRewardSecret(long tenantId, long adAccountId, byte[] rewardSecret,
                                                  Duration priorAcceptanceWindow) {
         validateScopeAndWindow(tenantId, adAccountId, priorAcceptanceWindow);
-        if (rewardSecret == null || rewardSecret.length == 0) {
-            throw new IllegalArgumentException("Reward secret must not be empty");
+        if (rewardSecret == null
+                || rewardSecret.length < MIN_REWARD_SECRET_PLAINTEXT_BYTES
+                || rewardSecret.length > MAX_REWARD_SECRET_PLAINTEXT_BYTES) {
+            throw new IllegalArgumentException(
+                    "Reward secret must contain between "
+                            + MIN_REWARD_SECRET_PLAINTEXT_BYTES + " and "
+                            + MAX_REWARD_SECRET_PLAINTEXT_BYTES + " bytes");
         }
         AtomicReference<CredentialMetadata> result = new AtomicReference<>();
         TenantUtils.execute(tenantId, () -> result.set(rotateRewardSecretInsideTenant(
@@ -161,6 +166,26 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
         }
         return new CredentialMetadata(tenantId, adAccountId, nextVersion, true,
                 rotationTime, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean revokeAllRewardSecrets(long tenantId, long adAccountId) {
+        validateScope(tenantId, adAccountId);
+        AtomicReference<Boolean> revoked = new AtomicReference<>(Boolean.FALSE);
+        TenantUtils.execute(tenantId, () -> revoked.set(
+                revokeAllRewardSecretsInsideTenant(tenantId, adAccountId)));
+        return Boolean.TRUE.equals(revoked.get());
+    }
+
+    private boolean revokeAllRewardSecretsInsideTenant(long tenantId, long adAccountId) {
+        lockAccount(tenantId, adAccountId);
+        int changed = rewardSecretMapper.revokeAllUnrevokedVersions(
+                tenantId, adAccountId, now());
+        if (changed < 0) {
+            throw new IllegalStateException("Reward credential revocation count is invalid");
+        }
+        return changed > 0;
     }
 
     @Override

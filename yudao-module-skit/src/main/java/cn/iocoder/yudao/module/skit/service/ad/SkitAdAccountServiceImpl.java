@@ -5,7 +5,9 @@ import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdAccountDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,6 +15,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -36,6 +40,10 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     private ObjectMapper objectMapper;
     @Resource
     private SkitPlatformAdminGuard platformAdminGuard;
+    @Resource
+    private SkitAdCredentialVersionService credentialVersionService;
+    @Resource
+    private SkitTenantAdCapabilityMapper tenantCapabilityMapper;
 
     @Override
     public Settings getSettings() {
@@ -72,10 +80,19 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
     @Transactional(rollbackFor = Exception.class)
     public Settings saveSettings(Settings settings) {
         validateSettings(settings);
+        boolean explicitlyClearsPanglePlacement =
+                settings.getPanglePlacementId() != null
+                        && StrUtil.isBlank(settings.getPanglePlacementId());
+        if (!Boolean.TRUE.equals(settings.getPangleEnabled())
+                || explicitlyClearsPanglePlacement) {
+            guardPangleRewardPrerequisiteRemoval(
+                    TenantContextHolder.getRequiredTenantId());
+        }
         ensureDefaultAccounts();
         saveProvider(PROVIDER_PANGLE, settings.getPangleUsername(), settings.getPangleAppId(), null,
                 settings.getPangleAppSecret(), settings.getPanglePlacementId(),
                 null, null, null, null, settings.getPangleEnabled());
+        rotatePangleRewardSecurityKey(settings.getPangleRewardSecurityKey());
         saveProvider(PROVIDER_TAKU, settings.getTakuUsername(), settings.getTakuAppId(), settings.getTakuAppKey(),
                 settings.getTakuAppSecret(), settings.getTakuPlacementId(),
                 settings.getSplashPlacementId(),
@@ -95,13 +112,53 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         if (!PROVIDER_PANGLE.equals(normalizedProvider) && !PROVIDER_TAKU.equals(normalizedProvider)) {
             throw exception(AD_PROVIDER_INVALID);
         }
-        if (accountMapper.selectByProvider(normalizedProvider) == null) {
+        long tenantId = TenantContextHolder.getRequiredTenantId();
+        if (PROVIDER_PANGLE.equals(normalizedProvider)) {
+            guardPangleRewardPrerequisiteRemoval(tenantId);
+        }
+        SkitAdAccountDO account =
+                accountMapper.selectByProviderForUpdate(tenantId, normalizedProvider);
+        if (account == null || !Objects.equals(account.getTenantId(), tenantId)
+                || !normalizedProvider.equals(account.getProvider())
+                || account.getId() == null || account.getId() <= 0) {
             throw exception(AD_ACCOUNT_NOT_EXISTS);
         }
         if (PROVIDER_PANGLE.equals(normalizedProvider)) {
+            credentialVersionService.revokeAllRewardSecrets(
+                    tenantId, account.getId());
             accountMapper.clearPangleCredentials();
         } else {
             accountMapper.clearTakuCredentials();
+        }
+    }
+
+    /**
+     * Keeps the global lock order capability -> account used by rollout configuration.
+     * A live firm-15 rollout cannot be left creating sessions without its mandatory
+     * Pangle evidence snapshot.
+     */
+    private void guardPangleRewardPrerequisiteRemoval(long tenantId) {
+        SkitTenantAdCapabilityDO capability =
+                tenantCapabilityMapper.selectByTenantForUpdate(tenantId);
+        if (capability == null) {
+            return;
+        }
+        if (!Objects.equals(capability.getTenantId(), tenantId)) {
+            throw new IllegalStateException(
+                    "Advertising capability mapper returned a cross-tenant row");
+        }
+        Set<Integer> selectedNetworks;
+        try {
+            selectedNetworks = SkitTenantAdCapabilityServiceImpl.parseIntegerSet(
+                    capability.getUnlockNetworkFirmIdsJson());
+        } catch (RuntimeException invalidStoredCapability) {
+            throw exception(AD_ACCOUNT_CONFIG_INVALID,
+                    "广告发布配置异常，禁止移除穿山甲奖励回调凭证");
+        }
+        if (selectedNetworks.contains(15)
+                && !"OFF".equals(capability.getRolloutState())) {
+            throw exception(AD_ACCOUNT_CONFIG_INVALID,
+                    "先将穿山甲 15 从授奖网络移除并把发布状态切换为 OFF");
         }
     }
 
@@ -209,9 +266,10 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
                 ? CommonStatusEnum.ENABLE.getStatus() : CommonStatusEnum.DISABLE.getStatus();
         if (Boolean.TRUE.equals(enabled)) {
             if (PROVIDER_PANGLE.equals(provider)
-                    && (!StrUtil.isNotBlank(normalizedAppId) || !StrUtil.isNotBlank(effectiveAppSecret))) {
+                    && !StrUtil.isAllNotBlank(normalizedAppId, effectiveAppSecret,
+                    normalizedPlacementId)) {
                 throw exception(AD_ACCOUNT_CONFIG_INVALID,
-                        "PANGLE 启用前必须配置 App ID 和内容接口 Server Key");
+                        "PANGLE 启用前必须配置 App ID、内容接口 Server Key 和激励视频广告位");
             }
             if (PROVIDER_TAKU.equals(provider)
                     && (!StrUtil.isAllNotBlank(normalizedAppId, normalizedPlacementId)
@@ -327,6 +385,12 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
         validateLength(settings.getPangleAppId(), 128, "PANGLE App ID 最长 128 个字符");
         validateLength(settings.getPangleAppSecret(), 2048,
                 "PANGLE 内容接口 Server Key 最长 2048 个字符");
+        validateLength(settings.getPangleRewardSecurityKey(), 2048,
+                "PANGLE 奖励回调 Security Key 最长 2048 个字符");
+        validateOptionalUtf8ByteLength(settings.getPangleRewardSecurityKey(),
+                SkitAdCredentialVersionService.MIN_REWARD_SECRET_PLAINTEXT_BYTES,
+                SkitAdCredentialVersionService.MAX_REWARD_SECRET_PLAINTEXT_BYTES,
+                "PANGLE 奖励回调 Security Key 的 UTF-8 编码必须为 8 到 2048 字节");
         validateLength(settings.getPanglePlacementId(), 128, "PANGLE 广告位最长 128 个字符");
         validateLength(settings.getTakuUsername(), 128, "TAKU 账号最长 128 个字符");
         validateLength(settings.getTakuAppId(), 128, "TAKU App ID 最长 128 个字符");
@@ -381,6 +445,7 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             result.setPanglePlacementId(readPlacementId(account.getConfigData()));
             result.setPangleEnabled(enabled);
             result.setPangleSecretConfigured(secretConfigured);
+            result.setPangleRewardSecurityKeyConfigured(hasActiveRewardSecret(account));
         } else if (PROVIDER_TAKU.equals(account.getProvider())) {
             result.setTakuUsername(account.getAccountName());
             result.setTakuAppId(account.getAppId());
@@ -396,6 +461,48 @@ public class SkitAdAccountServiceImpl implements SkitAdAccountService {
             result.setTakuEnabled(enabled);
             result.setTakuSecretConfigured(secretConfigured);
         }
+    }
+
+    private void rotatePangleRewardSecurityKey(String requestedSecurityKey) {
+        if (StrUtil.isBlank(requestedSecurityKey)) {
+            return;
+        }
+        long tenantId = TenantContextHolder.getRequiredTenantId();
+        SkitAdAccountDO account = accountMapper.selectByProviderForUpdate(tenantId, PROVIDER_PANGLE);
+        if (account == null || !Objects.equals(account.getTenantId(), tenantId)
+                || !PROVIDER_PANGLE.equals(account.getProvider()) || account.getId() == null) {
+            throw exception(AD_ACCOUNT_NOT_EXISTS);
+        }
+        byte[] secret = requestedSecurityKey.getBytes(StandardCharsets.UTF_8);
+        try {
+            credentialVersionService.rotateRewardSecret(
+                    tenantId, account.getId(), secret, Duration.ofHours(24));
+        } finally {
+            Arrays.fill(secret, (byte) 0);
+        }
+    }
+
+    private static void validateOptionalUtf8ByteLength(
+            String value, int minBytes, int maxBytes, String message) {
+        if (StrUtil.isBlank(value)) {
+            return;
+        }
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        try {
+            if (encoded.length < minBytes || encoded.length > maxBytes) {
+                throw exception(AD_ACCOUNT_CONFIG_INVALID, message);
+            }
+        } finally {
+            Arrays.fill(encoded, (byte) 0);
+        }
+    }
+
+    private boolean hasActiveRewardSecret(SkitAdAccountDO account) {
+        if (account.getTenantId() == null || account.getId() == null) {
+            return false;
+        }
+        return credentialVersionService.getActiveRewardSecretVersion(
+                account.getTenantId(), account.getId()) != null;
     }
 
     private String writePlacementConfig(String provider, String placementId,

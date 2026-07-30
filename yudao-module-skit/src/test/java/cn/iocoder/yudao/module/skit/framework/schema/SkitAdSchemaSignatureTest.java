@@ -171,6 +171,64 @@ class SkitAdSchemaSignatureTest {
     }
 
     @Test
+    void shouldProjectExactPangleSessionExtensionBackToTask7Shape() {
+        assertEquals(Collections.emptyList(), SkitAdSchemaSignature.releasedColumnRows(
+                "skit_ad_session", Arrays.asList(
+                        "0030|pangle_ad_account_id|bigint|YES|<NULL>||<NULL>",
+                        "0031|pangle_reward_secret_version|int|YES|<NULL>||<NULL>",
+                        "0032|pangle_reward_placement_id|varchar(128)|YES|<NULL>||<NULL>")));
+        assertEquals(Collections.emptyList(), SkitAdSchemaSignature.releasedIndexRows(
+                "skit_ad_session", indexRows("idx_skit_ad_session_pangle_credential", false,
+                        "tenant_id,pangle_ad_account_id,pangle_reward_secret_version")));
+        assertEquals(Collections.emptyList(), SkitAdSchemaSignature.releasedForeignKeyRows(
+                "skit_ad_session", Arrays.asList(
+                        "fk_skit_ad_session_pangle_account|0001|tenant_id|skit_ad_account|tenant_id|"
+                                + "RESTRICT|RESTRICT",
+                        "fk_skit_ad_session_pangle_account|0002|pangle_ad_account_id|skit_ad_account|id|"
+                                + "RESTRICT|RESTRICT",
+                        "fk_skit_ad_session_pangle_reward_secret|0001|tenant_id|"
+                                + "skit_ad_reward_secret_version|tenant_id|RESTRICT|RESTRICT",
+                        "fk_skit_ad_session_pangle_reward_secret|0002|pangle_ad_account_id|"
+                                + "skit_ad_reward_secret_version|ad_account_id|RESTRICT|RESTRICT",
+                        "fk_skit_ad_session_pangle_reward_secret|0003|pangle_reward_secret_version|"
+                                + "skit_ad_reward_secret_version|secret_version|RESTRICT|RESTRICT")));
+        assertEquals(Collections.emptyList(), SkitAdSchemaSignature.releasedCheckRows(
+                "skit_ad_session", Collections.singletonList(
+                        "ck_skit_ad_session_pangle_snapshot|"
+                                + "((`pangle_ad_account_id` IS NULL "
+                                + "AND `pangle_reward_secret_version` IS NULL "
+                                + "AND `pangle_reward_placement_id` IS NULL) OR "
+                                + "(`pangle_ad_account_id` IS NOT NULL "
+                                + "AND `pangle_reward_secret_version` IS NOT NULL "
+                                + "AND `pangle_reward_secret_version`>0 "
+                                + "AND `pangle_reward_placement_id` IS NOT NULL "
+                                + "AND CHAR_LENGTH(`pangle_reward_placement_id`)>0))")));
+    }
+
+    @Test
+    void shouldRejectDriftedPangleSessionExtensionWithoutHidingUnknownArtifacts() {
+        assertThrows(IllegalStateException.class, () -> SkitAdSchemaSignature.releasedColumnRows(
+                "skit_ad_session", Collections.singletonList(
+                        "0030|pangle_ad_account_id|varchar(64)|YES|<NULL>||<NULL>")));
+        assertThrows(IllegalStateException.class, () -> SkitAdSchemaSignature.releasedIndexRows(
+                "skit_ad_session", indexRows("idx_skit_ad_session_pangle_credential", true,
+                        "tenant_id,pangle_ad_account_id,pangle_reward_secret_version")));
+        assertThrows(IllegalStateException.class, () -> SkitAdSchemaSignature.releasedForeignKeyRows(
+                "skit_ad_session", Arrays.asList(
+                        "fk_skit_ad_session_pangle_account|0001|tenant_id|skit_ad_account|tenant_id|"
+                                + "CASCADE|RESTRICT",
+                        "fk_skit_ad_session_pangle_account|0002|pangle_ad_account_id|skit_ad_account|id|"
+                                + "CASCADE|RESTRICT")));
+        assertThrows(IllegalStateException.class, () -> SkitAdSchemaSignature.releasedCheckRows(
+                "skit_ad_session", Collections.singletonList(
+                        "ck_skit_ad_session_pangle_snapshot|`pangle_ad_account_id` IS NULL")));
+
+        String unknown = "idx_skit_ad_session_future|1|0001|tenant_id|<NULL>|A|BTREE|<NULL>";
+        assertEquals(Collections.singletonList(unknown), SkitAdSchemaSignature.releasedIndexRows(
+                "skit_ad_session", Collections.singletonList(unknown)));
+    }
+
+    @Test
     void shouldProjectExactTask10ReplacementIndexBackToReleasedShape() {
         List<String> task10Rows = indexRows("uk_skit_report_pull_response", true,
                 "tenant_id,ad_account_id,range_start,range_end,request_hash,response_hash,credential_version,"

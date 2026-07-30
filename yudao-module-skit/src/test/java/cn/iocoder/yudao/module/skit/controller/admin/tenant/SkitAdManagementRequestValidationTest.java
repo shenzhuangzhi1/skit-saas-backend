@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.controller.admin.tenant;
 
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdAnalyticsQueryReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdEventPageReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdRewardSecretRotateReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitReconciliationPageReqVO;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -67,6 +68,41 @@ class SkitAdManagementRequestValidationTest {
 
         assertFalse(VALIDATOR.forExecutables().validateParameters(
                 new SkitReconciliationController(null, null), page, new Object[]{request}).isEmpty());
+    }
+
+    @Test
+    void pangleRewardSecurityKeysUseExactUtf8ByteBoundsAtBothAdminBoundaries() {
+        SkitTenantBusinessController.AdAccountSaveReqVO legacy =
+                new SkitTenantBusinessController.AdAccountSaveReqVO();
+        legacy.setPangleEnabled(false);
+        legacy.setTakuEnabled(false);
+        legacy.setReason("validate legacy Pangle reward secret");
+
+        legacy.setPangleRewardSecurityKey("1234567");
+        assertFalse(VALIDATOR.validate(legacy).isEmpty());
+        legacy.setPangleRewardSecurityKey("😀😀");
+        assertTrue(VALIDATOR.validate(legacy).isEmpty());
+        legacy.setPangleRewardSecurityKey("😀".repeat(512));
+        assertTrue(VALIDATOR.validate(legacy).isEmpty());
+        legacy.setPangleRewardSecurityKey("😀".repeat(513));
+        assertFalse(VALIDATOR.validate(legacy).isEmpty());
+        legacy.setPangleRewardSecurityKey(" ".repeat(2049));
+        assertFalse(VALIDATOR.validate(legacy).isEmpty());
+
+        SkitAdRewardSecretRotateReqVO rotate = new SkitAdRewardSecretRotateReqVO();
+        rotate.setAdAccountId(4201L);
+        rotate.setExpectedReadinessVersion(7);
+        rotate.setPriorAcceptanceMinutes(15);
+        rotate.setReason("validate rotated Pangle reward secret");
+
+        rotate.setRewardSecret("1234567".toCharArray());
+        assertFalse(VALIDATOR.validate(rotate).isEmpty());
+        rotate.setRewardSecret("😀😀".toCharArray());
+        assertTrue(VALIDATOR.validate(rotate).isEmpty());
+        rotate.setRewardSecret("😀".repeat(512).toCharArray());
+        assertTrue(VALIDATOR.validate(rotate).isEmpty());
+        rotate.setRewardSecret("😀".repeat(513).toCharArray());
+        assertFalse(VALIDATOR.validate(rotate).isEmpty());
     }
 
     private void assertInvalidEventPage(SkitAdEventController controller, Method method,

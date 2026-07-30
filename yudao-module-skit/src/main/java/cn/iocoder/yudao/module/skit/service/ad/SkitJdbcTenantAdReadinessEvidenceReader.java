@@ -33,6 +33,7 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
 
     private static final int REPORT_MAX_AGE_HOURS = 48;
     private static final int CALLBACK_MAX_AGE_DAYS = 30;
+    private static final int PANGLE_DOMESTIC_NETWORK_FIRM_ID = 15;
 
     private final JdbcTemplate jdbcTemplate;
     private final SkitRuntimeUpdateManifestVerifier manifestVerifier;
@@ -89,6 +90,15 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
         Set<Integer> networkFirmIds = safeNetworkIds(capability.getUnlockNetworkFirmIdsJson());
         List<Map<String, Object>> networkCapabilities = networkCapabilityRows(
                 tenantId, capability.getAdAccountId());
+        Map<Integer, List<String>> networkPrerequisiteBlockers = Collections.emptyMap();
+        if (networkFirmIds.contains(PANGLE_DOMESTIC_NETWORK_FIRM_ID)
+                || containsNetworkCapability(tenantId, capability.getAdAccountId(),
+                PANGLE_DOMESTIC_NETWORK_FIRM_ID, networkCapabilities)) {
+            networkPrerequisiteBlockers = Collections.singletonMap(
+                    PANGLE_DOMESTIC_NETWORK_FIRM_ID,
+                    readNetworkPrerequisiteBlockers(
+                            tenantId, PANGLE_DOMESTIC_NETWORK_FIRM_ID));
+        }
         List<Map<String, Object>> rewardCallbacks = callbackRows(tenantId,
                 capability.getAdAccountId(), capability.getDedicatedUnlockPlacementId(),
                 networkFirmIds, true);
@@ -97,9 +107,11 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
                 networkFirmIds, false);
         List<SkitTenantAdReadinessEvidence.NetworkEvidence> networkReadiness =
                 evaluateNetworkEvidence(tenantId, capability.getAdAccountId(), networkFirmIds,
-                        networkCapabilities, rewardCallbacks, impressionCallbacks);
+                        networkCapabilities, rewardCallbacks, impressionCallbacks,
+                        networkPrerequisiteBlockers);
         result.setAvailableNetworkCapabilities(evaluateAvailableCapabilities(
-                tenantId, capability.getAdAccountId(), networkCapabilities));
+                tenantId, capability.getAdAccountId(), networkCapabilities,
+                networkPrerequisiteBlockers));
         result.setNetworkReadiness(networkReadiness);
         result.setUnlockNetworksAuthoritative(allSelectedNetworksPass(
                 networkReadiness, SkitTenantAdReadinessEvidence.NetworkEvidence::isAuthoritative));
@@ -136,6 +148,46 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
         result.setNativeReleaseReady(release.nativeReleaseReady);
         result.setProtocolReady(release.protocolReady);
         return result;
+    }
+
+    @Override
+    public List<String> readNetworkPrerequisiteBlockers(
+            Long tenantId, Integer networkFirmId) {
+        if (!Integer.valueOf(PANGLE_DOMESTIC_NETWORK_FIRM_ID).equals(networkFirmId)) {
+            return Collections.emptyList();
+        }
+        if (tenantId == null || tenantId <= 0) {
+            return Collections.singletonList(
+                    "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+        }
+        List<Map<String, Object>> accounts = jdbcTemplate.queryForList(
+                "SELECT `id`,CASE WHEN JSON_VALID(`config_data`) THEN "
+                        + "JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.placementId')) "
+                        + "ELSE NULL END AS `placement_id` FROM `skit_ad_account` "
+                        + "WHERE `tenant_id`=? AND `provider`='PANGLE' AND `status`=0 "
+                        + "AND `deleted`=b'0' ORDER BY `id`",
+                tenantId);
+        if (accounts.isEmpty()) {
+            return Collections.singletonList("PANGLE_ENABLED_ACCOUNT_MISSING");
+        }
+        if (accounts.size() != 1) {
+            return Collections.singletonList("PANGLE_ENABLED_ACCOUNT_AMBIGUOUS");
+        }
+        Map<String, Object> account = accounts.get(0);
+        Long accountId = longValue(account.get("id"));
+        if (accountId == null || accountId <= 0) {
+            return Collections.singletonList(
+                    "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+        }
+        List<String> blockers = new ArrayList<>(2);
+        addBlocker(blockers, StrUtil.isNotBlank(stringValue(account.get("placement_id"))),
+                "PANGLE_REWARD_PLACEMENT_MISSING");
+        CredentialEvidence rewardSecurityKey = credentialEvidence(
+                tenantId, accountId, "skit_ad_reward_secret_version", "secret_version");
+        addBlocker(blockers, rewardSecurityKey.configured,
+                "PANGLE_ACTIVE_REWARD_SECURITY_KEY_MISSING");
+        return blockers.isEmpty() ? Collections.emptyList()
+                : Collections.unmodifiableList(blockers);
     }
 
     private boolean tenantActive(Long tenantId) {
@@ -318,6 +370,15 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
             Long tenantId, Long accountId, Set<Integer> selectedNetworkIds,
             List<Map<String, Object>> capabilityRows, List<Map<String, Object>> rewardRows,
             List<Map<String, Object>> impressionRows) {
+        return evaluateNetworkEvidence(tenantId, accountId, selectedNetworkIds,
+                capabilityRows, rewardRows, impressionRows, Collections.emptyMap());
+    }
+
+    static List<SkitTenantAdReadinessEvidence.NetworkEvidence> evaluateNetworkEvidence(
+            Long tenantId, Long accountId, Set<Integer> selectedNetworkIds,
+            List<Map<String, Object>> capabilityRows, List<Map<String, Object>> rewardRows,
+            List<Map<String, Object>> impressionRows,
+            Map<Integer, List<String>> networkPrerequisiteBlockers) {
         Map<Integer, Map<String, Object>> capabilities = new HashMap<>();
         for (Map<String, Object> row : safeRows(capabilityRows)) {
             int networkFirmId = intValue(row.get("network_firm_id"), -1);
@@ -355,6 +416,12 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
                     && booleanValue(capability.get("supports_reporting")));
 
             List<String> capabilityBlockers = capabilityBlockers(capability, evidence);
+            for (String blocker : safePrerequisiteBlockers(
+                    networkPrerequisiteBlockers, networkFirmId)) {
+                if (StrUtil.isNotBlank(blocker) && !capabilityBlockers.contains(blocker)) {
+                    capabilityBlockers.add(blocker);
+                }
+            }
             evidence.setCapabilityBlockers(Collections.unmodifiableList(capabilityBlockers));
             evidence.setAuthoritative(capabilityBlockers.isEmpty());
             evidence.setSelectable(evidence.isAuthoritative());
@@ -402,7 +469,8 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
     }
 
     private static List<SkitTenantAdReadinessEvidence.NetworkEvidence> evaluateAvailableCapabilities(
-            Long tenantId, Long accountId, List<Map<String, Object>> capabilityRows) {
+            Long tenantId, Long accountId, List<Map<String, Object>> capabilityRows,
+            Map<Integer, List<String>> networkPrerequisiteBlockers) {
         Set<Integer> networkIds = new TreeSet<>();
         for (Map<String, Object> row : safeRows(capabilityRows)) {
             int networkFirmId = intValue(row.get("network_firm_id"), -1);
@@ -413,7 +481,30 @@ public class SkitJdbcTenantAdReadinessEvidenceReader implements SkitTenantAdRead
             }
         }
         return evaluateNetworkEvidence(tenantId, accountId, networkIds, capabilityRows,
-                Collections.emptyList(), Collections.emptyList());
+                Collections.emptyList(), Collections.emptyList(),
+                networkPrerequisiteBlockers);
+    }
+
+    private static boolean containsNetworkCapability(
+            Long tenantId, Long accountId, int expectedNetworkFirmId,
+            List<Map<String, Object>> capabilityRows) {
+        for (Map<String, Object> row : safeRows(capabilityRows)) {
+            if (tenantId != null && tenantId.equals(longValue(row.get("tenant_id")))
+                    && accountId != null && accountId.equals(longValue(row.get("ad_account_id")))
+                    && intValue(row.get("network_firm_id"), -1) == expectedNetworkFirmId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<String> safePrerequisiteBlockers(
+            Map<Integer, List<String>> blockers, Integer networkFirmId) {
+        if (blockers == null || networkFirmId == null) {
+            return Collections.emptyList();
+        }
+        List<String> result = blockers.get(networkFirmId);
+        return result == null ? Collections.emptyList() : result;
     }
 
     static boolean allSelectedNetworksPass(

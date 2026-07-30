@@ -174,6 +174,45 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
     }
 
     @Test
+    void clearingRewardCredentialsRevokesTheActiveAndRetiredGraceVersionsTogether() {
+        long tenantId = 8451L;
+        long accountId = 8452L;
+        insertAccount(tenantId, accountId, "REWARD_CLEAR");
+        SkitAdCredentialVersionServiceImpl service = service(new SecureRandom());
+
+        inTransaction(() -> service.rotateRewardSecret(
+                tenantId, accountId, "reward-secret-v1".getBytes(StandardCharsets.UTF_8),
+                Duration.ofHours(24)));
+        inTransaction(() -> service.rotateRewardSecret(
+                tenantId, accountId, "reward-secret-v2".getBytes(StandardCharsets.UTF_8),
+                Duration.ofHours(24)));
+        LocalDateTime sessionAcceptUntil = LocalDateTime.now(ZoneOffset.UTC).plusHours(1);
+        try (SkitAdCredentialVersionService.ResolvedRewardSecret ignored =
+                     service.resolveRewardSecret(tenantId, accountId, 1,
+                             sessionAcceptUntil, LocalDateTime.now(ZoneOffset.UTC))) {
+            assertTrue(ignored.isActive() || ignored.getAcceptUntil() != null);
+        }
+
+        assertTrue(inTransaction(() ->
+                service.revokeAllRewardSecrets(tenantId, accountId)));
+        assertEquals(2, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM skit_ad_reward_secret_version "
+                        + "WHERE tenant_id=? AND ad_account_id=? AND active=b'0' "
+                        + "AND revoked_at IS NOT NULL",
+                Integer.class, tenantId, accountId));
+        LocalDateTime afterRevocation = jdbc().queryForObject(
+                "SELECT MAX(revoked_at) FROM skit_ad_reward_secret_version "
+                        + "WHERE tenant_id=? AND ad_account_id=?",
+                Timestamp.class, tenantId, accountId).toLocalDateTime().plusSeconds(1);
+        assertThrows(SkitAdCredentialVersionService.CredentialUnavailableException.class,
+                () -> service.resolveRewardSecret(
+                        tenantId, accountId, 1, sessionAcceptUntil, afterRevocation));
+        assertThrows(SkitAdCredentialVersionService.CredentialUnavailableException.class,
+                () -> service.resolveRewardSecret(
+                        tenantId, accountId, 2, sessionAcceptUntil, afterRevocation));
+    }
+
+    @Test
     void exhaustedCallbackHashCollisionsRollBackTheRetiredActiveVersion() throws Exception {
         long tenantId = 8501L;
         long accountId = 8502L;
@@ -317,6 +356,14 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
                                 + "AND id=? AND active=b'1' AND revoked_at IS NULL",
                         invocation.getArgument(3), invocation.getArgument(0), invocation.getArgument(1),
                         invocation.getArgument(2)));
+        when(mapper.revokeAllUnrevokedVersions(
+                anyLong(), anyLong(), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> jdbc().update(
+                        "UPDATE skit_ad_reward_secret_version "
+                                + "SET active=b'0',revoked_at=? "
+                                + "WHERE tenant_id=? AND ad_account_id=? AND revoked_at IS NULL",
+                        invocation.getArgument(2), invocation.getArgument(0),
+                        invocation.getArgument(1)));
         when(mapper.insert(any(SkitAdRewardSecretVersionDO.class))).thenAnswer(invocation -> {
             SkitAdRewardSecretVersionDO row = invocation.getArgument(0);
             return jdbc().update("INSERT INTO skit_ad_reward_secret_version "

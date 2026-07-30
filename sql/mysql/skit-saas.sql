@@ -1133,6 +1133,13 @@ BEGIN
     OR (OLD.`processing_status` = 'RETRY_WAIT' AND NEW.`processing_status` = 'PROCESSING'
       AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count` + 1
       AND NEW.`error_code` IS NULL)
+    OR (OLD.`processing_status` = 'RETRY_WAIT'
+      AND OLD.`error_code` = 'PANGLE_ATTESTATION_PENDING'
+      AND NEW.`processing_status` = 'PENDING'
+      AND NEW.`processing_attempt_count` = OLD.`processing_attempt_count`
+      AND NEW.`error_code` IS NULL
+      AND NEW.`lease_owner` IS NULL AND NEW.`lease_until` IS NULL
+      AND NEW.`next_attempt_at` IS NULL AND NEW.`processed_at` IS NULL)
     OR (OLD.`processing_status` = 'PROCESSING' AND NEW.`processing_status` = 'PROCESSING'
       AND OLD.`lease_until` <= CURRENT_TIMESTAMP
       AND (NOT (NEW.`lease_owner` <=> OLD.`lease_owner`)

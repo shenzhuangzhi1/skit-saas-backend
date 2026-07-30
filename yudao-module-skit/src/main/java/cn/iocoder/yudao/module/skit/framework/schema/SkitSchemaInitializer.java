@@ -928,7 +928,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             "UPDATE `skit_admin_record` SET `row_key`=?,`update_time`=`update_time` "
                     + "WHERE `id`=? AND `tenant_id`=? AND `page_key`=? AND `row_key`=?";
     private static final Pattern DEFAULT_DEFINITION_PATTERN = Pattern.compile(
-            "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|-?[0-9]+(?:\\.[0-9]+)?)");
+            "(?i)\\bDEFAULT\\s+(b'[^']*'|'[^']*'|NULL|CURRENT_TIMESTAMP(?:\\(\\))?"
+                    + "|-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern GENERATED_DEFINITION_PATTERN = Pattern.compile(
             "(?is)\\bGENERATED\\s+ALWAYS\\s+AS\\s*\\((.*)\\)\\s+STORED");
     private static final String BOOLEAN_AND_MARKER = "{#and#}";
@@ -1050,6 +1051,170 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final int AD_CONSUMPTION_QUERY_INDEX_MIGRATION_VERSION = 2026072301;
     private static final int MEMBER_POINT_MIGRATION_VERSION = 2026072401;
     private static final int AD_ACCOUNT_APP_KEY_CAPACITY_MIGRATION_VERSION = 2026072501;
+    private static final int PANGLE_REWARD_CALLBACK_MIGRATION_VERSION = 2026073001;
+    private static final String CREATE_PANGLE_REWARD_ATTESTATION_TABLE_SQL =
+            "CREATE TABLE IF NOT EXISTS `skit_pangle_reward_attestation` ("
+                    + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
+                    + "`taku_ad_account_id` bigint NOT NULL,`pangle_ad_account_id` bigint NOT NULL,"
+                    + "`ad_session_id` bigint NOT NULL,`callback_key_version` int NOT NULL,"
+                    + "`pangle_reward_secret_version` int NOT NULL,"
+                    + "`pangle_reward_placement_id` varchar(128) NOT NULL,"
+                    + "`provider` varchar(16) NOT NULL,"
+                    + "`provider_transaction_id` varchar(1024) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+                    + "`provider_user_id` varchar(1024) NOT NULL,`extra_data_hash` binary(32) NOT NULL,"
+                    + "`reward_name` varchar(1024) NOT NULL,`reward_amount` int NOT NULL,"
+                    + "`canonical_payload_hash` binary(32) NOT NULL,"
+                    + "`credential_fingerprint` binary(32) NOT NULL,`received_at` datetime NOT NULL,"
+                    + auditColumns()
+                    + ",PRIMARY KEY (`id`),"
+                    + "UNIQUE KEY `uk_skit_pangle_attestation_tenant_id` (`tenant_id`,`id`),"
+                    + "UNIQUE KEY `uk_skit_pangle_attestation_transaction` "
+                    + "(`tenant_id`,`pangle_ad_account_id`,`provider_transaction_id`),"
+                    + "UNIQUE KEY `uk_skit_pangle_attestation_session` (`tenant_id`,`ad_session_id`),"
+                    + "CONSTRAINT `fk_skit_pangle_attestation_taku_account` "
+                    + "FOREIGN KEY (`tenant_id`,`taku_ad_account_id`) "
+                    + "REFERENCES `skit_ad_account` (`tenant_id`,`id`) "
+                    + "ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_pangle_attestation_pangle_account` "
+                    + "FOREIGN KEY (`tenant_id`,`pangle_ad_account_id`) "
+                    + "REFERENCES `skit_ad_account` (`tenant_id`,`id`) "
+                    + "ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_pangle_attestation_session` "
+                    + "FOREIGN KEY (`tenant_id`,`ad_session_id`,`taku_ad_account_id`) "
+                    + "REFERENCES `skit_ad_session` (`tenant_id`,`id`,`ad_account_id`) "
+                    + "ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_pangle_attestation_callback_key` "
+                    + "FOREIGN KEY (`tenant_id`,`taku_ad_account_id`,`callback_key_version`) "
+                    + "REFERENCES `skit_ad_callback_key` (`tenant_id`,`ad_account_id`,`key_version`) "
+                    + "ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `fk_skit_pangle_attestation_reward_secret` "
+                    + "FOREIGN KEY (`tenant_id`,`pangle_ad_account_id`,`pangle_reward_secret_version`) "
+                    + "REFERENCES `skit_ad_reward_secret_version` "
+                    + "(`tenant_id`,`ad_account_id`,`secret_version`) "
+                    + "ON UPDATE RESTRICT ON DELETE RESTRICT,"
+                    + "CONSTRAINT `ck_skit_pangle_attestation_provider` CHECK (`provider`='PANGLE'),"
+                    + "CONSTRAINT `ck_skit_pangle_attestation_versions` CHECK "
+                    + "(`callback_key_version`>0 AND `pangle_reward_secret_version`>0),"
+                    + "CONSTRAINT `ck_skit_pangle_attestation_reward` CHECK (`reward_amount`>0))"
+                    + tableOptions();
+    private static final String PANGLE_ATTESTATION_IMMUTABLE_ACTION =
+            "BEGIN SIGNAL SQLSTATE '45000' "
+                    + "SET MESSAGE_TEXT='Pangle reward attestations are immutable'; END";
+    private static final String PANGLE_TRANSACTION_TEXT_DEFINITION_QUERY =
+            "SELECT CONCAT(COALESCE(`CHARACTER_SET_NAME`,'<NULL>'),':',"
+                    + "COALESCE(`COLLATION_NAME`,'<NULL>')) FROM information_schema.COLUMNS "
+                    + "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?";
+    private static final String PANGLE_TRANSACTION_TEXT_DEFINITION = "ascii:ascii_bin";
+    private static final List<Task2ColumnSpec> PANGLE_REWARD_SESSION_COLUMN_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ColumnSpec("skit_ad_session", "pangle_ad_account_id",
+                            "bigint DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_session", "pangle_reward_secret_version",
+                            "int DEFAULT NULL"),
+                    new Task2ColumnSpec("skit_ad_session", "pangle_reward_placement_id",
+                            "varchar(128) DEFAULT NULL")));
+    private static final Task2ForeignKeySpec PANGLE_SESSION_ACCOUNT_FOREIGN_KEY =
+            new Task2ForeignKeySpec("skit_ad_session", "fk_skit_ad_session_pangle_account",
+                    "tenant_id,pangle_ad_account_id", "skit_ad_account", "tenant_id,id");
+    private static final Task2ForeignKeySpec PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY =
+            new Task2ForeignKeySpec("skit_ad_session", "fk_skit_ad_session_pangle_reward_secret",
+                    "tenant_id,pangle_ad_account_id,pangle_reward_secret_version",
+                    "skit_ad_reward_secret_version", "tenant_id,ad_account_id,secret_version");
+    private static final Task2CheckSpec PANGLE_SESSION_SNAPSHOT_CHECK =
+            new Task2CheckSpec("skit_ad_session", "ck_skit_ad_session_pangle_snapshot",
+                    "((`pangle_ad_account_id` IS NULL AND `pangle_reward_secret_version` IS NULL "
+                            + "AND `pangle_reward_placement_id` IS NULL) OR "
+                            + "(`pangle_ad_account_id` IS NOT NULL "
+                            + "AND `pangle_reward_secret_version` IS NOT NULL "
+                            + "AND `pangle_reward_secret_version`>0 "
+                            + "AND `pangle_reward_placement_id` IS NOT NULL "
+                            + "AND CHAR_LENGTH(`pangle_reward_placement_id`)>0))");
+    private static final List<Task2ColumnSpec> PANGLE_ATTESTATION_COLUMN_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "id", "bigint NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "tenant_id", "bigint NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "taku_ad_account_id",
+                            "bigint NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "pangle_ad_account_id",
+                            "bigint NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "ad_session_id",
+                            "bigint NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "callback_key_version",
+                            "int NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "pangle_reward_secret_version",
+                            "int NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "pangle_reward_placement_id",
+                            "varchar(128) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "provider",
+                            "varchar(16) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "provider_transaction_id",
+                            "varchar(1024) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "provider_user_id",
+                            "varchar(1024) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "extra_data_hash",
+                            "binary(32) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "reward_name",
+                            "varchar(1024) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "reward_amount",
+                            "int NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "canonical_payload_hash",
+                            "binary(32) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "credential_fingerprint",
+                            "binary(32) NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "received_at",
+                            "datetime NOT NULL"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "creator",
+                            "varchar(64) DEFAULT ''"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "create_time",
+                            "datetime NOT NULL DEFAULT CURRENT_TIMESTAMP"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "updater",
+                            "varchar(64) DEFAULT ''"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "update_time",
+                            "datetime NOT NULL DEFAULT CURRENT_TIMESTAMP"),
+                    new Task2ColumnSpec("skit_pangle_reward_attestation", "deleted",
+                            "bit(1) NOT NULL DEFAULT b'0'")));
+    private static final List<Task2ForeignKeySpec> PANGLE_ATTESTATION_FOREIGN_KEY_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2ForeignKeySpec("skit_pangle_reward_attestation",
+                            "fk_skit_pangle_attestation_taku_account",
+                            "tenant_id,taku_ad_account_id", "skit_ad_account", "tenant_id,id"),
+                    new Task2ForeignKeySpec("skit_pangle_reward_attestation",
+                            "fk_skit_pangle_attestation_pangle_account",
+                            "tenant_id,pangle_ad_account_id", "skit_ad_account", "tenant_id,id"),
+                    new Task2ForeignKeySpec("skit_pangle_reward_attestation",
+                            "fk_skit_pangle_attestation_session",
+                            "tenant_id,ad_session_id,taku_ad_account_id",
+                            "skit_ad_session", "tenant_id,id,ad_account_id"),
+                    new Task2ForeignKeySpec("skit_pangle_reward_attestation",
+                            "fk_skit_pangle_attestation_callback_key",
+                            "tenant_id,taku_ad_account_id,callback_key_version",
+                            "skit_ad_callback_key", "tenant_id,ad_account_id,key_version"),
+                    new Task2ForeignKeySpec("skit_pangle_reward_attestation",
+                            "fk_skit_pangle_attestation_reward_secret",
+                            "tenant_id,pangle_ad_account_id,pangle_reward_secret_version",
+                            "skit_ad_reward_secret_version",
+                            "tenant_id,ad_account_id,secret_version")));
+    private static final List<Task2CheckSpec> PANGLE_ATTESTATION_CHECK_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2CheckSpec("skit_pangle_reward_attestation",
+                            "ck_skit_pangle_attestation_provider", "`provider`='PANGLE'"),
+                    new Task2CheckSpec("skit_pangle_reward_attestation",
+                            "ck_skit_pangle_attestation_versions",
+                            "`callback_key_version`>0 AND `pangle_reward_secret_version`>0"),
+                    new Task2CheckSpec("skit_pangle_reward_attestation",
+                            "ck_skit_pangle_attestation_reward", "`reward_amount`>0")));
+    private static final List<Task2TriggerSpec> PANGLE_ATTESTATION_TRIGGER_SPECS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new Task2TriggerSpec("skit_pangle_reward_attestation",
+                            "trg_skit_pangle_attestation_immutable",
+                            PANGLE_ATTESTATION_IMMUTABLE_ACTION),
+                    new Task2TriggerSpec("skit_pangle_reward_attestation",
+                            "trg_skit_pangle_attestation_no_delete",
+                            "DELETE", PANGLE_ATTESTATION_IMMUTABLE_ACTION)));
+    private static final Task2TriggerSpec PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER =
+            new Task2TriggerSpec("skit_ad_callback_inbox",
+                    "trg_skit_callback_inbox_monotonic",
+                    pangleCallbackInboxMonotonicAction());
     private static final String BACKFILL_TENANT_AD_ACCOUNTS_SQL =
             "INSERT INTO `skit_ad_account` (`tenant_id`,`provider`,`account_name`,`account_id`,`app_id`,"
                     + "`app_key`,`secret`,`config_data`,`status`,`creator`,`create_time`,`updater`,`update_time`,"
@@ -1142,12 +1307,16 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             validateTask10MigrationPrefix();
         } else if (migrationVersion == TASK_12_READINESS_MIGRATION_VERSION) {
             validateTask12MigrationPrefix();
+        } else if (migrationVersion == PANGLE_REWARD_CALLBACK_MIGRATION_VERSION) {
+            validatePangleRewardCallbackMigrationPrefix();
         }
     }
 
     private void validateKnownForwardSchemaState(Map<Integer, String> appliedMigrations) {
         boolean task10Installed = appliedMigrations.containsKey(TASK_10_RECONCILIATION_MIGRATION_VERSION);
         boolean task12Installed = appliedMigrations.containsKey(TASK_12_READINESS_MIGRATION_VERSION);
+        boolean pangleRewardCallbackInstalled =
+                appliedMigrations.containsKey(PANGLE_REWARD_CALLBACK_MIGRATION_VERSION);
         if (task10Installed) {
             validateTask10ReconciliationSchema(true);
         } else {
@@ -1168,6 +1337,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             validateContentEntitlementLeaseActivationSchema(true);
         } else {
             validateContentEntitlementLeaseActivationPrefix();
+        }
+        if (pangleRewardCallbackInstalled) {
+            validatePangleRewardCallbackSchema(true);
+        } else if (pangleRewardCallbackPhysicalStateStarted()) {
+            validatePangleRewardCallbackMigrationPrefix();
         }
     }
 
@@ -1259,6 +1433,120 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             throw new IllegalStateException("Task 12 migration prefix rejected: " + exception.getMessage(),
                     exception);
         }
+    }
+
+    /**
+     * Accepts only the physical prefixes that the additive Pangle migration can leave behind
+     * between MySQL auto-committing DDL statements.
+     */
+    private void validatePangleRewardCallbackMigrationPrefix() {
+        try {
+            boolean pangleArtifactsStarted = pangleRewardCallbackPhysicalStateStarted();
+            validateTask5Index("skit_ad_session", "uk_skit_ad_session_account_binding",
+                    "tenant_id,id,ad_account_id", true, true);
+            boolean gap = false;
+            for (Task2ColumnSpec spec : PANGLE_REWARD_SESSION_COLUMN_SPECS) {
+                gap = advancePanglePhysicalPrefix("column " + spec.table + "." + spec.column,
+                        validatePrefixColumn("Pangle reward callback", spec), gap);
+            }
+            gap = validatePrefixIndex("Pangle reward callback", "skit_ad_session",
+                    "idx_skit_ad_session_pangle_credential",
+                    "tenant_id,pangle_ad_account_id,pangle_reward_secret_version",
+                    false, gap);
+            gap = validatePrefixForeignKey("Pangle reward callback",
+                    PANGLE_SESSION_ACCOUNT_FOREIGN_KEY, gap);
+            gap = validatePrefixForeignKey("Pangle reward callback",
+                    PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY, gap);
+            gap = validatePrefixCheck("Pangle reward callback",
+                    PANGLE_SESSION_SNAPSHOT_CHECK, gap);
+
+            boolean attestationTablePresent = tableExists("skit_pangle_reward_attestation");
+            gap = advancePanglePhysicalPrefix("table skit_pangle_reward_attestation",
+                    attestationTablePresent, gap);
+            if (attestationTablePresent) {
+                validatePangleRewardAttestationTable(true);
+            }
+            for (Task2TriggerSpec spec : PANGLE_ATTESTATION_TRIGGER_SPECS) {
+                gap = validatePrefixTrigger("Pangle reward callback", spec, gap);
+            }
+            validatePangleCallbackInboxTriggerPrefix(gap, pangleArtifactsStarted);
+        } catch (IllegalStateException exception) {
+            if (exception.getMessage() != null
+                    && exception.getMessage().startsWith("Pangle reward callback migration prefix")) {
+                throw exception;
+            }
+            throw new IllegalStateException("Pangle reward callback migration prefix rejected: "
+                    + exception.getMessage(), exception);
+        }
+    }
+
+    private void validatePangleCallbackInboxTriggerPrefix(boolean pangleArtifactsHaveGap,
+                                                          boolean pangleArtifactsStarted) {
+        List<String> existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY,
+                String.class, PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.trigger);
+        String actual = existing.size() == 1 ? normalizeTriggerDefinition(existing.get(0)) : null;
+        Task2TriggerSpec legacy = new Task2TriggerSpec("skit_ad_callback_inbox",
+                "trg_skit_callback_inbox_monotonic", callbackInboxMonotonicAction());
+        String expectedLegacy = normalizeTriggerDefinition("BEFORE:" + legacy.event + ":"
+                + legacy.table + ":" + legacy.action);
+        String expectedPangle = normalizeTriggerDefinition("BEFORE:"
+                + PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.event + ":"
+                + PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.table + ":"
+                + PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.action);
+        if (pangleArtifactsHaveGap) {
+            boolean cleanBootstrapSuccessor =
+                    !pangleArtifactsStarted && expectedPangle.equals(actual);
+            if (!expectedLegacy.equals(actual) && !cleanBootstrapSuccessor) {
+                throw new IllegalStateException("Pangle reward callback migration prefix is out of order at "
+                        + PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.trigger);
+            }
+            return;
+        }
+        if (actual == null || expectedLegacy.equals(actual) || expectedPangle.equals(actual)) {
+            return;
+        }
+        throw new IllegalStateException("Pangle reward callback migration prefix has incompatible trigger "
+                + PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.trigger);
+    }
+
+    private boolean pangleRewardCallbackPhysicalStateStarted() {
+        for (Task2ColumnSpec spec : PANGLE_REWARD_SESSION_COLUMN_SPECS) {
+            if (columnExists(spec.table, spec.column)) {
+                return true;
+            }
+        }
+        if (jdbcTemplate.queryForObject(INDEX_DEFINITION_QUERY, String.class,
+                "skit_ad_session", "idx_skit_ad_session_pangle_credential") != null) {
+            return true;
+        }
+        for (Task2ForeignKeySpec spec : Arrays.asList(PANGLE_SESSION_ACCOUNT_FOREIGN_KEY,
+                PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY)) {
+            if (jdbcTemplate.queryForObject(FOREIGN_KEY_DEFINITION_QUERY, String.class,
+                    spec.table, spec.constraint) != null) {
+                return true;
+            }
+        }
+        if (!jdbcTemplate.queryForList(CHECK_DEFINITION_QUERY, String.class,
+                PANGLE_SESSION_SNAPSHOT_CHECK.table,
+                PANGLE_SESSION_SNAPSHOT_CHECK.constraint).isEmpty()
+                || tableExists("skit_pangle_reward_attestation")) {
+            return true;
+        }
+        for (Task2TriggerSpec spec : PANGLE_ATTESTATION_TRIGGER_SPECS) {
+            if (!jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY,
+                    String.class, spec.trigger).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean advancePanglePhysicalPrefix(String artifact, boolean present, boolean gap) {
+        if (present && gap) {
+            throw new IllegalStateException("Pangle reward callback migration prefix is out of order at "
+                    + artifact);
+        }
+        return gap || !present;
     }
 
     private boolean task12PhysicalStateStarted() {
@@ -1389,7 +1677,14 @@ public class SkitSchemaInitializer implements ApplicationRunner {
 
     private static boolean advancePhysicalPrefix(String artifact, boolean present, boolean gap) {
         if (present && gap) {
-            String task = artifact.startsWith("Task 12") ? "Task 12" : "Task 10";
+            String task;
+            if (artifact.startsWith("Task 12")) {
+                task = "Task 12";
+            } else if (artifact.startsWith("Pangle reward callback")) {
+                task = "Pangle reward callback";
+            } else {
+                task = "Task 10";
+            }
             throw new IllegalStateException(task + " migration prefix is out of order at " + artifact);
         }
         return gap || !present;
@@ -1524,6 +1819,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "add tenant-safe member check-in point ledger", memberPointSteps()));
         result.add(migrationFromSteps(AD_ACCOUNT_APP_KEY_CAPACITY_MIGRATION_VERSION,
                 "expand encrypted ad account app key capacity", adAccountAppKeyCapacitySteps()));
+        result.add(migrationFromSteps(PANGLE_REWARD_CALLBACK_MIGRATION_VERSION,
+                "add tenant-bound Pangle reward attestations", pangleRewardCallbackSteps()));
         return sortedMigrations(result);
     }
 
@@ -1760,6 +2057,73 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 + "(OLD.`processing_status`='RETRY_WAIT' AND NEW.`processing_status`='PROCESSING' "
                 + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
                 + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='PROCESSING' AND NEW.`processing_status`='PROCESSING' "
+                + "AND OLD.`lease_until`<=CURRENT_TIMESTAMP "
+                + "AND (NOT (NEW.`lease_owner` <=> OLD.`lease_owner`) "
+                + "OR NOT (NEW.`lease_until` <=> OLD.`lease_until`)) "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
+                + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='PROCESSING' AND NEW.`processing_status`='RETRY_WAIT' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count` "
+                + "AND NEW.`error_code` IS NOT NULL) OR "
+                + "(OLD.`processing_status`='PROCESSING' "
+                + "AND NEW.`processing_status` IN ('SUCCEEDED','REJECTED','DEAD_LETTER') "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`))";
+        String monotonicDeadLetterAlert = "(NEW.`dead_letter_alerted_at` "
+                + "<=> OLD.`dead_letter_alerted_at`) OR (OLD.`dead_letter_alerted_at` IS NULL "
+                + "AND NEW.`dead_letter_alerted_at` IS NOT NULL "
+                + "AND NEW.`processing_status`='DEAD_LETTER')";
+        return "BEGIN IF NOT (" + immutableProvenance + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback inbox provenance is immutable'; "
+                + "ELSEIF NOT (((NEW.`delivery_integrity_status` <=> OLD.`delivery_integrity_status`) "
+                + "AND (NEW.`integrity_conflict_at` <=> OLD.`integrity_conflict_at`)) OR "
+                + "(OLD.`delivery_integrity_status`='CANONICAL' "
+                + "AND NEW.`delivery_integrity_status`='PAYLOAD_CONFLICT' "
+                + "AND OLD.`integrity_conflict_at` IS NULL "
+                + "AND NEW.`integrity_conflict_at` IS NOT NULL)) THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback inbox integrity is monotonic'; "
+                + "ELSEIF NOT (" + validProcessingTransition + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback processing transition is not allowed'; "
+                + "ELSEIF NOT (" + monotonicDeadLetterAlert + ") THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback dead-letter alert is monotonic'; "
+                + "ELSEIF NOT ((" + unchangedPayload + ") OR "
+                + "(OLD.`processing_status` IN ('SUCCEEDED','REJECTED','DEAD_LETTER') "
+                + "AND NEW.`processing_status`=OLD.`processing_status` "
+                + "AND OLD.`payload_ciphertext` IS NOT NULL AND OLD.`payload_nonce` IS NOT NULL "
+                + "AND OLD.`payload_key_id` IS NOT NULL AND OLD.`payload_envelope_version` IS NOT NULL "
+                + "AND OLD.`payload_expires_at` IS NOT NULL AND OLD.`payload_expires_at` <= CURRENT_TIMESTAMP "
+                + "AND NEW.`payload_ciphertext` IS NULL AND NEW.`payload_nonce` IS NULL "
+                + "AND NEW.`payload_key_id` IS NULL AND NEW.`payload_envelope_version` IS NULL "
+                + "AND NEW.`payload_expires_at` IS NULL)) THEN SIGNAL SQLSTATE '45000' "
+                + "SET MESSAGE_TEXT='callback payload can only be erased after expiry'; END IF; END";
+    }
+
+    private static String pangleCallbackInboxMonotonicAction() {
+        String immutableProvenance = unchangedColumns("id", "tenant_id", "ad_account_id", "ad_session_id",
+                "callback_key_version", "reward_secret_version", "provider", "callback_type",
+                "idempotency_key", "provider_user_id", "extra_data_hash", "provider_transaction_id",
+                "provider_show_id", "provider_request_id", "placement_id", "adsource_id", "network_firm_id",
+                "source_currency", "source_amount_units", "amount_scale", "signed_field_mask",
+                "evidence_provenance", "canonical_payload_hash", "authentication_level", "signature_status",
+                "ingress_response_code", "received_at", "creator", "create_time", "deleted");
+        String unchangedPayload = unchangedColumns("payload_ciphertext", "payload_nonce", "payload_key_id",
+                "payload_envelope_version", "payload_expires_at");
+        String unchangedProcessing = unchangedColumns("processing_status", "error_code", "lease_owner",
+                "lease_until", "processing_attempt_count", "next_attempt_at", "processed_at");
+        String validProcessingTransition = "(" + unchangedProcessing + ") OR ("
+                + "(OLD.`processing_status`='PENDING' AND NEW.`processing_status`='PROCESSING' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
+                + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='RETRY_WAIT' AND NEW.`processing_status`='PROCESSING' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count`+1 "
+                + "AND NEW.`error_code` IS NULL) OR "
+                + "(OLD.`processing_status`='RETRY_WAIT' "
+                + "AND OLD.`error_code`='PANGLE_ATTESTATION_PENDING' "
+                + "AND NEW.`processing_status`='PENDING' "
+                + "AND NEW.`processing_attempt_count`=OLD.`processing_attempt_count` "
+                + "AND NEW.`error_code` IS NULL "
+                + "AND NEW.`lease_owner` IS NULL AND NEW.`lease_until` IS NULL "
+                + "AND NEW.`next_attempt_at` IS NULL AND NEW.`processed_at` IS NULL) OR "
                 + "(OLD.`processing_status`='PROCESSING' AND NEW.`processing_status`='PROCESSING' "
                 + "AND OLD.`lease_until`<=CURRENT_TIMESTAMP "
                 + "AND (NOT (NEW.`lease_owner` <=> OLD.`lease_owner`) "
@@ -3078,6 +3442,45 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 modifyColumnSql("skit_ad_account", "app_key", "varchar(1024) DEFAULT ''")));
     }
 
+    private List<SchemaStep> pangleRewardCallbackSteps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        steps.add(addColumnStep("skit_ad_session", "pangle_ad_account_id",
+                "bigint DEFAULT NULL AFTER `reward_secret_version`"));
+        steps.add(addColumnStep("skit_ad_session", "pangle_reward_secret_version",
+                "int DEFAULT NULL AFTER `pangle_ad_account_id`"));
+        steps.add(addColumnStep("skit_ad_session", "pangle_reward_placement_id",
+                "varchar(128) DEFAULT NULL AFTER `pangle_reward_secret_version`"));
+        steps.add(addIndexStep("skit_ad_session", "idx_skit_ad_session_pangle_credential",
+                "`tenant_id`,`pangle_ad_account_id`,`pangle_reward_secret_version`", false));
+        steps.add(addForeignKeyStep(PANGLE_SESSION_ACCOUNT_FOREIGN_KEY.table,
+                PANGLE_SESSION_ACCOUNT_FOREIGN_KEY.constraint,
+                quoteColumns(PANGLE_SESSION_ACCOUNT_FOREIGN_KEY.columns),
+                PANGLE_SESSION_ACCOUNT_FOREIGN_KEY.referencedTable,
+                quoteColumns(PANGLE_SESSION_ACCOUNT_FOREIGN_KEY.referencedColumns)));
+        steps.add(addForeignKeyStep(PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY.table,
+                PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY.constraint,
+                quoteColumns(PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY.columns),
+                PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY.referencedTable,
+                quoteColumns(PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY.referencedColumns)));
+        steps.add(addCheckStep(PANGLE_SESSION_SNAPSHOT_CHECK.table,
+                PANGLE_SESSION_SNAPSHOT_CHECK.constraint,
+                PANGLE_SESSION_SNAPSHOT_CHECK.expression));
+        steps.add(executeSqlStep(CREATE_PANGLE_REWARD_ATTESTATION_TABLE_SQL));
+        for (Task2TriggerSpec spec : PANGLE_ATTESTATION_TRIGGER_SPECS) {
+            steps.add(task2TriggerStep(spec));
+        }
+        steps.add(executeSqlStep(
+                "DROP TRIGGER IF EXISTS `trg_skit_callback_inbox_monotonic`"));
+        steps.add(task2TriggerStep(PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER));
+        steps.add(schemaStep("validate-pangle-reward-callback-schema",
+                () -> validatePangleRewardCallbackSchema(true),
+                "uk_skit_ad_session_account_binding",
+                PANGLE_TRANSACTION_TEXT_DEFINITION_QUERY,
+                PANGLE_TRANSACTION_TEXT_DEFINITION,
+                "pangle-reward-callback-physical-shape-v1"));
+        return steps;
+    }
+
     private List<SchemaStep> contentEntitlementLeaseActivationSteps() {
         return Arrays.asList(
                 addColumnStep("skit_content_entitlement", "lease_activated_at",
@@ -3781,7 +4184,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             if (existing.isEmpty() && !requireAll) {
                 continue;
             }
-            validateTask2TriggerDefinition(spec, existing);
+            validateTask7TriggerDefinition(spec.trigger,
+                    "BEFORE:" + spec.event + ":" + spec.table + ":" + spec.action,
+                    existing);
         }
         if (requireAll) {
             for (Map.Entry<String, String> expected
@@ -3789,6 +4194,25 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 validateExactTableFingerprint("Task 7 hardened", expected.getKey(), expected.getValue(), true);
             }
         }
+    }
+
+    private void validateTask7TriggerDefinition(String triggerName, String expectedDefinition,
+                                                List<String> existing) {
+        String actual = existing.size() == 1 ? normalizeTriggerDefinition(existing.get(0)) : null;
+        String expected = normalizeTriggerDefinition(expectedDefinition);
+        if (expected.equals(actual)) {
+            return;
+        }
+        String legacyMonotonic = normalizeTriggerDefinition("BEFORE:UPDATE:skit_ad_callback_inbox:"
+                + callbackInboxMonotonicAction());
+        String pangleMonotonic = normalizeTriggerDefinition("BEFORE:UPDATE:skit_ad_callback_inbox:"
+                + pangleCallbackInboxMonotonicAction());
+        if ("trg_skit_callback_inbox_monotonic".equals(triggerName)
+                && legacyMonotonic.equals(expected) && pangleMonotonic.equals(actual)) {
+            return;
+        }
+        throw new IllegalStateException("Incompatible existing trigger " + triggerName
+                + ": expected=" + expected + ", actual=" + actual);
     }
 
     void validateTask10ReconciliationSchema(boolean requireAll) {
@@ -4132,6 +4556,95 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         if (nullRows == null || nullRows != 0L) {
             throw new IllegalStateException("Content entitlement lease activation backfill is incomplete: "
                     + nullRows + " rows remain NULL");
+        }
+    }
+
+    void validatePangleRewardCallbackSchema(boolean requireAll) {
+        validateTask5Index("skit_ad_session", "uk_skit_ad_session_account_binding",
+                "tenant_id,id,ad_account_id", true, requireAll);
+        validateAdditiveColumnSpecs("Pangle reward callback",
+                PANGLE_REWARD_SESSION_COLUMN_SPECS, requireAll);
+        validateTask5Index("skit_ad_session", "idx_skit_ad_session_pangle_credential",
+                "tenant_id,pangle_ad_account_id,pangle_reward_secret_version",
+                false, requireAll);
+        validateTask5ForeignKey(PANGLE_SESSION_ACCOUNT_FOREIGN_KEY, requireAll);
+        validateTask5ForeignKey(PANGLE_SESSION_REWARD_SECRET_FOREIGN_KEY, requireAll);
+        validateTask5Check(PANGLE_SESSION_SNAPSHOT_CHECK, requireAll);
+        validatePangleRewardAttestationTable(requireAll);
+        for (Task2TriggerSpec spec : PANGLE_ATTESTATION_TRIGGER_SPECS) {
+            if (!tableExists(spec.table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Pangle reward callback schema is missing trigger table "
+                            + spec.table);
+                }
+                continue;
+            }
+            List<String> existing = jdbcTemplate.queryForList(
+                    TRIGGER_DEFINITION_QUERY, String.class, spec.trigger);
+            if (existing.isEmpty() && !requireAll) {
+                continue;
+            }
+            validateTask2TriggerDefinition(spec, existing);
+        }
+        List<String> inboxTrigger = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY,
+                String.class, PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER.trigger);
+        if (inboxTrigger.isEmpty() && !requireAll) {
+            return;
+        }
+        validateTask2TriggerDefinition(PANGLE_CALLBACK_INBOX_MONOTONIC_TRIGGER, inboxTrigger);
+    }
+
+    private void validatePangleRewardAttestationTable(boolean requireAll) {
+        String table = "skit_pangle_reward_attestation";
+        if (!tableExists(table)) {
+            if (requireAll) {
+                throw new IllegalStateException("Pangle reward callback schema is missing attestation table "
+                        + table);
+            }
+            return;
+        }
+        for (Task2ColumnSpec spec : PANGLE_ATTESTATION_COLUMN_SPECS) {
+            if (!columnExists(spec.table, spec.column)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Pangle reward callback schema is missing column "
+                            + spec.table + "." + spec.column);
+                }
+                continue;
+            }
+            validateColumnDefinition(spec.table, spec.column, spec.definition);
+        }
+        validatePangleTransactionTextDefinition(requireAll);
+        validateTask5Index(table, "PRIMARY", "id", true, requireAll);
+        validateTask5Index(table, "uk_skit_pangle_attestation_tenant_id",
+                "tenant_id,id", true, requireAll);
+        validateTask5Index(table, "uk_skit_pangle_attestation_transaction",
+                "tenant_id,pangle_ad_account_id,provider_transaction_id", true, requireAll);
+        validateTask5Index(table, "uk_skit_pangle_attestation_session",
+                "tenant_id,ad_session_id", true, requireAll);
+        for (Task2ForeignKeySpec spec : PANGLE_ATTESTATION_FOREIGN_KEY_SPECS) {
+            validateTask5ForeignKey(spec, requireAll);
+        }
+        for (Task2CheckSpec spec : PANGLE_ATTESTATION_CHECK_SPECS) {
+            validateTask5Check(spec, requireAll);
+        }
+    }
+
+    private void validatePangleTransactionTextDefinition(boolean requireAll) {
+        String table = "skit_pangle_reward_attestation";
+        String column = "provider_transaction_id";
+        if (!columnExists(table, column)) {
+            if (requireAll) {
+                throw new IllegalStateException("Pangle reward callback schema is missing column "
+                        + table + "." + column);
+            }
+            return;
+        }
+        String actual = jdbcTemplate.queryForObject(PANGLE_TRANSACTION_TEXT_DEFINITION_QUERY,
+                String.class, table, column);
+        if (!PANGLE_TRANSACTION_TEXT_DEFINITION.equals(actual)) {
+            throw new IllegalStateException("Incompatible Pangle transaction identifier collation "
+                    + table + "." + column + ": expected=" + PANGLE_TRANSACTION_TEXT_DEFINITION
+                    + ", actual=" + actual);
         }
     }
 
@@ -4626,7 +5139,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             jdbcTemplate.execute(addTriggerSql(spec.table, spec.trigger, spec.event, spec.action));
             existing = jdbcTemplate.queryForList(TRIGGER_DEFINITION_QUERY, String.class, spec.trigger);
         }
-        validateTask2TriggerDefinition(spec, existing);
+        validateTask7TriggerDefinition(spec.trigger,
+                "BEFORE:" + spec.event + ":" + spec.table + ":" + spec.action,
+                existing);
     }
 
     private void validateTask2TriggerDefinition(Task2TriggerSpec spec, List<String> existing) {
@@ -4682,6 +5197,10 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 || (normalized.startsWith("b'") && normalized.endsWith("'"))) {
             int start = normalized.startsWith("b'") ? 2 : 1;
             normalized = normalized.substring(start, normalized.length() - 1);
+        }
+        if ("CURRENT_TIMESTAMP".equalsIgnoreCase(normalized)
+                || "CURRENT_TIMESTAMP()".equalsIgnoreCase(normalized)) {
+            return "CURRENT_TIMESTAMP";
         }
         return normalized;
     }

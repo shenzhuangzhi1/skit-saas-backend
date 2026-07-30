@@ -59,6 +59,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -351,6 +352,56 @@ class SkitAdCredentialVersionServiceImplTest {
         assertNull(secretField.get(resolved));
         assertThrows(IllegalStateException.class, () -> resolved.withSecret(byte[]::clone));
         assertFalse(resolved.toString().contains("provider-reward-secret"));
+    }
+
+    @Test
+    void rewardSecretRotationRejectsPlaintextOutsideTheEightTo2048BytePolicy() {
+        SkitAdCredentialVersionServiceImpl service =
+                service(new SequenceSecureRandom());
+
+        IllegalArgumentException tooShort = assertThrows(IllegalArgumentException.class,
+                () -> service.rotateRewardSecret(
+                        TENANT_ID, ACCOUNT_ID, new byte[7], Duration.ofMinutes(20)));
+        IllegalArgumentException tooLong = assertThrows(IllegalArgumentException.class,
+                () -> service.rotateRewardSecret(
+                        TENANT_ID, ACCOUNT_ID, new byte[2049], Duration.ofMinutes(20)));
+
+        assertEquals("Reward secret must contain between 8 and 2048 bytes",
+                tooShort.getMessage());
+        assertEquals(tooShort.getMessage(), tooLong.getMessage());
+        verify(accountMapper, never()).lockByTenantAndId(anyLong(), anyLong());
+        verify(rewardSecretMapper, never()).insert(any(SkitAdRewardSecretVersionDO.class));
+    }
+
+    @Test
+    void explicitRewardSecretRevocationLocksScopeAndRevokesActiveAndRetiredGraceVersionsTogether() {
+        SkitAdCredentialVersionServiceImpl service =
+                service(new SequenceSecureRandom());
+        LocalDateTime revokedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(rewardSecretMapper.revokeAllUnrevokedVersions(
+                TENANT_ID, ACCOUNT_ID, revokedAt)).thenReturn(2);
+
+        assertTrue(service.revokeAllRewardSecrets(TENANT_ID, ACCOUNT_ID));
+
+        InOrder order = inOrder(accountMapper, rewardSecretMapper);
+        order.verify(accountMapper).lockByTenantAndId(TENANT_ID, ACCOUNT_ID);
+        order.verify(rewardSecretMapper).revokeAllUnrevokedVersions(
+                TENANT_ID, ACCOUNT_ID, revokedAt);
+    }
+
+    @Test
+    void explicitRewardSecretRevocationIsIdempotentWhenNoUnrevokedVersionExists() {
+        SkitAdCredentialVersionServiceImpl service =
+                service(new SequenceSecureRandom());
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(rewardSecretMapper.revokeAllUnrevokedVersions(
+                eq(TENANT_ID), eq(ACCOUNT_ID), any(LocalDateTime.class))).thenReturn(0);
+
+        assertFalse(service.revokeAllRewardSecrets(TENANT_ID, ACCOUNT_ID));
+
+        verify(rewardSecretMapper).revokeAllUnrevokedVersions(
+                eq(TENANT_ID), eq(ACCOUNT_ID), any(LocalDateTime.class));
     }
 
     @Test

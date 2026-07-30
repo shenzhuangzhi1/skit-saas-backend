@@ -20,5 +20,7 @@ public class SkitAdCallbackKeyRotateRespVO {
     private String rewardCallbackUrl;
     @ToString.Exclude
     private String impressionCallbackUrl;
+    @ToString.Exclude
+    private String pangleRewardCallbackUrl;
 
 }

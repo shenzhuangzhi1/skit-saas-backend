@@ -18,6 +18,10 @@ class SkitCallbackSecretSanitizingFilterTest {
     private static final String CALLBACK_KEY = "callbackKeySentinel_01234567890123456789012";
     private static final String RAW_URI = "/app-api/skit/ad-callback/taku/" + CALLBACK_KEY + "/reward";
     private static final String RAW_QUERY = "sign=signSentinel&extra_data=extraSentinel&ilrd=ilrdSentinel";
+    private static final String PANGLE_URI =
+            "/app-api/skit/ad-callback/pangle/" + CALLBACK_KEY + "/reward";
+    private static final String PANGLE_QUERY =
+            "sign=pangleSignSentinel&extra=pangleExtraSentinel&trans_id=transactionSentinel";
 
     @Test
     void callbackRouteGetsSafeLoggingAttributesWithoutMutatingRoutingInputs() throws Exception {
@@ -59,6 +63,50 @@ class SkitCallbackSecretSanitizingFilterTest {
                 .isEqualTo("/app-api/skit/ad-callback/taku/{callback-key}/unknown");
         assertThat(ApiRequestUrlResolver.resolve(request))
                 .doesNotContain(CALLBACK_KEY, "path-contains-private-value");
+    }
+
+    @Test
+    void validPangleRouteRedactsCallbackKeyAndSuppressesEveryQueryParameter() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", PANGLE_URI);
+        request.setQueryString(PANGLE_QUERY);
+        AtomicBoolean invoked = new AtomicBoolean();
+
+        new SkitCallbackSecretSanitizingFilter(new WebProperties()).doFilter(request,
+                new MockHttpServletResponse(), (rawRequest, rawResponse) -> {
+                    invoked.set(true);
+                    HttpServletRequest routed = (HttpServletRequest) rawRequest;
+                    assertThat(routed.getRequestURI()).isEqualTo(PANGLE_URI);
+                    assertThat(routed.getQueryString()).isEqualTo(PANGLE_QUERY);
+                    assertThat(ApiRequestUrlResolver.resolve(routed))
+                            .isEqualTo("/app-api/skit/ad-callback/pangle/{callback-key}/reward");
+                    assertThat(ApiRequestUrlResolver.shouldSuppressParameters(routed)).isTrue();
+                });
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
+    void malformedPanglePathReturnsLiteralFalseJsonWithoutDispatcherOrSecretLeak() throws Exception {
+        String rawUri = "/app-api/skit/ad-callback/pangle/" + CALLBACK_KEY
+                + "/unknown/path-contains-private-value";
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", rawUri);
+        request.setQueryString(PANGLE_QUERY);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean invoked = new AtomicBoolean();
+
+        new SkitCallbackSecretSanitizingFilter(new WebProperties()).doFilter(request,
+                response, (rawRequest, rawResponse) -> invoked.set(true));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentType()).isEqualTo("application/json;charset=UTF-8");
+        assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(response.getContentAsString()).isEqualTo("{\"isValid\":false}");
+        assertThat(ApiRequestUrlResolver.resolve(request))
+                .isEqualTo("/app-api/skit/ad-callback/pangle/{callback-key}/unknown");
+        assertThat(ApiRequestUrlResolver.resolve(request))
+                .doesNotContain(CALLBACK_KEY, "path-contains-private-value");
+        assertThat(ApiRequestUrlResolver.shouldSuppressParameters(request)).isTrue();
     }
 
     @Test

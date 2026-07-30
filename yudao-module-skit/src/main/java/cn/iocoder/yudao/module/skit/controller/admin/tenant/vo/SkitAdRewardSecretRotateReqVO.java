@@ -11,7 +11,9 @@ import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Positive;
 import javax.validation.constraints.PositiveOrZero;
-import javax.validation.constraints.Size;
+
+import static cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService.MAX_REWARD_SECRET_PLAINTEXT_BYTES;
+import static cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService.MIN_REWARD_SECRET_PLAINTEXT_BYTES;
 
 @Data
 public class SkitAdRewardSecretRotateReqVO {
@@ -28,7 +30,9 @@ public class SkitAdRewardSecretRotateReqVO {
     @Max(1440)
     private Integer priorAcceptanceMinutes;
     @NotNull
-    @Size(min = 8, max = 2048)
+    @SkitUtf8ByteSize(min = MIN_REWARD_SECRET_PLAINTEXT_BYTES,
+            max = MAX_REWARD_SECRET_PLAINTEXT_BYTES,
+            message = "奖励回调 Security Key 的 UTF-8 编码必须为 8 到 2048 字节")
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @ToString.Exclude
     private char[] rewardSecret;

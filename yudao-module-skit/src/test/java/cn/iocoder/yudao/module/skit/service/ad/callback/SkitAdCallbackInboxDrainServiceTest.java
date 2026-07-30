@@ -127,6 +127,28 @@ class SkitAdCallbackInboxDrainServiceTest {
     }
 
     @Test
+    void anExpiredLiveFirm15LeaseRecoversBeforeGenericDeadLettering() {
+        SkitAdCallbackInboxMapper mapper = mock(SkitAdCallbackInboxMapper.class);
+        SkitAdCallbackProcessor processor = mock(SkitAdCallbackProcessor.class);
+        SkitAdCallbackClaimDO claim = claim(9481L, 9491L, 9492L);
+        when(mapper.selectReadyClaimsForUpdate(1))
+                .thenReturn(java.util.Collections.singletonList(claim));
+        when(mapper.recoverExpiredPanglePrerequisiteRetryWaitCas(
+                9481L, 9491L, 9492L, 30, 3600)).thenReturn(1);
+
+        assertEquals(0, service(mapper, processor, new RecordingTransactionManager(),
+                "worker-pangle-crash-recovery", 1).drainOnce());
+
+        verify(mapper).recoverExpiredPanglePrerequisiteRetryWaitCas(
+                9481L, 9491L, 9492L, 30, 3600);
+        verify(mapper, never()).markExpiredProcessingDeadLetterCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyInt());
+        verify(mapper, never()).claimForProcessingCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyInt());
+        verify(processor, never()).process(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
     void unexpectedProcessorFailureSchedulesASecretSafeBoundedRetry() {
         SkitAdCallbackInboxMapper mapper = mock(SkitAdCallbackInboxMapper.class);
         SkitAdCallbackProcessor processor = mock(SkitAdCallbackProcessor.class);
@@ -147,6 +169,58 @@ class SkitAdCallbackInboxDrainServiceTest {
 
         verify(mapper).markRetryWaitCas(9501L, 9511L, 9521L, "worker-c",
                 "CALLBACK_PROCESSOR_EXCEPTION", 8, 30, 3600);
+    }
+
+    @Test
+    void liveMissingPanglePrerequisiteUsesSessionBoundRetryWithoutGenericAttemptLimit() {
+        SkitAdCallbackInboxMapper mapper = mock(SkitAdCallbackInboxMapper.class);
+        SkitAdCallbackProcessor processor = mock(SkitAdCallbackProcessor.class);
+        SkitAdCallbackClaimDO claim = claim(9551L, 9561L, 9571L);
+        when(mapper.selectReadyClaimsForUpdate(1))
+                .thenReturn(java.util.Collections.singletonList(claim));
+        when(mapper.claimForProcessingCas(9551L, 9561L, 9571L, "worker-pangle", 120))
+                .thenReturn(1);
+        when(processor.process(9551L, 9561L, 9571L, "worker-pangle"))
+                .thenThrow(new SkitRewardPrerequisitePendingException());
+        when(mapper.markPanglePrerequisiteRetryWaitCas(
+                9551L, 9561L, 9571L, "worker-pangle", 30, 3600)).thenReturn(1);
+
+        assertEquals(1, service(mapper, processor, new RecordingTransactionManager(),
+                "worker-pangle", 1).drainOnce());
+
+        verify(mapper).markPanglePrerequisiteRetryWaitCas(
+                9551L, 9561L, 9571L, "worker-pangle", 30, 3600);
+        verify(mapper, never()).markDeadLetterCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), anyInt());
+        verify(mapper, never()).markRetryWaitCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(),
+                anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
+    void expiredPanglePrerequisiteFallsBackToTheBoundedTerminalPolicy() {
+        SkitAdCallbackInboxMapper mapper = mock(SkitAdCallbackInboxMapper.class);
+        SkitAdCallbackProcessor processor = mock(SkitAdCallbackProcessor.class);
+        SkitAdCallbackClaimDO claim = claim(9552L, 9562L, 9572L);
+        when(mapper.selectReadyClaimsForUpdate(1))
+                .thenReturn(java.util.Collections.singletonList(claim));
+        when(mapper.claimForProcessingCas(9552L, 9562L, 9572L, "worker-expired", 120))
+                .thenReturn(1);
+        when(processor.process(9552L, 9562L, 9572L, "worker-expired"))
+                .thenThrow(new SkitRewardPrerequisitePendingException());
+        when(mapper.markPanglePrerequisiteRetryWaitCas(
+                9552L, 9562L, 9572L, "worker-expired", 30, 3600)).thenReturn(0);
+        when(mapper.markDeadLetterCas(9552L, 9562L, 9572L, "worker-expired",
+                "PANGLE_ATTESTATION_PENDING", 8)).thenReturn(1);
+
+        assertEquals(1, service(mapper, processor, new RecordingTransactionManager(),
+                "worker-expired", 1).drainOnce());
+
+        verify(mapper).markDeadLetterCas(9552L, 9562L, 9572L, "worker-expired",
+                "PANGLE_ATTESTATION_PENDING", 8);
+        verify(mapper, never()).markRetryWaitCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(),
+                anyInt(), anyInt(), anyInt());
     }
 
     @Test

@@ -294,6 +294,7 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 credentialService.getActiveRewardSecretVersion(tenantId, account.getId());
         validateCredential(callbackKey, tenantId, account.getId());
         validateCredential(rewardSecret, tenantId, account.getId());
+        PangleCredentialSnapshot pangleSnapshot = resolvePangleCredentialSnapshot(tenantId);
         SkitPolicySnapshotService.PolicySnapshot snapshot = snapshotService.createSnapshot(memberId);
         if (snapshot == null || snapshot.getId() == null || snapshot.getId() <= 0
                 || !tenantId.equals(snapshot.getTenantId()) || !memberId.equals(snapshot.getSourceMemberId())) {
@@ -308,6 +309,9 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
                 .setSessionTokenKeyVersion(issuedToken.getKeyVersion()).setProtocolVersion(PROTOCOL_VERSION)
                 .setMemberId(memberId).setAdAccountId(account.getId()).setPolicySnapshotId(snapshot.getId())
                 .setCallbackKeyVersion(callbackKey.getVersion()).setRewardSecretVersion(rewardSecret.getVersion())
+                .setPangleAdAccountId(pangleSnapshot == null ? null : pangleSnapshot.accountId)
+                .setPangleRewardSecretVersion(pangleSnapshot == null ? null : pangleSnapshot.secretVersion)
+                .setPangleRewardPlacementId(pangleSnapshot == null ? null : pangleSnapshot.placementId)
                 .setProvider(PROVIDER).setPlacementId(placementId).setScenarioId(SCENE)
                 .setBusinessType(BUSINESS_TYPE).setDramaId(contentScope.getDramaId())
                 .setEpisodeFrom(contentScope.getEpisodeFrom()).setEpisodeTo(contentScope.getEpisodeTo())
@@ -1244,6 +1248,35 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
         }
     }
 
+    private PangleCredentialSnapshot resolvePangleCredentialSnapshot(Long tenantId) {
+        List<SkitAdAccountDO> rows = accountMapper.selectEnabledPangleSnapshotForShare(tenantId);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        if (rows.size() != 1) {
+            throw exception(AD_SESSION_ACCOUNT_UNAVAILABLE);
+        }
+        SkitAdAccountDO account = rows.get(0);
+        if (account == null || !tenantId.equals(account.getTenantId())
+                || account.getId() == null || account.getId() <= 0
+                || !"PANGLE".equals(account.getProvider())
+                || !CommonStatusEnum.ENABLE.getStatus().equals(account.getStatus())) {
+            throw exception(AD_SESSION_ACCOUNT_UNAVAILABLE);
+        }
+        String placementId = readPlacementId(account.getConfigData());
+        if (placementId.isEmpty()) {
+            return null;
+        }
+        SkitAdCredentialVersionService.CredentialMetadata credential =
+                credentialService.getActiveRewardSecretVersion(tenantId, account.getId());
+        if (credential == null) {
+            return null;
+        }
+        validateCredential(credential, tenantId, account.getId());
+        return new PangleCredentialSnapshot(
+                account.getId(), credential.getVersion(), placementId);
+    }
+
     private String readPlacementId(String configData) {
         try {
             JsonNode node = objectMapper.readTree(configData == null ? "" : configData);
@@ -1408,6 +1441,20 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             return Enum.valueOf(type, value);
         } catch (RuntimeException ex) {
             throw exception(AD_SESSION_INVALID);
+        }
+    }
+
+    private static final class PangleCredentialSnapshot {
+
+        private final Long accountId;
+        private final Integer secretVersion;
+        private final String placementId;
+
+        private PangleCredentialSnapshot(Long accountId, Integer secretVersion,
+                                         String placementId) {
+            this.accountId = accountId;
+            this.secretVersion = secretVersion;
+            this.placementId = placementId;
         }
     }
 

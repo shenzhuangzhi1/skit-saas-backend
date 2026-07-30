@@ -40,7 +40,7 @@ class SkitCallbackRateLimiterTest {
         when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
                 .thenReturn(true);
 
-        limiter.check(rawKey, rawIp, "REWARD");
+        limiter.check("TAKU", rawKey, rawIp, "REWARD");
 
         ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<Integer> limits = ArgumentCaptor.forClass(Integer.class);
@@ -57,32 +57,59 @@ class SkitCallbackRateLimiterTest {
     }
 
     @Test
+    void pangleAndTakuHaveSeparateBusinessBucketsButShareTheIpDdosGate() {
+        String callbackKey = "shared-callback-key";
+        String clientIp = "203.0.113.20";
+        when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+
+        limiter.check("TAKU", callbackKey, clientIp, "REWARD");
+        limiter.check("PANGLE", callbackKey, clientIp, "REWARD");
+
+        ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+        verify(redis, times(4)).tryAcquire(keys.capture(), anyInt(),
+                eq(60), eq(TimeUnit.SECONDS));
+        List<String> ddosKeys = keys.getAllValues().stream()
+                .filter(key -> key.contains(":ddos:ip:"))
+                .collect(java.util.stream.Collectors.toList());
+        List<String> businessKeys = keys.getAllValues().stream()
+                .filter(key -> key.contains(":reward:key:"))
+                .collect(java.util.stream.Collectors.toList());
+        assertEquals(2, ddosKeys.size());
+        assertEquals(ddosKeys.get(0), ddosKeys.get(1));
+        assertEquals(2, businessKeys.size());
+        assertFalse(businessKeys.get(0).equals(businessKeys.get(1)));
+        assertTrue(businessKeys.stream().anyMatch(key -> key.contains(":taku:reward:key:")));
+        assertTrue(businessKeys.stream().anyMatch(key -> key.contains(":pangle:reward:key:")));
+    }
+
+    @Test
     void sameProviderIpDoesNotMakeTwoCallbackKeysConsumeEachOthersBusinessQuota() {
         installInMemoryQuotaAnswer();
         String sharedProviderIp = "203.0.113.18";
         for (int request = 0; request < 120; request++) {
-            limiter.check("tenant-a-key", sharedProviderIp, "REWARD");
-            limiter.check("tenant-b-key", sharedProviderIp, "REWARD");
+            limiter.check("TAKU", "tenant-a-key", sharedProviderIp, "REWARD");
+            limiter.check("TAKU", "tenant-b-key", sharedProviderIp, "REWARD");
         }
 
         assertThrows(SkitCallbackRateLimiter.RateLimitExceededException.class,
-                () -> limiter.check("tenant-a-key", sharedProviderIp, "REWARD"));
+                () -> limiter.check("TAKU", "tenant-a-key", sharedProviderIp, "REWARD"));
         assertThrows(SkitCallbackRateLimiter.RateLimitExceededException.class,
-                () -> limiter.check("tenant-b-key", sharedProviderIp, "REWARD"));
+                () -> limiter.check("TAKU", "tenant-b-key", sharedProviderIp, "REWARD"));
     }
 
     @Test
     void impressionUsesTheSamePerKeyLimitIndependentlyFromReward() {
         installInMemoryQuotaAnswer();
         for (int request = 0; request < 120; request++) {
-            limiter.check("same-key", "203.0.113.19", "REWARD");
-            limiter.check("same-key", "203.0.113.19", "IMPRESSION");
+            limiter.check("TAKU", "same-key", "203.0.113.19", "REWARD");
+            limiter.check("TAKU", "same-key", "203.0.113.19", "IMPRESSION");
         }
 
         assertThrows(SkitCallbackRateLimiter.RateLimitExceededException.class,
-                () -> limiter.check("same-key", "203.0.113.19", "REWARD"));
+                () -> limiter.check("TAKU", "same-key", "203.0.113.19", "REWARD"));
         assertThrows(SkitCallbackRateLimiter.RateLimitExceededException.class,
-                () -> limiter.check("same-key", "203.0.113.19", "IMPRESSION"));
+                () -> limiter.check("TAKU", "same-key", "203.0.113.19", "IMPRESSION"));
     }
 
     @Test
@@ -90,12 +117,12 @@ class SkitCallbackRateLimiterTest {
         when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
                 .thenAnswer(invocation -> !((String) invocation.getArgument(0)).contains(":ddos:ip:"));
         assertThrows(SkitCallbackRateLimiter.RateLimitExceededException.class,
-                () -> limiter.check("forged-key", "127.0.0.1", "REWARD"));
+                () -> limiter.check("TAKU", "forged-key", "127.0.0.1", "REWARD"));
 
         when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
                 .thenThrow(new IllegalStateException("redis unavailable"));
         assertThrows(IllegalStateException.class,
-                () -> limiter.check("key", "127.0.0.1", "REWARD"));
+                () -> limiter.check("TAKU", "key", "127.0.0.1", "REWARD"));
     }
 
     private void installInMemoryQuotaAnswer() {

@@ -42,6 +42,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
     static final String OFF = "OFF";
     static final String SHADOW = "SHADOW_TEST_USERS";
     static final String ENFORCED = "ENFORCED";
+    private static final int PANGLE_DOMESTIC_NETWORK_FIRM_ID = 15;
+    private static final int PANGLE_OVERSEAS_NETWORK_FIRM_ID = 50;
     private static final Pattern STABLE_VERSION = Pattern.compile("[0-9]{1,9}(\\.[0-9]{1,9}){1,3}");
     private static final Pattern RUNTIME_VERSION = Pattern.compile(
             "[0-9]{1,9}(\\.[0-9]{1,9}){1,3}([-.][A-Za-z0-9._-]{1,32})?");
@@ -125,6 +127,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         if (!evidence.isShadowMembersBelongToTenant()) {
             throw exception(AD_ROLLOUT_NOT_READY, "SHADOW_MEMBER_TENANT_MISMATCH");
         }
+        requireSelectedNetworkPrerequisites(unlockNetworkFirmIds, evidence);
         if (!unlockNetworkFirmIds.isEmpty()
                 && (!evidence.isUnlockNetworksAuthoritative()
                 || !selectedNetworkCapabilitiesAuthoritative(
@@ -164,7 +167,10 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         locked.setMinNativeVersion(command.getMinNativeVersion().trim());
         locked.setMinProtocolVersion(command.getMinProtocolVersion());
         if (!OFF.equals(target)) {
-            ReadinessView readiness = readiness(locked, evidenceReader.read(tenantId, locked));
+            SkitTenantAdReadinessEvidence evidence = evidenceReader.read(tenantId, locked);
+            requireSelectedNetworkPrerequisites(
+                    parseIntegerSet(locked.getUnlockNetworkFirmIdsJson()), evidence);
+            ReadinessView readiness = readiness(locked, evidence);
             boolean ready = SHADOW.equals(target) ? readiness.isShadowReady() : readiness.isProductionReady();
             if (!ready) {
                 throw exception(AD_ROLLOUT_NOT_READY, String.join(",", readiness.getBlockers()));
@@ -205,7 +211,16 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         List<NetworkCapabilityView> result = new ArrayList<>(rows.size());
         for (SkitAdNetworkCapabilityDO row : rows) {
             requireNetworkCapabilityEnvelope(row, tenantId, adAccountId);
-            result.add(toNetworkCapabilityView(row));
+            NetworkCapabilityView view = toNetworkCapabilityView(row);
+            List<String> prerequisiteBlockers = networkPrerequisiteBlockers(
+                    tenantId, row.getNetworkFirmId());
+            if (!prerequisiteBlockers.isEmpty()) {
+                List<String> blockers = new ArrayList<>(view.getBlockers());
+                addUnique(blockers, prerequisiteBlockers);
+                view.setBlockers(Collections.unmodifiableList(blockers));
+                view.setSelectable(false);
+            }
+            result.add(view);
         }
         result.sort((left, right) -> Integer.compare(
                 left.getNetworkFirmId(), right.getNetworkFirmId()));
@@ -231,6 +246,9 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
         }
         requireMutableAccountTarget(tenantId, command.getAdAccountId());
+        if (Boolean.TRUE.equals(command.getEnabled())) {
+            requireNetworkPrerequisites(tenantId, command.getNetworkFirmId());
+        }
         SkitAdNetworkCapabilityDO existing = networkCapabilityMapper.selectForUpdate(
                 tenantId, command.getAdAccountId(), command.getNetworkFirmId());
         if (Boolean.TRUE.equals(command.getEnabled())) {
@@ -273,6 +291,7 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         if (adAccountId == null || !adAccountId.equals(locked.getAdAccountId())) {
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "AD_ACCOUNT_TARGET_MISMATCH");
         }
+        requireMutableAccountTarget(tenantId, adAccountId);
     }
 
     @Override
@@ -348,6 +367,8 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         require(shadowBlockers, evidence.isDedicatedUnlockPlacement(), "UNLOCK_PLACEMENT_NOT_DEDICATED");
         require(shadowBlockers, evidence.isRewardCallbackTemplateVerified(),
                 "REWARD_CALLBACK_TEMPLATE_UNVERIFIED");
+        addUnique(shadowBlockers, selectedNetworkPrerequisiteBlockers(
+                parseIntegerSet(capability.getUnlockNetworkFirmIdsJson()), evidence));
         require(shadowBlockers, evidence.isUnlockNetworksAuthoritative(),
                 "UNLOCK_NETWORK_WITHOUT_AUTHORITATIVE_S2S");
         require(shadowBlockers, evidence.isNativeReleaseReady(), "NATIVE_RELEASE_NOT_READY");
@@ -425,6 +446,89 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
         return view;
     }
 
+    private void requireNetworkPrerequisites(Long tenantId, Integer networkFirmId) {
+        List<String> blockers = networkPrerequisiteBlockers(tenantId, networkFirmId);
+        if (!blockers.isEmpty()) {
+            throw exception(AD_ROLLOUT_NOT_READY, String.join(",", blockers));
+        }
+    }
+
+    private List<String> networkPrerequisiteBlockers(
+            Long tenantId, Integer networkFirmId) {
+        if (!Integer.valueOf(PANGLE_DOMESTIC_NETWORK_FIRM_ID).equals(networkFirmId)) {
+            return Collections.emptyList();
+        }
+        List<String> blockers = evidenceReader.readNetworkPrerequisiteBlockers(
+                tenantId, networkFirmId);
+        if (blockers == null) {
+            return Collections.singletonList(
+                    "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+        }
+        List<String> normalized = normalizedPrerequisiteBlockers(blockers);
+        if (normalized.isEmpty() && !blockers.isEmpty()) {
+            return Collections.singletonList(
+                    "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+        }
+        return normalized;
+    }
+
+    private void requireSelectedNetworkPrerequisites(
+            Set<Integer> selectedNetworkFirmIds,
+            SkitTenantAdReadinessEvidence evidence) {
+        List<String> blockers = selectedNetworkPrerequisiteBlockers(
+                selectedNetworkFirmIds, evidence);
+        if (!blockers.isEmpty()) {
+            throw exception(AD_ROLLOUT_NOT_READY, String.join(",", blockers));
+        }
+    }
+
+    private static List<String> selectedNetworkPrerequisiteBlockers(
+            Set<Integer> selectedNetworkFirmIds,
+            SkitTenantAdReadinessEvidence evidence) {
+        if (selectedNetworkFirmIds == null
+                || !selectedNetworkFirmIds.contains(PANGLE_DOMESTIC_NETWORK_FIRM_ID)) {
+            return Collections.emptyList();
+        }
+        if (evidence == null || evidence.getNetworkReadiness() == null) {
+            return Collections.singletonList(
+                    "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+        }
+        for (SkitTenantAdReadinessEvidence.NetworkEvidence network
+                : evidence.getNetworkReadiness()) {
+            if (network != null && Integer.valueOf(PANGLE_DOMESTIC_NETWORK_FIRM_ID)
+                    .equals(network.getNetworkFirmId())) {
+                List<String> blockers = normalizedPrerequisiteBlockers(
+                        network.getCapabilityBlockers());
+                return blockers;
+            }
+        }
+        return Collections.singletonList(
+                "PANGLE_PREREQUISITE_EVIDENCE_UNAVAILABLE");
+    }
+
+    private static List<String> normalizedPrerequisiteBlockers(List<String> blockers) {
+        if (blockers == null || blockers.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>();
+        for (String blocker : blockers) {
+            if (StrUtil.isNotBlank(blocker) && blocker.startsWith("PANGLE_")
+                    && !result.contains(blocker)) {
+                result.add(blocker);
+            }
+        }
+        return result.isEmpty() ? Collections.emptyList()
+                : Collections.unmodifiableList(result);
+    }
+
+    private static void addUnique(List<String> target, List<String> values) {
+        for (String value : values == null ? Collections.<String>emptyList() : values) {
+            if (!target.contains(value)) {
+                target.add(value);
+            }
+        }
+    }
+
     private void validateConfigurationInput(ConfigurationCommand command) {
         if (command == null || command.getAdAccountId() == null || command.getAdAccountId() <= 0
                 || command.getExpectedReadinessVersion() == null || command.getExpectedReadinessVersion() < 0
@@ -462,6 +566,11 @@ public class SkitTenantAdCapabilityServiceImpl implements SkitTenantAdCapability
                 || command.getEnabled() == null || command.getExpectedReadinessVersion() == null
                 || command.getExpectedReadinessVersion() < 0) {
             throw exception(AD_ROLLOUT_CONFIG_INVALID, "NETWORK_CAPABILITY_FIELD_INVALID");
+        }
+        if (Boolean.TRUE.equals(command.getEnabled())
+                && command.getNetworkFirmId() == PANGLE_OVERSEAS_NETWORK_FIRM_ID) {
+            throw exception(AD_ROLLOUT_CONFIG_INVALID,
+                    "PANGLE_OVERSEAS_FIRM_UNAUTHORIZED");
         }
         if (Boolean.TRUE.equals(command.getEnabled())
                 && (command.getSupportsUserId() == null

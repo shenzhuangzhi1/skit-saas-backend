@@ -10,10 +10,19 @@ import java.util.function.Function;
 
 public interface SkitAdCredentialVersionService {
 
+    int MIN_REWARD_SECRET_PLAINTEXT_BYTES = 8;
+    int MAX_REWARD_SECRET_PLAINTEXT_BYTES = 2048;
+
     CallbackKeyIssue rotateCallbackKey(long tenantId, long adAccountId, Duration priorAcceptanceWindow);
 
     CredentialMetadata rotateRewardSecret(long tenantId, long adAccountId, byte[] rewardSecret,
                                           Duration priorAcceptanceWindow);
+
+    /**
+     * Immediately revokes every active or retired-but-still-accepted reward secret.
+     * Evidence persisted strictly before the revocation timestamp may still complete.
+     */
+    boolean revokeAllRewardSecrets(long tenantId, long adAccountId);
 
     CredentialMetadata getActiveCallbackKeyVersion(long tenantId, long adAccountId);
 

@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackInboxDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdNetworkCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdSessionDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitPangleRewardAttestationDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
@@ -11,6 +12,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitPangleRewardAttestationMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitTenantAdCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitContentEntitlementMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.member.SkitEntitlementGrantMapper;
@@ -59,6 +61,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -86,6 +89,7 @@ class SkitAdCallbackProcessorTest {
 
     private SkitAdCallbackInboxMapper inboxMapper;
     private SkitAdSessionMapper sessionMapper;
+    private SkitPangleRewardAttestationMapper pangleAttestationMapper;
     private SkitAdNetworkCapabilityMapper capabilityMapper;
     private SkitTenantAdCapabilityMapper tenantCapabilityMapper;
     private SkitContentEntitlementMapper entitlementMapper;
@@ -108,6 +112,7 @@ class SkitAdCallbackProcessorTest {
         TenantContextHolder.setTenantId(TENANT_ID);
         inboxMapper = mock(SkitAdCallbackInboxMapper.class);
         sessionMapper = mock(SkitAdSessionMapper.class);
+        pangleAttestationMapper = mock(SkitPangleRewardAttestationMapper.class);
         capabilityMapper = mock(SkitAdNetworkCapabilityMapper.class);
         tenantCapabilityMapper = mock(SkitTenantAdCapabilityMapper.class);
         entitlementMapper = mock(SkitContentEntitlementMapper.class);
@@ -125,8 +130,9 @@ class SkitAdCallbackProcessorTest {
         Clock clock = Clock.fixed(Instant.parse("2026-07-14T17:20:00Z"),
                 ZoneId.of("Asia/Shanghai"));
         processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
-                entitlementMapper, grantMapper, revenueMapper, payloadCrypto, credentialService,
-                tokenService, snapshotService, projectionService, new TakuCallbackCanonicalizer(),
+                pangleAttestationMapper, entitlementMapper, grantMapper, revenueMapper,
+                payloadCrypto, credentialService, tokenService, snapshotService, projectionService,
+                new TakuCallbackCanonicalizer(),
                 new TakuRewardSignatureVerifier(new ObjectMapper()),
                 new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), clock);
 
@@ -263,6 +269,135 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void firm15TakuRewardWaitsWithoutGrantMutationUntilPangleAttestationExists() {
+        prepareFirm15Reward();
+        when(pangleAttestationMapper.selectBySession(TENANT_ID, ACCOUNT_ID, SESSION_ID))
+                .thenReturn(null);
+
+        assertThrows(SkitRewardPrerequisitePendingException.class,
+                () -> processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER));
+
+        verify(pangleAttestationMapper).selectBySession(TENANT_ID, ACCOUNT_ID, SESSION_ID);
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(), anyInt(), anyInt(), anyInt(),
+                anyString(), any(), anyInt(), anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+        verify(inboxMapper, never()).markSucceededCas(anyLong(), anyLong(), anyLong(), anyString());
+        verify(inboxMapper, never()).markRejectedCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void firm15TakuRewardRejectsEveryMismatchedPangleAttestationBinding() {
+        prepareFirm15Reward();
+        SkitPangleRewardAttestationDO wrongTenant = pangleAttestation();
+        wrongTenant.setTenantId(TENANT_ID + 1);
+        SkitPangleRewardAttestationDO wrongTakuAccount = pangleAttestation()
+                .setTakuAdAccountId(ACCOUNT_ID + 1);
+        SkitPangleRewardAttestationDO wrongSession = pangleAttestation()
+                .setAdSessionId(SESSION_ID + 1);
+        SkitPangleRewardAttestationDO wrongCallbackVersion = pangleAttestation()
+                .setCallbackKeyVersion(5);
+        SkitPangleRewardAttestationDO wrongPangleAccount = pangleAttestation()
+                .setPangleAdAccountId(32L);
+        SkitPangleRewardAttestationDO wrongPangleSecretVersion = pangleAttestation()
+                .setPangleRewardSecretVersion(10);
+        SkitPangleRewardAttestationDO wrongPanglePlacement = pangleAttestation()
+                .setPangleRewardPlacementId("other-pangle-placement");
+        SkitPangleRewardAttestationDO wrongProvider = pangleAttestation()
+                .setProvider("TAKU");
+        SkitPangleRewardAttestationDO wrongUser = pangleAttestation()
+                .setProviderUserId("other-user");
+        SkitPangleRewardAttestationDO wrongExtra = pangleAttestation()
+                .setExtraDataHash(new byte[32]);
+        List<SkitPangleRewardAttestationDO> mismatches = Arrays.asList(
+                wrongTenant, wrongTakuAccount, wrongSession, wrongCallbackVersion,
+                wrongPangleAccount, wrongPangleSecretVersion, wrongPanglePlacement,
+                wrongProvider, wrongUser, wrongExtra);
+        List<String> fields = Arrays.asList(
+                "tenant", "Taku account", "session", "callback key version",
+                "Pangle account", "Pangle reward secret version", "Pangle placement",
+                "provider", "provider user", "extra hash");
+
+        for (int index = 0; index < mismatches.size(); index++) {
+            when(pangleAttestationMapper.selectBySession(TENANT_ID, ACCOUNT_ID, SESSION_ID))
+                    .thenReturn(mismatches.get(index));
+            int current = index;
+            assertThrows(SkitRewardPrerequisitePendingException.class,
+                    () -> processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER),
+                    () -> fields.get(current) + " mismatch must fail closed");
+        }
+
+        verify(pangleAttestationMapper, times(mismatches.size()))
+                .selectBySession(TENANT_ID, ACCOUNT_ID, SESSION_ID);
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(), anyInt(), anyInt(), anyInt(),
+                anyString(), any(), anyInt(), anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+        verify(inboxMapper, never()).markSucceededCas(anyLong(), anyLong(), anyLong(), anyString());
+        verify(inboxMapper, never()).markRejectedCas(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void firm15TakuRewardGrantsThroughExistingCasAfterExactPangleAttestation() {
+        prepareFirm15Reward();
+        when(pangleAttestationMapper.selectBySession(TENANT_ID, ACCOUNT_ID, SESSION_ID))
+                .thenReturn(pangleAttestation());
+        when(sessionMapper.markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 15, ADSOURCE,
+                PROCESSING_AT)).thenReturn(1);
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(pangleAttestationMapper).selectBySession(TENANT_ID, ACCOUNT_ID, SESSION_ID);
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 15, ADSOURCE,
+                PROCESSING_AT);
+        verify(entitlementMapper).insertGrantedIfAbsent(any(SkitContentEntitlementDO.class));
+        verify(grantMapper).insert(any(SkitEntitlementGrantDO.class));
+    }
+
+    @Test
+    void non15TakuRewardNeverConsultsPangleAndKeepsExistingGrantPath() {
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        verify(pangleAttestationMapper, never())
+                .selectBySession(anyLong(), anyLong(), anyLong());
+        verify(sessionMapper).markSignedRewardAndGrantCas(TENANT_ID, SESSION_ID, ACCOUNT_ID,
+                INBOX_ID, RECEIVED_AT, 9, 4, 7, TRANSACTION, SIGNED_SHOW, 66, ADSOURCE,
+                PROCESSING_AT);
+    }
+
+    @Test
+    void overseasPangleFirm50IsRejectedBeforeGrantCas() {
+        rewardQuery = signedRewardQuery(customData, TRANSACTION, SIGNED_SHOW, 50);
+        decryptedPayload.set(rewardQuery.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(rewardQuery).setNetworkFirmId(50);
+        when(capabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 50))
+                .thenReturn(rewardCapability().setNetworkFirmId(50));
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[50]"));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("PANGLE_OVERSEAS_FIRM_UNAUTHORIZED", result.getErrorCode());
+        verify(sessionMapper, never()).markSignedRewardAndGrantCas(
+                anyLong(), anyLong(), anyLong(), anyLong(), any(), anyInt(), anyInt(), anyInt(),
+                anyString(), any(), anyInt(), anyString(), any());
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
     void rewardCallbackLocksSessionBeforeItsOrderedEntitlementPrefix() {
         processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
 
@@ -377,8 +512,9 @@ class SkitAdCallbackProcessorTest {
                 PROCESSING_AT.minusMinutes(10).atZone(zone).toInstant(),
                 PROCESSING_AT.atZone(zone).toInstant());
         processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
-                entitlementMapper, grantMapper, revenueMapper, payloadCrypto, credentialService,
-                tokenService, snapshotService, projectionService, new TakuCallbackCanonicalizer(),
+                pangleAttestationMapper, entitlementMapper, grantMapper, revenueMapper,
+                payloadCrypto, credentialService, tokenService, snapshotService, projectionService,
+                new TakuCallbackCanonicalizer(),
                 new TakuRewardSignatureVerifier(new ObjectMapper()),
                 new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), stagedClock);
 
@@ -1188,6 +1324,35 @@ class SkitAdCallbackProcessorTest {
         return row;
     }
 
+    private void prepareFirm15Reward() {
+        session.setPangleAdAccountId(31L)
+                .setPangleRewardSecretVersion(9)
+                .setPangleRewardPlacementId("pangle-reward-placement");
+        rewardQuery = signedRewardQuery(customData, TRANSACTION, SIGNED_SHOW, 15);
+        decryptedPayload.set(rewardQuery.getBytes(StandardCharsets.US_ASCII));
+        inbox = rewardInbox(rewardQuery).setNetworkFirmId(15);
+        when(capabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 15))
+                .thenReturn(rewardCapability().setNetworkFirmId(15));
+        when(tenantCapabilityMapper.selectByTenantForShare(TENANT_ID))
+                .thenReturn(selectedNetworks("[15]"));
+    }
+
+    private SkitPangleRewardAttestationDO pangleAttestation() {
+        SkitPangleRewardAttestationDO row = new SkitPangleRewardAttestationDO()
+                .setId(701L).setTakuAdAccountId(ACCOUNT_ID).setPangleAdAccountId(31L)
+                .setAdSessionId(SESSION_ID).setCallbackKeyVersion(4)
+                .setPangleRewardSecretVersion(9)
+                .setPangleRewardPlacementId("pangle-reward-placement")
+                .setProvider("PANGLE").setProviderTransactionId("pangle-transaction")
+                .setProviderUserId(PSEUDONYMOUS_USER)
+                .setExtraDataHash(tokenService.hashCustomData(customData))
+                .setRewardName("coin").setRewardAmount(1)
+                .setCanonicalPayloadHash(new byte[32])
+                .setCredentialFingerprint(new byte[32]).setReceivedAt(RECEIVED_AT);
+        row.setTenantId(TENANT_ID);
+        return row;
+    }
+
     private SkitAdCallbackInboxDO baseInbox(String type, String idempotencyKey, byte[] hash) {
         SkitAdCallbackInboxDO row = new SkitAdCallbackInboxDO()
                 .setId(INBOX_ID).setAdAccountId(ACCOUNT_ID).setProvider("TAKU")
@@ -1281,8 +1446,21 @@ class SkitAdCallbackProcessorTest {
     }
 
     private String signedRewardQuery(String extraData, String transactionId, String signedShowId,
+                                     int networkFirmId) {
+        return signedRewardQuery(extraData, transactionId, signedShowId,
+                SESSION_PUBLIC_ID, networkFirmId);
+    }
+
+    private String signedRewardQuery(String extraData, String transactionId, String signedShowId,
                                      String signedShowCustomExt) {
-        String ilrd = "{\"network_firm_id\":66,\"adsource_id\":\"" + ADSOURCE + "\""
+        return signedRewardQuery(extraData, transactionId, signedShowId,
+                signedShowCustomExt, 66);
+    }
+
+    private String signedRewardQuery(String extraData, String transactionId, String signedShowId,
+                                     String signedShowCustomExt, int networkFirmId) {
+        String ilrd = "{\"network_firm_id\":" + networkFirmId
+                + ",\"adsource_id\":\"" + ADSOURCE + "\""
                 + (signedShowId == null ? "" : ",\"id\":\"" + signedShowId + "\"")
                 + ",\"adunit_id\":\"" + PLACEMENT + "\""
                 + (signedShowCustomExt == null ? "" : ",\"show_custom_ext\":\""
@@ -1293,7 +1471,8 @@ class SkitAdCallbackProcessorTest {
         return "user_id=" + PSEUDONYMOUS_USER + "&trans_id=" + transactionId
                 + "&placement_id=" + PLACEMENT + "&adsource_id=" + ADSOURCE
                 + "&reward_amount=1&reward_name=coin&extra_data=" + encode(extraData)
-                + "&network_firm_id=66&sign=" + md5(signing) + "&ilrd=" + encode(ilrd);
+                + "&network_firm_id=" + networkFirmId + "&sign=" + md5(signing)
+                + "&ilrd=" + encode(ilrd);
     }
 
     private String impressionQuery(String price, String currency) {

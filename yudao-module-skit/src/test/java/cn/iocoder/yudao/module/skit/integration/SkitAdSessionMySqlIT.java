@@ -2182,6 +2182,11 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         }
 
         @Override
+        public boolean revokeAllRewardSecrets(long tenantId, long adAccountId) {
+            throw unsupported();
+        }
+
+        @Override
         public CredentialMetadata getActiveCallbackKeyVersion(long tenantId, long adAccountId) {
             return active(tenantId, adAccountId);
         }

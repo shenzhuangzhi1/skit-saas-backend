@@ -53,6 +53,13 @@ public class SkitCallbackPublicUrlService {
         return route(callbackKey, "/impression") + IMPRESSION_QUERY;
     }
 
+    public String pangleRewardCallbackUrl(String callbackKey) {
+        if (callbackKey == null || !CALLBACK_KEY.matcher(callbackKey).matches()) {
+            throw new IllegalArgumentException("Callback key format is invalid");
+        }
+        return publicBaseUrl + "/skit/ad-callback/pangle/" + callbackKey + "/reward";
+    }
+
     private String route(String callbackKey, String suffix) {
         if (callbackKey == null || !CALLBACK_KEY.matcher(callbackKey).matches()) {
             throw new IllegalArgumentException("Callback key format is invalid");

@@ -168,6 +168,150 @@ public interface SkitAdCallbackInboxMapper {
                          @Param("baseBackoffSeconds") int baseBackoffSeconds,
                          @Param("maxBackoffSeconds") int maxBackoffSeconds);
 
+    @Update("UPDATE `skit_ad_callback_inbox` `i` "
+            + "JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`i`.`tenant_id` "
+            + "AND `s`.`ad_account_id`=`i`.`ad_account_id` AND `s`.`id`=`i`.`ad_session_id` "
+            + "AND `s`.`callback_key_version`=`i`.`callback_key_version` "
+            + "SET `i`.`processing_status`='RETRY_WAIT',"
+            + "`i`.`error_code`='PANGLE_ATTESTATION_PENDING',"
+            + "`i`.`lease_owner`=NULL,`i`.`lease_until`=NULL,"
+            + "`i`.`next_attempt_at`=CASE WHEN EXISTS(SELECT 1 "
+            + "FROM `skit_pangle_reward_attestation` `a` "
+            + "WHERE `a`.`tenant_id`=`i`.`tenant_id` "
+            + "AND `a`.`taku_ad_account_id`=`i`.`ad_account_id` "
+            + "AND `a`.`ad_session_id`=`i`.`ad_session_id` "
+            + "AND `a`.`callback_key_version`=`i`.`callback_key_version` "
+            + "AND `a`.`pangle_ad_account_id`=`s`.`pangle_ad_account_id` "
+            + "AND `a`.`pangle_reward_secret_version`=`s`.`pangle_reward_secret_version` "
+            + "AND `a`.`pangle_reward_placement_id`=`s`.`pangle_reward_placement_id` "
+            + "AND `a`.`provider`='PANGLE' "
+            + "AND `a`.`provider_user_id`=`i`.`provider_user_id` "
+            + "AND `a`.`extra_data_hash`=`i`.`extra_data_hash` AND `a`.`deleted`=b'0') "
+            + "THEN CURRENT_TIMESTAMP ELSE TIMESTAMPADD(SECOND,"
+            + "CAST(LEAST(#{maxBackoffSeconds},#{baseBackoffSeconds}*"
+            + "POW(2,LEAST(`i`.`processing_attempt_count`-1,30))) AS SIGNED),"
+            + "CURRENT_TIMESTAMP) END,`i`.`processed_at`=NULL,"
+            + "`i`.`updater`='callback-drain',`i`.`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `i`.`tenant_id`=#{tenantId} AND `i`.`ad_account_id`=#{adAccountId} "
+            + "AND `i`.`id`=#{id} AND `i`.`provider`='TAKU' "
+            + "AND `i`.`callback_type`='REWARD' AND `i`.`network_firm_id`=15 "
+            + "AND `i`.`processing_status`='PROCESSING' AND `i`.`lease_owner`=#{leaseOwner} "
+            + "AND `i`.`lease_until`>=CURRENT_TIMESTAMP "
+            + "AND `i`.`reward_secret_version`=`s`.`reward_secret_version` "
+            + "AND `i`.`received_at`=`s`.`reward_callback_received_at` "
+            + "AND `s`.`reward_callback_inbox_id`=`i`.`id` "
+            + "AND `s`.`provider`='TAKU' AND `s`.`reward_verification_status`='PENDING' "
+            + "AND `s`.`entitlement_status`='NONE' "
+            + "AND `s`.`reward_accept_until`>=CURRENT_TIMESTAMP "
+            + "AND `i`.`received_at`<=`s`.`reward_accept_until` "
+            + "AND `s`.`active_scope_hash` IS NOT NULL "
+            + "AND `s`.`active_scope_released_at` IS NULL "
+            + "AND `s`.`active_scope_release_reason` IS NULL "
+            + "AND `i`.`payload_expires_at`>CURRENT_TIMESTAMP "
+            + "AND `i`.`deleted`=b'0' AND `s`.`deleted`=b'0'")
+    @InterceptorIgnore(tenantLine = "true") // every joined row is explicitly bound to the callback tenant
+    int markPanglePrerequisiteRetryWaitCas(
+            @Param("tenantId") Long tenantId,
+            @Param("adAccountId") Long adAccountId,
+            @Param("id") Long id,
+            @Param("leaseOwner") String leaseOwner,
+            @Param("baseBackoffSeconds") int baseBackoffSeconds,
+            @Param("maxBackoffSeconds") int maxBackoffSeconds);
+
+    @Update("UPDATE `skit_ad_callback_inbox` `i` "
+            + "JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`i`.`tenant_id` "
+            + "AND `s`.`ad_account_id`=`i`.`ad_account_id` AND `s`.`id`=`i`.`ad_session_id` "
+            + "AND `s`.`callback_key_version`=`i`.`callback_key_version` "
+            + "SET `i`.`processing_status`='RETRY_WAIT',"
+            + "`i`.`error_code`='PANGLE_ATTESTATION_PENDING',"
+            + "`i`.`lease_owner`=NULL,`i`.`lease_until`=NULL,"
+            + "`i`.`next_attempt_at`=CASE WHEN EXISTS(SELECT 1 "
+            + "FROM `skit_pangle_reward_attestation` `a` "
+            + "WHERE `a`.`tenant_id`=`i`.`tenant_id` "
+            + "AND `a`.`taku_ad_account_id`=`i`.`ad_account_id` "
+            + "AND `a`.`ad_session_id`=`i`.`ad_session_id` "
+            + "AND `a`.`callback_key_version`=`i`.`callback_key_version` "
+            + "AND `a`.`pangle_ad_account_id`=`s`.`pangle_ad_account_id` "
+            + "AND `a`.`pangle_reward_secret_version`=`s`.`pangle_reward_secret_version` "
+            + "AND `a`.`pangle_reward_placement_id`=`s`.`pangle_reward_placement_id` "
+            + "AND `a`.`provider`='PANGLE' "
+            + "AND `a`.`provider_user_id`=`i`.`provider_user_id` "
+            + "AND `a`.`extra_data_hash`=`i`.`extra_data_hash` AND `a`.`deleted`=b'0') "
+            + "THEN CURRENT_TIMESTAMP ELSE TIMESTAMPADD(SECOND,"
+            + "CAST(LEAST(#{maxBackoffSeconds},#{baseBackoffSeconds}*"
+            + "POW(2,LEAST(`i`.`processing_attempt_count`-1,30))) AS SIGNED),"
+            + "CURRENT_TIMESTAMP) END,`i`.`processed_at`=NULL,"
+            + "`i`.`updater`='callback-drain',`i`.`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `i`.`tenant_id`=#{tenantId} AND `i`.`ad_account_id`=#{adAccountId} "
+            + "AND `i`.`id`=#{id} AND `i`.`provider`='TAKU' "
+            + "AND `i`.`callback_type`='REWARD' AND `i`.`network_firm_id`=15 "
+            + "AND `i`.`processing_status`='PROCESSING' "
+            + "AND `i`.`lease_until`<=CURRENT_TIMESTAMP "
+            + "AND `i`.`reward_secret_version`=`s`.`reward_secret_version` "
+            + "AND `i`.`received_at`=`s`.`reward_callback_received_at` "
+            + "AND `s`.`reward_callback_inbox_id`=`i`.`id` "
+            + "AND `s`.`provider`='TAKU' AND `s`.`reward_verification_status`='PENDING' "
+            + "AND `s`.`entitlement_status`='NONE' "
+            + "AND `s`.`reward_accept_until`>=CURRENT_TIMESTAMP "
+            + "AND `i`.`received_at`<=`s`.`reward_accept_until` "
+            + "AND `s`.`active_scope_hash` IS NOT NULL "
+            + "AND `s`.`active_scope_released_at` IS NULL "
+            + "AND `s`.`active_scope_release_reason` IS NULL "
+            + "AND `i`.`payload_expires_at`>CURRENT_TIMESTAMP "
+            + "AND `i`.`deleted`=b'0' AND `s`.`deleted`=b'0'")
+    @InterceptorIgnore(tenantLine = "true") // every joined row is explicitly bound to the callback tenant
+    int recoverExpiredPanglePrerequisiteRetryWaitCas(
+            @Param("tenantId") Long tenantId,
+            @Param("adAccountId") Long adAccountId,
+            @Param("id") Long id,
+            @Param("baseBackoffSeconds") int baseBackoffSeconds,
+            @Param("maxBackoffSeconds") int maxBackoffSeconds);
+
+    @Update("UPDATE `skit_ad_callback_inbox` `i` "
+            + "JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`i`.`tenant_id` "
+            + "AND `s`.`ad_account_id`=`i`.`ad_account_id` AND `s`.`id`=`i`.`ad_session_id` "
+            + "AND `s`.`callback_key_version`=`i`.`callback_key_version` "
+            + "JOIN `skit_pangle_reward_attestation` `a` ON `a`.`tenant_id`=`i`.`tenant_id` "
+            + "AND `a`.`taku_ad_account_id`=`i`.`ad_account_id` "
+            + "AND `a`.`ad_session_id`=`i`.`ad_session_id` "
+            + "AND `a`.`callback_key_version`=`i`.`callback_key_version` "
+            + "AND `a`.`pangle_ad_account_id`=`s`.`pangle_ad_account_id` "
+            + "AND `a`.`pangle_reward_secret_version`=`s`.`pangle_reward_secret_version` "
+            + "AND `a`.`pangle_reward_placement_id`=`s`.`pangle_reward_placement_id` "
+            + "AND `a`.`provider`='PANGLE' "
+            + "AND `a`.`provider_user_id`=`i`.`provider_user_id` "
+            + "AND `a`.`extra_data_hash`=`i`.`extra_data_hash` AND `a`.`deleted`=b'0' "
+            + "SET `i`.`processing_status`='PENDING',`i`.`error_code`=NULL,"
+            + "`i`.`lease_owner`=NULL,`i`.`lease_until`=NULL,`i`.`next_attempt_at`=NULL,"
+            + "`i`.`processed_at`=NULL,`i`.`updater`='pangle-attestation',"
+            + "`i`.`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `i`.`tenant_id`=#{tenantId} AND `i`.`ad_account_id`=#{adAccountId} "
+            + "AND `i`.`ad_session_id`=#{adSessionId} "
+            + "AND `i`.`callback_key_version`=#{callbackKeyVersion} "
+            + "AND `i`.`provider`='TAKU' AND `i`.`callback_type`='REWARD' "
+            + "AND `i`.`network_firm_id`=15 AND `i`.`processing_status`='RETRY_WAIT' "
+            + "AND `i`.`error_code`='PANGLE_ATTESTATION_PENDING' "
+            + "AND `i`.`lease_owner` IS NULL AND `i`.`lease_until` IS NULL "
+            + "AND `i`.`processed_at` IS NULL "
+            + "AND `i`.`reward_secret_version`=`s`.`reward_secret_version` "
+            + "AND `i`.`received_at`=`s`.`reward_callback_received_at` "
+            + "AND `s`.`reward_callback_inbox_id`=`i`.`id` "
+            + "AND `s`.`provider`='TAKU' AND `s`.`reward_verification_status`='PENDING' "
+            + "AND `s`.`entitlement_status`='NONE' "
+            + "AND `s`.`reward_accept_until`>=CURRENT_TIMESTAMP "
+            + "AND `i`.`received_at`<=`s`.`reward_accept_until` "
+            + "AND `s`.`active_scope_hash` IS NOT NULL "
+            + "AND `s`.`active_scope_released_at` IS NULL "
+            + "AND `s`.`active_scope_release_reason` IS NULL "
+            + "AND `i`.`payload_expires_at`>CURRENT_TIMESTAMP "
+            + "AND `i`.`deleted`=b'0' AND `s`.`deleted`=b'0'")
+    @InterceptorIgnore(tenantLine = "true") // exact tenant/account/session/version scope is enforced in SQL
+    int wakePangleAttestationPendingRewardCas(
+            @Param("tenantId") Long tenantId,
+            @Param("adAccountId") Long adAccountId,
+            @Param("adSessionId") Long adSessionId,
+            @Param("callbackKeyVersion") Integer callbackKeyVersion);
+
     @Update("UPDATE `skit_ad_callback_inbox` SET `processing_status`='DEAD_LETTER',"
             + "`error_code`=#{errorCode},`lease_owner`=NULL,`lease_until`=NULL,`next_attempt_at`=NULL,"
             + "`processed_at`=CURRENT_TIMESTAMP,`updater`='callback-drain',"
