@@ -66,6 +66,8 @@ public class SkitAgentCreateReqVO {
     @Size(max = 128)
     private String takuPlacementId;
     @Size(max = 128)
+    private String splashPlacementId;
+    @Size(max = 128)
     private String checkInEntryInterstitialPlacementId;
     @Size(max = 128)
     private String postCheckInDramaInterstitialPlacementId;

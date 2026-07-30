@@ -331,6 +331,7 @@ public class SkitTenantBusinessController {
         settings.setTakuAppKey(request.getTakuAppKey());
         settings.setTakuAppSecret(request.getTakuAppSecret());
         settings.setTakuPlacementId(request.getTakuPlacementId());
+        settings.setSplashPlacementId(request.getSplashPlacementId());
         settings.setCheckInEntryInterstitialPlacementId(
                 request.getCheckInEntryInterstitialPlacementId());
         settings.setPostCheckInDramaInterstitialPlacementId(
@@ -348,6 +349,7 @@ public class SkitTenantBusinessController {
                 + ";pangleSecretConfigured=" + value.getPangleSecretConfigured()
                 + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
                 + ";takuPlacement=" + value.getTakuPlacementId()
+                + ";splashPlacement=" + value.getSplashPlacementId()
                 + ";checkInEntryInterstitialPlacement="
                 + value.getCheckInEntryInterstitialPlacementId()
                 + ";postCheckInDramaInterstitialPlacement="
@@ -365,6 +367,7 @@ public class SkitTenantBusinessController {
                 + ";pangleSecretProvided=" + (value.getPangleAppSecret() != null)
                 + ";takuUsername=" + value.getTakuUsername() + ";takuAppId=" + value.getTakuAppId()
                 + ";takuPlacement=" + value.getTakuPlacementId()
+                + ";splashPlacement=" + value.getSplashPlacementId()
                 + ";checkInEntryInterstitialPlacement="
                 + value.getCheckInEntryInterstitialPlacementId()
                 + ";postCheckInDramaInterstitialPlacement="
@@ -449,6 +452,8 @@ public class SkitTenantBusinessController {
         private String takuAppSecret;
         @Size(max = 128, message = "Taku 广告位长度不能超过 128 个字符")
         private String takuPlacementId;
+        @Size(max = 128, message = "Taku 开屏广告位长度不能超过 128 个字符")
+        private String splashPlacementId;
         @Size(max = 128, message = "Taku 签到页插屏广告位长度不能超过 128 个字符")
         private String checkInEntryInterstitialPlacementId;
         @Size(max = 128, message = "Taku 签到后短剧插屏广告位长度不能超过 128 个字符")

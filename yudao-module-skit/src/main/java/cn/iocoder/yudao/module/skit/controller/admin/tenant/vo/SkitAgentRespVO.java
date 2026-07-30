@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.skit.controller.admin.tenant.vo;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
+import javax.validation.constraints.Size;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -57,6 +58,8 @@ public class SkitAgentRespVO {
     private String takuUsername;
     private String takuAppId;
     private String takuPlacementId;
+    @Size(max = 128)
+    private String splashPlacementId;
     private String checkInEntryInterstitialPlacementId;
     private String postCheckInDramaInterstitialPlacementId;
     private String homeBannerPlacementId;

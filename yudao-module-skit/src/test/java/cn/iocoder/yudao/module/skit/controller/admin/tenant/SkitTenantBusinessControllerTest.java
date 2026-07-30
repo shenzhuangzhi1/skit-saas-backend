@@ -139,11 +139,14 @@ class SkitTenantBusinessControllerTest {
         SkitTenantBusinessController.AdAccountSaveReqVO save = validAdAccountSave();
         objectMapper.readerForUpdating(save).readValue("{"
                 + "\"takuPlacementId\":\"reward-slot\","
+                + "\"splashPlacementId\":\"splash-slot\","
                 + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
                 + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
                 + "\"homeBannerPlacementId\":\"banner-slot\"}");
         executeWrite(SkitManagementCommandType.AD_ACCOUNT_UPDATE, save.getReason());
-        when(adAccountService.getSettings()).thenReturn(new SkitAdAccountService.Settings());
+        SkitAdAccountService.Settings before = new SkitAdAccountService.Settings();
+        before.setSplashPlacementId("splash-before");
+        when(adAccountService.getSettings()).thenReturn(before);
         when(adAccountService.saveSettings(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(managementCommandExecutor.execute(any(), eq(SkitManagementCommandType.AD_ACCOUNT_UPDATE),
                 eq("AD_ACCOUNT_SETTINGS"), eq("20"), eq(save.getReason()),
@@ -160,11 +163,18 @@ class SkitTenantBusinessControllerTest {
         verify(adAccountService).saveSettings(captor.capture());
         JsonNode mapped = objectMapper.valueToTree(captor.getValue());
         assertEquals("reward-slot", mapped.path("takuPlacementId").asText());
+        assertEquals("splash-slot", mapped.path("splashPlacementId").asText());
         assertEquals("checkin-slot",
                 mapped.path("checkInEntryInterstitialPlacementId").asText());
         assertEquals("drama-slot",
                 mapped.path("postCheckInDramaInterstitialPlacementId").asText());
         assertEquals("banner-slot", mapped.path("homeBannerPlacementId").asText());
+        ArgumentCaptor<String> snapshots = ArgumentCaptor.forClass(String.class);
+        verify(managementCommandExecutor).execute(any(),
+                eq(SkitManagementCommandType.AD_ACCOUNT_UPDATE), eq("AD_ACCOUNT_SETTINGS"),
+                eq("20"), eq(save.getReason()), snapshots.capture(), snapshots.capture(), any());
+        assertTrue(snapshots.getAllValues().get(0).contains("splashPlacement=splash-before"));
+        assertTrue(snapshots.getAllValues().get(1).contains("splashPlacement=splash-slot"));
     }
 
     @Test

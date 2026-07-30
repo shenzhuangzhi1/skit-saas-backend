@@ -394,6 +394,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         settings.setTakuAppKey(source.getTakuAppKey());
         settings.setTakuAppSecret(source.getTakuAppSecret());
         settings.setTakuPlacementId(trimNonSecret(source.getTakuPlacementId()));
+        settings.setSplashPlacementId(trimNonSecret(source.getSplashPlacementId()));
         settings.setCheckInEntryInterstitialPlacementId(
                 trimNonSecret(source.getCheckInEntryInterstitialPlacementId()));
         settings.setPostCheckInDramaInterstitialPlacementId(
@@ -494,6 +495,7 @@ public class SkitAgentServiceImpl implements SkitAgentService {
         result.setTakuUsername(settings.getTakuUsername());
         result.setTakuAppId(settings.getTakuAppId());
         result.setTakuPlacementId(settings.getTakuPlacementId());
+        result.setSplashPlacementId(settings.getSplashPlacementId());
         result.setCheckInEntryInterstitialPlacementId(
                 settings.getCheckInEntryInterstitialPlacementId());
         result.setPostCheckInDramaInterstitialPlacementId(

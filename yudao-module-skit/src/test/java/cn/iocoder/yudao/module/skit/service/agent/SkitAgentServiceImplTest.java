@@ -112,6 +112,7 @@ class SkitAgentServiceImplTest {
 
         SkitAgentCreateReqVO createRequest = createRequest();
         new ObjectMapper().readerForUpdating(createRequest).readValue("{"
+                + "\"splashPlacementId\":\" splash-slot \","
                 + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
                 + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
                 + "\"homeBannerPlacementId\":\"banner-slot\"}");
@@ -141,6 +142,7 @@ class SkitAgentServiceImplTest {
                 ArgumentCaptor.forClass(SkitAdAccountService.Settings.class);
         verify(adAccountService).saveSettings(settingsCaptor.capture());
         JsonNode savedSettings = new ObjectMapper().valueToTree(settingsCaptor.getValue());
+        assertEquals("splash-slot", savedSettings.path("splashPlacementId").asText());
         assertEquals("checkin-slot",
                 savedSettings.path("checkInEntryInterstitialPlacementId").asText());
         assertEquals("drama-slot",
@@ -208,6 +210,8 @@ class SkitAgentServiceImplTest {
         assertThrows(NoSuchFieldException.class, () -> SkitAgentUpdateReqVO.class.getDeclaredField("mobile"));
         assertThrows(NoSuchFieldException.class, () -> SkitAgentUpdateReqVO.class.getDeclaredField("password"));
         assertThrows(NoSuchFieldException.class, () -> SkitAgentUpdateReqVO.class.getDeclaredField("packageId"));
+        assertThrows(NoSuchFieldException.class,
+                () -> SkitAgentUpdateReqVO.class.getDeclaredField("splashPlacementId"));
     }
 
     @Test
@@ -482,6 +486,21 @@ class SkitAgentServiceImplTest {
     }
 
     @Test
+    void agentDetailReturnsTenantSplashPlacement() {
+        when(agentMapper.selectByTenantId(42L)).thenReturn(activeAgent());
+        when(tenantService.getTenant(42L)).thenReturn(new TenantDO().setId(42L)
+                .setName("Agent 42").setPackageId(7L));
+        SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
+        settings.setSplashPlacementId("detail-splash-slot");
+        when(adAccountService.getSettings()).thenReturn(settings);
+
+        SkitAgentRespVO result = agentService.getAgent(42L);
+
+        assertEquals("detail-splash-slot", result.getSplashPlacementId());
+        assertNull(TenantContextHolder.getTenantId(), "详情映射后必须恢复平台租户上下文");
+    }
+
+    @Test
     void pageUsesDatabasePaginationAndOnlyEnrichesReturnedRows() throws Exception {
         SkitAgentPageReqVO request = new SkitAgentPageReqVO();
         request.setPageNo(3);
@@ -509,6 +528,7 @@ class SkitAgentServiceImplTest {
         Map<Long, SkitAdAccountService.Settings> adSettings = new HashMap<>();
         SkitAdAccountService.Settings settings = new SkitAdAccountService.Settings();
         new ObjectMapper().readerForUpdating(settings).readValue("{"
+                + "\"splashPlacementId\":\"splash-slot\","
                 + "\"checkInEntryInterstitialPlacementId\":\"checkin-slot\","
                 + "\"postCheckInDramaInterstitialPlacementId\":\"drama-slot\","
                 + "\"homeBannerPlacementId\":\"banner-slot\"}");
@@ -522,6 +542,7 @@ class SkitAgentServiceImplTest {
         assertEquals("标准套餐", result.getList().get(0).getPackageName());
         assertEquals("13800000000", result.getList().get(0).getUsername());
         assertEquals(Collections.singletonList("agent.example.com"), result.getList().get(0).getWebsites());
+        assertEquals("splash-slot", result.getList().get(0).getSplashPlacementId());
         assertEquals("checkin-slot",
                 result.getList().get(0).getCheckInEntryInterstitialPlacementId());
         assertEquals("drama-slot",
@@ -533,6 +554,42 @@ class SkitAgentServiceImplTest {
         verify(tenantPackageService, never()).getTenantPackage(anyLong());
         verify(adminUserService, never()).getUserIgnoreTenant(anyLong());
         verify(adAccountService, never()).getSettings();
+    }
+
+    @Test
+    void pageKeepsDistinctSplashPlacementsScopedToTheirTenants() {
+        SkitAgentPageReqVO request = new SkitAgentPageReqVO();
+        request.setPageNo(1);
+        request.setPageSize(20);
+        SkitAgentPageRow first = new SkitAgentPageRow();
+        first.setTenantId(42L);
+        first.setTenantCode("AG42");
+        first.setName("Agent 42");
+        SkitAgentPageRow second = new SkitAgentPageRow();
+        second.setTenantId(84L);
+        second.setTenantCode("AG84");
+        second.setName("Agent 84");
+        when(agentMapper.selectPage(request)).thenReturn(
+                new PageResult<>(java.util.Arrays.asList(first, second), 2L));
+        when(tenantPackageService.getTenantPackageList(any())).thenReturn(Collections.emptyList());
+        when(adminUserService.getUserListIgnoreTenant(any())).thenReturn(Collections.emptyList());
+        when(tenantService.getTenantList(any())).thenReturn(java.util.Arrays.asList(
+                new TenantDO().setId(42L), new TenantDO().setId(84L)));
+        SkitAdAccountService.Settings firstSettings = new SkitAdAccountService.Settings();
+        firstSettings.setSplashPlacementId("tenant-42-splash");
+        SkitAdAccountService.Settings secondSettings = new SkitAdAccountService.Settings();
+        secondSettings.setSplashPlacementId("tenant-84-splash");
+        Map<Long, SkitAdAccountService.Settings> adSettings = new HashMap<>();
+        adSettings.put(42L, firstSettings);
+        adSettings.put(84L, secondSettings);
+        when(adAccountService.getSettingsMapForPlatform(any())).thenReturn(adSettings);
+
+        PageResult<SkitAgentRespVO> result = agentService.getAgentPage(request);
+
+        assertEquals(42L, result.getList().get(0).getTenantId());
+        assertEquals("tenant-42-splash", result.getList().get(0).getSplashPlacementId());
+        assertEquals(84L, result.getList().get(1).getTenantId());
+        assertEquals("tenant-84-splash", result.getList().get(1).getSplashPlacementId());
     }
 
     private void mockExistingAgent() {
