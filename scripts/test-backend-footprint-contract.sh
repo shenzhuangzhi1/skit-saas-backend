@@ -45,6 +45,13 @@ done
 dormant_stats="$(awk -F '\t' '$1 == "metric" && $2 == "dormant_module_trees" { print $3 " " $4 }' "${temp_root}/first.tsv")"
 [[ "${dormant_stats}" == "0 0" ]] || fail "dormant module footprint must remain zero"
 
+removed_artifact_pattern='yudao-module-(member|bpm|report|mp|pay|mall|product|promotion|trade|statistics|crm|erp|iot|mes|wms|im|ai)'
+if git -C "${repo_root}" grep -n -E "${removed_artifact_pattern}" -- \
+  pom.xml ':(glob)**/pom.xml' > "${temp_root}/removed-module-poms.txt"; then
+  cat "${temp_root}/removed-module-poms.txt" >&2
+  fail "Maven POM still advertises a removed module"
+fi
+
 removed_package_pattern='^import[[:space:]]+cn\.iocoder\.yudao\.module\.(member|bpm|report|mp|pay|product|promotion|trade|statistics|crm|erp|iot|mes|wms|im|ai)(\.|;)'
 if git -C "${repo_root}" grep -n -E "${removed_package_pattern}" -- \
   yudao-server yudao-module-system yudao-module-infra yudao-module-skit yudao-framework \
