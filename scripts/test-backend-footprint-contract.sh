@@ -60,6 +60,15 @@ if git -C "${repo_root}" grep -n -E "${removed_package_pattern}" -- \
   fail "active Java source imports a removed module"
 fi
 
+removed_runtime_reference_pattern='cn\.iocoder\.yudao\.module\.(member|bpm|report|mp|pay|product|promotion|trade|statistics|crm|erp|iot|mes|wms|im|ai)\.|yudao-module-(member|bpm|report|mp|pay|mall|crm|erp|iot|mes|wms|im|ai)'
+if git -C "${repo_root}" grep -n -E "${removed_runtime_reference_pattern}" -- \
+  yudao-server/src/main/resources \
+  yudao-framework/yudao-spring-boot-starter-web/src/main/java/cn/iocoder/yudao/framework/banner \
+  > "${temp_root}/removed-runtime-references.txt"; then
+  cat "${temp_root}/removed-runtime-references.txt" >&2
+  fail "runtime configuration still advertises a removed module"
+fi
+
 default_controller="${repo_root}/yudao-server/src/main/java/cn/iocoder/yudao/server/controller/DefaultController.java"
 [[ ! -e "${default_controller}" ]] || fail "disabled-module fallback controller must not return"
 removed_route_pattern='"/test"|"/admin-api/(bpm|mp|product|trade|promotion|erp|wms|crm|mes|im|report|pay|ai|iot)/\*\*"'
