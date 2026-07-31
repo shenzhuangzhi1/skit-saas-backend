@@ -60,6 +60,15 @@ if git -C "${repo_root}" grep -n -E "${removed_package_pattern}" -- \
   fail "active Java source imports a removed module"
 fi
 
+default_controller="${repo_root}/yudao-server/src/main/java/cn/iocoder/yudao/server/controller/DefaultController.java"
+[[ ! -e "${default_controller}" ]] || fail "disabled-module fallback controller must not return"
+removed_route_pattern='"/test"|"/admin-api/(bpm|mp|product|trade|promotion|erp|wms|crm|mes|im|report|pay|ai|iot)/\*\*"'
+if git -C "${repo_root}" grep -n -E "${removed_route_pattern}" -- yudao-server/src/main/java \
+  > "${temp_root}/removed-routes.txt"; then
+  cat "${temp_root}/removed-routes.txt" >&2
+  fail "public diagnostic or disabled-module fallback route returned"
+fi
+
 for path in \
   yudao-module-system yudao-module-infra yudao-module-skit \
   sql/db2 sql/dm sql/highgo sql/kingbase sql/mysql sql/opengauss \
