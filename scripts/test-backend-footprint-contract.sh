@@ -49,4 +49,11 @@ declaration_count="$(grep -R -E '^(public[[:space:]]+)?class[[:space:]]+MultiDic
 grep -Fq 'assertNull(result);' "${canonical_test}" \
   || fail "unknown dictionary labels must retain the canonical null expectation"
 
+[[ ! -e "${repo_root}/.image" ]] || fail "obsolete upstream screenshots must not return"
+image_reference='.image''/'
+if git -C "${repo_root}" grep -n -F "${image_reference}" > "${temp_root}/image-references.txt"; then
+  cat "${temp_root}/image-references.txt" >&2
+  fail "tracked files still reference obsolete upstream screenshots"
+fi
+
 echo "backend footprint contract ok"
