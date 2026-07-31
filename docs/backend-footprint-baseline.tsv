@@ -1,0 +1,32 @@
+ref	8ef1f9397b3d9d08a28afe37f54b5fd1107d7fc5
+columns	type	name	files	bytes
+metric	repository	7367	50141363
+metric	active_product_trees	2597	15330946
+metric	dormant_module_trees	4571	14081505
+metric	upstream_screenshots	100	9481126
+metric	database_sql	30	10721047
+metric	documentation	17	277157
+metric	deployment	16	128131
+metric	readme	1	38687
+metric	yudao-module-member	200	349925
+metric	yudao-module-bpm	250	907535
+metric	yudao-module-report	36	48440
+metric	yudao-module-mp	134	296608
+metric	yudao-module-pay	245	792611
+metric	yudao-module-mall	888	2315162
+metric	yudao-module-crm	263	780323
+metric	yudao-module-erp	220	720781
+metric	yudao-module-iot	483	1921622
+metric	yudao-module-mes	1156	3503025
+metric	yudao-module-wms	165	566304
+metric	yudao-module-im	305	1156015
+metric	yudao-module-ai	226	723154
+reactor_module	yudao-dependencies
+reactor_module	yudao-framework
+reactor_module	yudao-server
+reactor_module	yudao-module-system
+reactor_module	yudao-module-infra
+reactor_module	yudao-module-skit
+server_module_dependency	yudao-module-system
+server_module_dependency	yudao-module-infra
+server_module_dependency	yudao-module-skit

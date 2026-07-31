@@ -39,6 +39,7 @@ jobs:
 
       - name: Verify deployment security contracts
         run: |
+          ./scripts/test-backend-footprint-contract.sh
           ./deploy/test-compose-topology.sh
           ./deploy/test-encryption-key.sh
           ./deploy/test-activation-encryption-key.sh

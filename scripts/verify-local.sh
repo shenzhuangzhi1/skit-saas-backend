@@ -15,6 +15,7 @@ fi
 [[ -n "${java_home}" ]] || { echo "Set JAVA_HOME to a supported JDK before backend verification." >&2; exit 1; }
 export JAVA_HOME="${java_home}"
 
+./scripts/test-backend-footprint-contract.sh
 ./deploy/test-compose-topology.sh
 ./deploy/test-encryption-key.sh
 ./deploy/test-activation-encryption-key.sh
