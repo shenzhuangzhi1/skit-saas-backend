@@ -34,6 +34,17 @@ actual_server_dependencies="$(awk -F '\t' '$1 == "server_module_dependency" { pr
 [[ "${actual_server_dependencies}" == "${expected_server_dependencies}" ]] \
   || fail "active server module dependencies changed"
 
+dormant_modules=(
+  yudao-module-member yudao-module-bpm yudao-module-report yudao-module-mp
+  yudao-module-pay yudao-module-mall yudao-module-crm yudao-module-erp
+  yudao-module-iot yudao-module-mes yudao-module-wms yudao-module-im yudao-module-ai
+)
+for module in "${dormant_modules[@]}"; do
+  [[ ! -e "${repo_root}/${module}" ]] || fail "dormant module must not return: ${module}"
+done
+dormant_stats="$(awk -F '\t' '$1 == "metric" && $2 == "dormant_module_trees" { print $3 " " $4 }' "${temp_root}/first.tsv")"
+[[ "${dormant_stats}" == "0 0" ]] || fail "dormant module footprint must remain zero"
+
 removed_package_pattern='^import[[:space:]]+cn\.iocoder\.yudao\.module\.(member|bpm|report|mp|pay|product|promotion|trade|statistics|crm|erp|iot|mes|wms|im|ai)(\.|;)'
 if git -C "${repo_root}" grep -n -E "${removed_package_pattern}" -- \
   yudao-server yudao-module-system yudao-module-infra yudao-module-skit yudao-framework \
