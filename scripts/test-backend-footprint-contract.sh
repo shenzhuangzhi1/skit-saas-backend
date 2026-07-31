@@ -34,6 +34,14 @@ actual_server_dependencies="$(awk -F '\t' '$1 == "server_module_dependency" { pr
 [[ "${actual_server_dependencies}" == "${expected_server_dependencies}" ]] \
   || fail "active server module dependencies changed"
 
+removed_package_pattern='^import[[:space:]]+cn\.iocoder\.yudao\.module\.(member|bpm|report|mp|pay|product|promotion|trade|statistics|crm|erp|iot|mes|wms|im|ai)(\.|;)'
+if git -C "${repo_root}" grep -n -E "${removed_package_pattern}" -- \
+  yudao-server yudao-module-system yudao-module-infra yudao-module-skit yudao-framework \
+  > "${temp_root}/removed-module-imports.txt"; then
+  cat "${temp_root}/removed-module-imports.txt" >&2
+  fail "active Java source imports a removed module"
+fi
+
 for path in \
   yudao-module-system yudao-module-infra yudao-module-skit \
   sql/db2 sql/dm sql/highgo sql/kingbase sql/mysql sql/opengauss \
