@@ -110,6 +110,9 @@ jobs:
       - name: Build server jar
         run: mvn -B -pl yudao-server -am -DskipTests package
 
+      - name: Verify packaged runtime dependencies
+        run: ./scripts/test-backend-packaged-dependencies.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

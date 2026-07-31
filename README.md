@@ -40,6 +40,9 @@ cp deploy/local.env.example deploy/local.env
 
 ```bash
 docker run --rm \
+  -e TESTCONTAINERS_RYUK_DISABLED=true \
+  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$PWD:/workspace" \
   -v "$HOME/.m2:/root/.m2" \
   -w /workspace \
@@ -62,6 +65,15 @@ docker run --rm \
 ```
 
 体量脚本接受任意 Git commit、tag 或 branch，输出 tracked 文件数、字节数、活跃模块树、数据库 SQL、文档、部署文件和 Maven 装配清单。瘦身前基线保存在 `docs/backend-footprint-baseline.tsv`。
+
+生产 JAR 构建后，可生成并核对其实际携带的运行时依赖：
+
+```bash
+./scripts/backend-packaged-dependencies.sh
+./scripts/test-backend-packaged-dependencies.sh
+```
+
+清单保存在 `docs/backend-packaged-dependencies.txt`，CI 会在镜像构建前检查清单漂移、三个产品模块是否齐全，以及已删除模块是否意外回到产物中。
 
 ## 数据库规则
 
