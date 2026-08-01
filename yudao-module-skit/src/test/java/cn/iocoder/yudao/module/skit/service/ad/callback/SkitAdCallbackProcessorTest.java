@@ -79,7 +79,7 @@ class SkitAdCallbackProcessorTest {
     private static final String PLACEMENT = "reward-placement";
     private static final String TRANSACTION = "reward-transaction-789";
     private static final String SIGNED_SHOW = "signed-show-456";
-    private static final String SESSION_PUBLIC_ID = "0123456789abcdefghijkl";
+    private static final String SESSION_PUBLIC_ID = "0123456789abcdefghijkQ";
     private static final String ADSOURCE = "56789";
     private static final String PSEUDONYMOUS_USER = "m_member_42";
     private static final byte[] REWARD_SECRET = "taku-reward-secret-32-bytes-value"

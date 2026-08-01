@@ -41,6 +41,8 @@ public class TakuCallbackCanonicalizer {
     private static final Pattern SIGNATURE = Pattern.compile("[0-9a-fA-F]{32}");
     private static final Pattern CURRENCY = Pattern.compile("[A-Z]{3}");
     private static final Pattern UNSIGNED_INTEGER = Pattern.compile("[0-9]{1,19}");
+    // Sixteen bytes encode to 22 unpadded Base64URL characters; the final four pad bits must be zero.
+    private static final Pattern SESSION_ID = Pattern.compile("[A-Za-z0-9_-]{21}[AQgw]");
 
     private static final List<String> REWARD_FIELDS = Collections.unmodifiableList(Arrays.asList(
             "user_id", "trans_id", "reward_amount", "reward_name", "placement_id", "extra_data",
@@ -61,7 +63,7 @@ public class TakuCallbackCanonicalizer {
     private static final Set<String> IMPRESSION_ALLOW_LIST = immutableSet(IMPRESSION_FIELDS);
     private static final List<String> IMPRESSION_REQUIRED = Collections.unmodifiableList(Arrays.asList(
             "user_id", "req_id", "package_name", "adformat", "placement_id", "adsource_id",
-            "adsource_price", "currency", "timestamp"));
+            "adsource_price", "currency", "timestamp", "show_custom_ext"));
 
     public TakuRewardCallback canonicalizeReward(String rawQuery) {
         Map<String, String> values = parseRawQuery(rawQuery, REWARD_ALLOW_LIST);
@@ -87,6 +89,9 @@ public class TakuCallbackCanonicalizer {
         validateOpaque(values.get("req_id"));
         validateOpaque(values.get("package_name"));
         validateOpaque(values.get("placement_id"));
+        if (!SESSION_ID.matcher(values.get("show_custom_ext")).matches()) {
+            throw failure(ErrorCode.INVALID_VALUE);
+        }
         values.put("adsource_id", normalizePositiveInteger(values.get("adsource_id")));
         if (!DECIMAL.matcher(values.get("adsource_price")).matches()) {
             throw failure(ErrorCode.INVALID_VALUE);

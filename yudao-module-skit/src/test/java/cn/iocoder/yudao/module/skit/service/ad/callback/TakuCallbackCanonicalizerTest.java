@@ -14,7 +14,6 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -215,20 +214,33 @@ class TakuCallbackCanonicalizerTest {
     }
 
     @Test
-    void impressionPreservesMissingEmptyAndArbitraryShowCustomExtForUnmatchedClassification() {
+    void impressionRequiresShowCustomExt() {
         String minimal = validImpressionQuery();
-        TakuImpressionCallback missing = canonicalizer.canonicalizeImpression(
-                minimal.replace("&show_custom_ext=AAECAwQFBgcICQoLDA0ODw", ""));
-        TakuImpressionCallback empty = canonicalizer.canonicalizeImpression(
-                minimal.replace("show_custom_ext=AAECAwQFBgcICQoLDA0ODw", "show_custom_ext="));
-        TakuImpressionCallback arbitrary = canonicalizer.canonicalizeImpression(
-                minimal.replace("AAECAwQFBgcICQoLDA0ODw", "%7B%22tag%22%3A11%7D"));
 
-        assertNull(missing.getShowCustomExt());
-        assertEquals("", empty.getShowCustomExt());
-        assertEquals("{\"tag\":11}", arbitrary.getShowCustomExt());
-        assertFalse(Arrays.equals(missing.getCanonicalPayloadHash(), empty.getCanonicalPayloadHash()),
-                "missing and explicitly empty observations must remain distinguishable");
+        assertRejectedImpression(TakuCallbackCanonicalizer.ErrorCode.MISSING_PARAMETER,
+                minimal.replace("&show_custom_ext=AAECAwQFBgcICQoLDA0ODw", ""));
+    }
+
+    @Test
+    void impressionRejectsBlankShowCustomExt() {
+        String minimal = validImpressionQuery();
+
+        assertRejectedImpression(TakuCallbackCanonicalizer.ErrorCode.INVALID_VALUE,
+                minimal.replace("show_custom_ext=AAECAwQFBgcICQoLDA0ODw", "show_custom_ext="));
+        assertRejectedImpression(TakuCallbackCanonicalizer.ErrorCode.INVALID_VALUE,
+                minimal.replace("AAECAwQFBgcICQoLDA0ODw", "%20%20"));
+    }
+
+    @Test
+    void impressionRequiresCanonicalBase64UrlShowCustomExt() {
+        String minimal = validImpressionQuery();
+
+        assertRejectedImpression(TakuCallbackCanonicalizer.ErrorCode.INVALID_VALUE,
+                minimal.replace("AAECAwQFBgcICQoLDA0ODw", "short-session"));
+        assertRejectedImpression(TakuCallbackCanonicalizer.ErrorCode.INVALID_VALUE,
+                minimal.replace("AAECAwQFBgcICQoLDA0ODw", "AAECAwQFBgcICQoLDA0OD%2B"));
+        assertRejectedImpression(TakuCallbackCanonicalizer.ErrorCode.INVALID_VALUE,
+                minimal.replace("AAECAwQFBgcICQoLDA0ODw", "AAECAwQFBgcICQoLDA0ODe"));
     }
 
     @Test

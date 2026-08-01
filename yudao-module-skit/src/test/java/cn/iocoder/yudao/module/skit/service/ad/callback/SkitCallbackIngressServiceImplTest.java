@@ -514,10 +514,79 @@ class SkitCallbackIngressServiceImplTest {
     }
 
     @Test
-    void unsignedImpressionWithoutSessionCorrelationIsDurableButNeverAuthoritative() {
+    void missingImpressionShowCustomExtIsRejectedBeforeDurableInbox() {
         String rawQuery = "user_id=u1&req_id=req-1&package_name=com.example.app&adformat=1"
                 + "&placement_id=" + PLACEMENT_ID + "&adsource_id=0007"
                 + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400";
+
+        SkitCallbackIngressService.IngressResponse result =
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(sessionMapper, never()).selectByAccountAndSessionIdForUpdate(
+                anyLong(), anyLong(), anyString());
+        verify(payloadCryptoService, never()).encrypt(any(), any(byte[].class));
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+    }
+
+    @Test
+    void blankImpressionShowCustomExtIsRejectedBeforeDurableInbox() {
+        String rawQuery = "user_id=u1&req_id=req-1&package_name=com.example.app&adformat=1"
+                + "&placement_id=" + PLACEMENT_ID + "&adsource_id=0007"
+                + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400"
+                + "&show_custom_ext=%20%20";
+
+        SkitCallbackIngressService.IngressResponse result =
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(sessionMapper, never()).selectByAccountAndSessionIdForUpdate(
+                anyLong(), anyLong(), anyString());
+        verify(payloadCryptoService, never()).encrypt(any(), any(byte[].class));
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+    }
+
+    @Test
+    void malformedImpressionShowCustomExtIsRejectedBeforeDurableInbox() {
+        String rawQuery = "user_id=u1&req_id=req-1&package_name=com.example.app&adformat=1"
+                + "&placement_id=" + PLACEMENT_ID + "&adsource_id=0007"
+                + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400"
+                + "&show_custom_ext=not-a-session";
+
+        SkitCallbackIngressService.IngressResponse result =
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(sessionMapper, never()).selectByAccountAndSessionIdForUpdate(
+                anyLong(), anyLong(), anyString());
+        verify(payloadCryptoService, never()).encrypt(any(), any(byte[].class));
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+    }
+
+    @Test
+    void nonCanonicalSessionIdPaddingBitsAreRejectedBeforeDurableInbox() {
+        String rawQuery = "user_id=u1&req_id=req-1&package_name=com.example.app&adformat=1"
+                + "&placement_id=" + PLACEMENT_ID + "&adsource_id=0007"
+                + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400"
+                + "&show_custom_ext=AAECAwQFBgcICQoLDA0ODe";
+
+        SkitCallbackIngressService.IngressResponse result =
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED, result);
+        verify(sessionMapper, never()).selectByAccountAndSessionIdForUpdate(
+                anyLong(), anyLong(), anyString());
+        verify(payloadCryptoService, never()).encrypt(any(), any(byte[].class));
+        verify(inboxMapper, never()).insertOrGetCanonical(any());
+    }
+
+    @Test
+    void canonicalButUnmatchedImpressionRemainsDurableAndNonAuthoritative() {
+        String unmatchedSessionId = "zyxwvutsrqponmlkjihgfQ";
+        String rawQuery = "user_id=u1&req_id=req-1&package_name=com.example.app&adformat=1"
+                + "&placement_id=" + PLACEMENT_ID + "&adsource_id=0007"
+                + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400"
+                + "&show_custom_ext=" + unmatchedSessionId;
 
         SkitCallbackIngressService.IngressResponse result =
                 service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9");
@@ -528,8 +597,8 @@ class SkitCallbackIngressServiceImplTest {
         assertEquals("UNSIGNED_PROVIDER_OBSERVATION", row.getAuthenticationLevel());
         assertEquals("UNMATCHED", row.getEvidenceProvenance());
         assertEquals(Integer.valueOf(200), row.getIngressResponseCode());
-        verify(sessionMapper, never()).markRewardCallbackReceivedCas(
-                anyLong(), anyLong(), anyLong(), anyLong(), any());
+        verify(sessionMapper).selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, unmatchedSessionId);
     }
 
     @Test
