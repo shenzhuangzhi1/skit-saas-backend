@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.skit.dal.mysql.provider;
 
 import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdCallbackRouteRegistryDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdCallbackRouteRegistryVerificationRow;
 import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -61,32 +62,23 @@ public interface SkitAdCallbackRouteRegistryMapper {
     List<SkitAdCallbackRouteRegistryDO> selectLegacyTenantKeysAfterId(
             @Param("afterId") Long afterId, @Param("limit") Integer limit);
 
-    @Select("SELECT COUNT(*) FROM skit_ad_callback_key")
-    @TenantIgnore
-    @InterceptorIgnore(tenantLine = "true")
-    long countLegacyTenantKeys();
-
-    @Select("SELECT COUNT(*) FROM skit_ad_callback_route_registry "
-            + "WHERE route_type='TENANT_CALLBACK_KEY'")
-    @TenantIgnore
-    @InterceptorIgnore(tenantLine = "true")
-    long countTenantRoutes();
-
-    @Select(TENANT_PROJECTION + "WHERE r.route_type='TENANT_CALLBACK_KEY' "
-            + "AND r.tenant_callback_key_id>#{afterId} ORDER BY r.tenant_callback_key_id LIMIT #{limit}")
-    @TenantIgnore
-    @InterceptorIgnore(tenantLine = "true")
-    List<SkitAdCallbackRouteRegistryDO> selectTenantRoutesAfterId(
-            @Param("afterId") Long afterId, @Param("limit") Integer limit);
-
-    @Select("SELECT COUNT(*) FROM skit_ad_callback_key k "
+    @Select("SELECT k.id tenant_callback_key_id,k.tenant_id expected_tenant_id,"
+            + "k.ad_account_id expected_ad_account_id,k.key_version expected_key_version,"
+            + "k.active expected_active,k.accept_until expected_accept_until,"
+            + "k.callback_key_hash expected_key_hash,k.revoked_at expected_tombstoned_at,"
+            + "r.id registry_id,r.route_type actual_route_type,"
+            + "r.provider_callback_route_id actual_provider_callback_route_id,"
+            + "r.tenant_callback_key_id actual_tenant_callback_key_id,"
+            + "actual_k.tenant_id actual_tenant_id,actual_k.ad_account_id actual_ad_account_id,"
+            + "actual_k.key_version actual_key_version,actual_k.active actual_active,"
+            + "actual_k.accept_until actual_accept_until,r.key_hash actual_key_hash,"
+            + "r.tombstoned_at actual_tombstoned_at FROM skit_ad_callback_key k "
             + "LEFT JOIN skit_ad_callback_route_registry r ON r.tenant_callback_key_id=k.id "
-            + "WHERE r.id IS NULL OR r.route_type<>'TENANT_CALLBACK_KEY' "
-            + "OR r.provider_callback_route_id IS NOT NULL OR r.key_hash<>k.callback_key_hash "
-            + "OR (k.revoked_at IS NULL AND r.tombstoned_at IS NOT NULL) "
-            + "OR (k.revoked_at IS NOT NULL AND NOT (r.tombstoned_at<=>k.revoked_at))")
+            + "LEFT JOIN skit_ad_callback_key actual_k ON actual_k.id=r.tenant_callback_key_id "
+            + "WHERE k.id>#{afterId} ORDER BY k.id LIMIT #{limit}")
     @TenantIgnore
     @InterceptorIgnore(tenantLine = "true")
-    long countTenantRouteMismatches();
+    List<SkitAdCallbackRouteRegistryVerificationRow> selectVerificationPairsAfterId(
+            @Param("afterId") Long afterId, @Param("limit") Integer limit);
 
 }

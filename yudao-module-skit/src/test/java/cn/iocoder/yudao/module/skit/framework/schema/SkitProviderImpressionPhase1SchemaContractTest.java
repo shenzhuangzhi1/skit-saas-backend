@@ -118,7 +118,12 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "`tombstoned_at`", "ck_callback_route_registry_route_type");
         assertFalse(registry.contains("`owner_type`"));
         assertContains(migrationState, "'DUAL_WRITE','BACKFILL','VERIFY','SHADOW_READ','HASH_FIRST','ENFORCED'",
-                "blocked_reason_hash", "blocked_at", "phase_revision", "expected_row_count",
+                "blocked_reason_hash", "blocked_at", "phase_revision", "credential_mutation_epoch",
+                "verification_run_id", "verification_snapshot_epoch",
+                "verification_cursor_callback_key_id", "verification_expected_progress_count",
+                "verification_actual_progress_count", "verification_progress_mismatch_count",
+                "verification_expected_rolling_hash", "verification_actual_rolling_hash",
+                "ck_callback_route_registry_migration_verification_progress", "expected_row_count",
                 "verified_row_count", "verification_mismatch_count", "verification_hash",
                 "verified_at", "ck_callback_route_registry_migration_blocked");
         assertFalse(migrationState.contains("'PENDING','RUNNING','COMPLETED','BLOCKED'"));
@@ -177,6 +182,9 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "`callback_contract_fingerprint` binary(32) DEFAULT NULL",
                 "`route_type` varchar(32) NOT NULL",
                 "'DUAL_WRITE','BACKFILL','VERIFY','SHADOW_READ','HASH_FIRST','ENFORCED'",
+                "`credential_mutation_epoch` bigint NOT NULL DEFAULT 0",
+                "`verification_run_id` bigint NOT NULL DEFAULT 0",
+                "`verification_expected_rolling_hash` binary(32) DEFAULT NULL",
                 "`dedupe_scheme` IN ('OFFICIAL_V1','FALLBACK_WIRE_V1')",
                 "`authentication_level`='UNSIGNED_PROVIDER_OBSERVATION'",
                 "`payload_purged_at` datetime DEFAULT NULL",

@@ -47,6 +47,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -180,6 +181,40 @@ class SkitAdCredentialVersionServiceImplTest {
         assertEquals(2, issued.getVersion());
         verify(callbackKeyMapper).retireActiveVersion(TENANT_ID, ACCOUNT_ID, prior.getId(),
                 LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    void rotationRegistersAnUnbackfilledHistoricalOwnerBeforeRetiringIt() {
+        SkitAdCredentialVersionServiceImpl service = service(new SequenceSecureRandom(sequence(0)));
+        SkitAdCallbackKeyDO prior = callbackRow(1, true)
+                .setCallbackKeyHash(sequence(91));
+        prior.setCreateTime(LocalDateTime.ofInstant(NOW.minusSeconds(60), ZoneOffset.UTC));
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(callbackKeyMapper.selectMaxVersion(TENANT_ID, ACCOUNT_ID)).thenReturn(1);
+        when(callbackKeyMapper.selectActiveForUpdate(TENANT_ID, ACCOUNT_ID)).thenReturn(prior);
+        when(callbackKeyMapper.retireActiveVersion(anyLong(), anyLong(), anyLong(),
+                any(LocalDateTime.class))).thenReturn(1);
+        when(callbackKeyMapper.insert(any(SkitAdCallbackKeyDO.class))).thenAnswer(invocation -> {
+            SkitAdCallbackKeyDO inserted = invocation.getArgument(0);
+            inserted.setId(2L);
+            return 1;
+        });
+
+        service.rotateCallbackKey(TENANT_ID, ACCOUNT_ID, Duration.ofMinutes(15));
+
+        InOrder order = inOrder(callbackRouteRegistryService, callbackKeyMapper);
+        order.verify(callbackRouteRegistryService).beginTenantKeyMutation(TENANT_ID, ACCOUNT_ID);
+        order.verify(callbackRouteRegistryService).registerTenantKey(
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.argThat(registration -> registration.toString().contains(
+                        "tenantCallbackKeyId=1,")));
+        order.verify(callbackKeyMapper).retireActiveVersion(TENANT_ID, ACCOUNT_ID, 1L,
+                LocalDateTime.ofInstant(NOW.plus(Duration.ofMinutes(15)), ZoneOffset.UTC));
+        order.verify(callbackKeyMapper).insert(any(SkitAdCallbackKeyDO.class));
+        order.verify(callbackRouteRegistryService).registerTenantKey(
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.argThat(registration -> registration.toString().contains(
+                        "tenantCallbackKeyId=2,")));
     }
 
     @Test
@@ -417,7 +452,15 @@ class SkitAdCredentialVersionServiceImplTest {
     void explicitCallbackKeyRevocationTombstonesEveryUnrevokedRegistryOwner() {
         SkitAdCredentialVersionServiceImpl service = service(new SequenceSecureRandom());
         LocalDateTime revokedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        SkitAdCallbackKeyDO retired = callbackRow(1, false)
+                .setCallbackKeyHash(sequence(71)).setAcceptUntil(revokedAt.plusMinutes(5));
+        retired.setCreateTime(revokedAt.minusMinutes(2));
+        SkitAdCallbackKeyDO active = callbackRow(2, true).setCallbackKeyHash(sequence(72));
+        active.setCreateTime(revokedAt.minusMinutes(1));
+        List<SkitAdCallbackKeyDO> historical = Arrays.asList(retired, active);
         when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(callbackKeyMapper.selectUnrevokedForUpdate(TENANT_ID, ACCOUNT_ID))
+                .thenReturn(historical);
         when(callbackKeyMapper.revokeAllUnrevokedVersions(
                 TENANT_ID, ACCOUNT_ID, revokedAt)).thenReturn(2);
 
@@ -425,10 +468,15 @@ class SkitAdCredentialVersionServiceImplTest {
 
         InOrder order = inOrder(accountMapper, callbackKeyMapper, callbackRouteRegistryService);
         order.verify(accountMapper).lockByTenantAndId(TENANT_ID, ACCOUNT_ID);
+        order.verify(callbackRouteRegistryService).beginTenantKeyMutation(TENANT_ID, ACCOUNT_ID);
+        order.verify(callbackKeyMapper).selectUnrevokedForUpdate(TENANT_ID, ACCOUNT_ID);
+        order.verify(callbackRouteRegistryService).registerTenantKeys(
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.argThat(registrations -> registrations.size() == 2));
         order.verify(callbackKeyMapper).revokeAllUnrevokedVersions(
                 TENANT_ID, ACCOUNT_ID, revokedAt);
         order.verify(callbackRouteRegistryService).tombstoneRevokedTenantKeys(
-                TENANT_ID, ACCOUNT_ID, revokedAt, 2);
+                org.mockito.ArgumentMatchers.isNull(), eq(TENANT_ID), eq(ACCOUNT_ID), eq(revokedAt), eq(2));
     }
 
     @Test
@@ -652,8 +700,10 @@ class SkitAdCredentialVersionServiceImplTest {
 
     private static SkitAdCallbackKeyDO callbackRow(int version, boolean active) {
         SkitAdCallbackKeyDO row = new SkitAdCallbackKeyDO().setId((long) version)
-                .setAdAccountId(ACCOUNT_ID).setKeyVersion(version).setActive(active);
+                .setAdAccountId(ACCOUNT_ID).setKeyVersion(version).setActive(active)
+                .setCallbackKeyHash(sequence(version));
         row.setTenantId(TENANT_ID);
+        row.setCreateTime(LocalDateTime.ofInstant(NOW.minusSeconds(version), ZoneOffset.UTC));
         return row;
     }
 

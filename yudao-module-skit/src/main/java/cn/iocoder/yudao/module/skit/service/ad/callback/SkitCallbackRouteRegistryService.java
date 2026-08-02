@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdCallbackRouteRegistryDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdCallbackRouteRegistryMigrationDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdCallbackRouteRegistryVerificationRow;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackKeyMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdCallbackRouteRegistryMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdCallbackRouteRegistryMigrationMapper;
@@ -14,8 +15,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionOperations;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.ByteBuffer;
@@ -45,6 +49,7 @@ public class SkitCallbackRouteRegistryService {
     private final MeterRegistry meterRegistry;
     private final TransactionOperations migrationTransactions;
     private final Clock clock;
+    private final Object tenantMutationResourceKey = new Object();
 
     @Autowired
     public SkitCallbackRouteRegistryService(SkitAdCallbackRouteRegistryMapper registryMapper,
@@ -102,15 +107,24 @@ public class SkitCallbackRouteRegistryService {
     RouteLookup lookupTenantReward(byte[] keyHash, LocalDateTime authoritativeReceivedAt) {
         requireLookupArguments(keyHash, authoritativeReceivedAt);
         MigrationPhase phase = currentPhase();
+        SkitAdCallbackRouteRegistryDO registryRow = ignoreTenant(
+                () -> registryMapper.selectLookupByKeyHash(keyHash));
         if (phase == MigrationPhase.DUAL_WRITE
                 || phase == MigrationPhase.BACKFILL
                 || phase == MigrationPhase.VERIFY) {
-            return legacyTenantLookup(keyHash, authoritativeReceivedAt);
+            if (registryRow == null) {
+                return legacyTenantLookup(keyHash, authoritativeReceivedAt);
+            }
+            RouteLookup resolved = routeLookup(registryRow, authoritativeReceivedAt);
+            if (resolved.getRouteType() != RouteType.TENANT_CALLBACK_KEY) {
+                throw rejected();
+            }
+            return resolved;
         }
         RouteLookup registry = null;
         CallbackRouteRejectedException registryFailure = null;
         try {
-            registry = lookup(keyHash, authoritativeReceivedAt);
+            registry = routeLookup(registryRow, authoritativeReceivedAt);
         } catch (CallbackRouteRejectedException rejected) {
             registryFailure = rejected;
         }
@@ -135,25 +149,99 @@ public class SkitCallbackRouteRegistryService {
         return Objects.requireNonNull(registry, "registry lookup");
     }
 
+    /** Standalone registry registration: owns its transaction, gate epoch, and opaque capability. */
     @Transactional(rollbackFor = Exception.class)
     public void registerTenantKey(TenantCallbackKeyRegistration registration) {
-        Objects.requireNonNull(registration, "registration");
-        registration.validate();
+        Objects.requireNonNull(registration, "registration").validate();
+        TenantKeyMutation mutation = beginTenantKeyMutation(
+                registration.tenantId, registration.adAccountId);
+        registerTenantKey(mutation, registration);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void registerTenantKey(TenantKeyMutation mutation,
+                                  TenantCallbackKeyRegistration registration) {
+        registerTenantKeys(mutation, java.util.Collections.singletonList(registration));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void registerTenantKeys(TenantKeyMutation mutation,
+                                   List<TenantCallbackKeyRegistration> registrations) {
+        requireMutation(mutation);
+        if (registrations == null || registrations.isEmpty()) {
+            return;
+        }
+        for (TenantCallbackKeyRegistration registration : registrations) {
+            Objects.requireNonNull(registration, "registration").validate();
+            if (!registration.belongsTo(mutation.tenantId, mutation.adAccountId)) {
+                throw new IllegalArgumentException("Tenant callback-key registration is outside mutation scope");
+            }
+        }
         ignoreTenant(() -> {
             SkitAdCallbackRouteRegistryMigrationDO observed = requiredState(migrationMapper.selectSingleton());
             if (!MigrationPhase.ENFORCED.name().equals(observed.getMigrationPhase())) {
                 requiredState(migrationMapper.selectSingletonForUpdate());
             }
-            insertOrValidate(registration.toRow());
+            for (TenantCallbackKeyRegistration registration : registrations) {
+                insertOrValidate(registration.toRow());
+            }
             return null;
         });
     }
 
+    /**
+     * Serializes every tenant callback-key mutation with VERIFY before any legacy row changes.
+     * The epoch increment commits or rolls back with the caller's credential transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public TenantKeyMutation beginTenantKeyMutation(long tenantId, long adAccountId) {
+        if (tenantId <= 0 || adAccountId <= 0) {
+            throw new IllegalArgumentException("Invalid tenant callback-key mutation scope");
+        }
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Tenant callback-key mutation requires an active transaction");
+        }
+        if (TransactionSynchronizationManager.hasResource(tenantMutationResourceKey)) {
+            throw new IllegalStateException("A tenant callback-key mutation is already active");
+        }
+        ignoreTenant(() -> {
+            SkitAdCallbackRouteRegistryMigrationDO state = requiredState(
+                    migrationMapper.selectSingletonForUpdate());
+            MigrationPhase phase = phase(state);
+            if (phase == MigrationPhase.DUAL_WRITE || phase == MigrationPhase.BACKFILL
+                    || phase == MigrationPhase.VERIFY) {
+                if (migrationMapper.incrementCredentialMutationEpoch(
+                        state.getPhaseRevision(), now()) != 1) {
+                    throw concurrentMigration();
+                }
+            }
+            return null;
+        });
+        TenantKeyMutation mutation = new TenantKeyMutation(this, tenantId, adAccountId);
+        TransactionSynchronizationManager.bindResource(tenantMutationResourceKey, mutation);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                mutation.active = false;
+                if (TransactionSynchronizationManager.getResource(tenantMutationResourceKey) == mutation) {
+                    TransactionSynchronizationManager.unbindResource(tenantMutationResourceKey);
+                }
+            }
+        });
+        return mutation;
+    }
+
     @Transactional(rollbackFor = Exception.class)
-    public void tombstoneRevokedTenantKeys(long tenantId, long adAccountId,
+    public void tombstoneRevokedTenantKeys(TenantKeyMutation mutation,
+                                           long tenantId, long adAccountId,
                                            LocalDateTime revokedAt, int expectedCount) {
+        requireMutation(mutation);
         if (tenantId <= 0 || adAccountId <= 0 || revokedAt == null || expectedCount < 0) {
             throw new IllegalArgumentException("Invalid tenant callback-key tombstone request");
+        }
+        if (mutation.tenantId != tenantId || mutation.adAccountId != adAccountId) {
+            throw new IllegalArgumentException("Tenant callback-key tombstone is outside mutation scope");
         }
         int changed = ignoreTenant(() -> registryMapper.tombstoneRevokedTenantKeys(
                 tenantId, adAccountId));
@@ -162,7 +250,7 @@ public class SkitCallbackRouteRegistryService {
         }
     }
 
-    /** Backfills by committed keyset batches, verifies the complete owner/hash/state set, then stops in SHADOW_READ. */
+    /** Backfills and verifies in committed 200-row keyset batches, then stops in SHADOW_READ. */
     public RegistryMigrationReport backfillAndVerifyTenantKeys() {
         while (true) {
             MigrationStepResult result = migrationTransactions.execute(
@@ -194,15 +282,10 @@ public class SkitCallbackRouteRegistryService {
                 return backfillOneBatch(state);
             }
             if (phase == MigrationPhase.VERIFY && state.getVerifiedAt() == null) {
-                state = verifyCompleteSet(state);
-                if (state.getBlockedAt() != null) {
-                    return MigrationStepResult.blocked();
-                }
-                return MigrationStepResult.continueMigration();
+                return verifyOneBatch(state);
             }
             if (phase(state) == MigrationPhase.VERIFY) {
-                transition(state, MigrationPhase.SHADOW_READ, null);
-                state = requiredState(migrationMapper.selectSingletonForUpdate());
+                throw new IllegalStateException("Callback registry VERIFY state has invalid final evidence");
             }
             return MigrationStepResult.complete(report(state));
     }
@@ -240,14 +323,34 @@ public class SkitCallbackRouteRegistryService {
         List<SkitAdCallbackRouteRegistryDO> batch = registryMapper.selectLegacyTenantKeysAfterId(
                 state.getLastCallbackKeyId(), BACKFILL_BATCH_SIZE);
         if (batch == null || batch.isEmpty()) {
-            transition(state, MigrationPhase.VERIFY, null);
+            byte[] seedHash = verificationSeed();
+            try {
+                if (migrationMapper.startVerification(state.getPhaseRevision(), seedHash, now()) != 1) {
+                    throw concurrentMigration();
+                }
+            } finally {
+                Arrays.fill(seedHash, (byte) 0);
+            }
             return MigrationStepResult.continueMigration();
         }
         long cursor = state.getLastCallbackKeyId();
-        for (SkitAdCallbackRouteRegistryDO legacy : batch) {
-            TenantCallbackKeyRegistration registration = TenantCallbackKeyRegistration.fromLegacy(legacy, now());
-            insertOrValidate(registration.toRow());
-            cursor = Math.max(cursor, registration.getTenantCallbackKeyId());
+        try {
+            for (SkitAdCallbackRouteRegistryDO legacy : batch) {
+                TenantCallbackKeyRegistration registration = TenantCallbackKeyRegistration.fromLegacy(legacy, now());
+                insertOrValidate(registration.toRow());
+                cursor = Math.max(cursor, registration.getTenantCallbackKeyId());
+            }
+        } catch (RegistryOwnershipConflictException conflict) {
+            byte[] blockedReasonHash = sha256(
+                    "callback-registry-backfill-ownership-conflict".getBytes(StandardCharsets.US_ASCII));
+            try {
+                if (migrationMapper.recordBlocked(state.getPhaseRevision(), blockedReasonHash, now()) != 1) {
+                    throw concurrentMigration();
+                }
+            } finally {
+                Arrays.fill(blockedReasonHash, (byte) 0);
+            }
+            return MigrationStepResult.blocked();
         }
         if (migrationMapper.updateBackfillCursor(state.getPhaseRevision(), cursor,
                 batch.size(), now()) != 1) {
@@ -256,64 +359,168 @@ public class SkitCallbackRouteRegistryService {
         return MigrationStepResult.continueMigration();
     }
 
-    private SkitAdCallbackRouteRegistryMigrationDO verifyCompleteSet(
-            SkitAdCallbackRouteRegistryMigrationDO state) {
-        long expectedCount = registryMapper.countLegacyTenantKeys();
-        long verifiedCount = registryMapper.countTenantRoutes();
-        long mismatchCount = registryMapper.countTenantRouteMismatches()
-                + Math.abs(expectedCount - verifiedCount);
-        byte[] expectedHash = digestRows(false);
-        byte[] actualHash = digestRows(true);
-        if (!MessageDigest.isEqual(expectedHash, actualHash) && mismatchCount == 0) {
-            mismatchCount = 1;
+    private MigrationStepResult verifyOneBatch(SkitAdCallbackRouteRegistryMigrationDO state) {
+        requireVerificationProgress(state);
+        if (!state.getVerificationSnapshotEpoch().equals(state.getCredentialMutationEpoch())) {
+            byte[] seedHash = verificationSeed();
+            try {
+                if (migrationMapper.restartVerification(state.getPhaseRevision(), seedHash, now()) != 1) {
+                    throw concurrentMigration();
+                }
+            } finally {
+                Arrays.fill(seedHash, (byte) 0);
+            }
+            return MigrationStepResult.continueMigration();
         }
-        byte[] verificationHash = sha256(expectedHash, actualHash);
-        Arrays.fill(expectedHash, (byte) 0);
-        Arrays.fill(actualHash, (byte) 0);
-        LocalDateTime verifiedAt = now();
-        byte[] blockedReasonHash = mismatchCount == 0 ? null
-                : sha256("callback-registry-verification-mismatch".getBytes(StandardCharsets.US_ASCII));
+
+        List<SkitAdCallbackRouteRegistryVerificationRow> batch =
+                registryMapper.selectVerificationPairsAfterId(
+                        state.getVerificationCursorCallbackKeyId(), BACKFILL_BATCH_SIZE);
+        if (batch == null || batch.isEmpty()) {
+            return finishVerification(state);
+        }
+
+        MessageDigest expectedBatch = sha256Digest();
+        MessageDigest actualBatch = sha256Digest();
+        long cursor = state.getVerificationCursorCallbackKeyId();
+        long expectedCount = state.getVerificationExpectedProgressCount();
+        long actualCount = state.getVerificationActualProgressCount();
+        long mismatchCount = state.getVerificationProgressMismatchCount();
+        for (SkitAdCallbackRouteRegistryVerificationRow row : batch) {
+            long ownerId = requiredPositive(row.getTenantCallbackKeyId(),
+                    "Verification pair has no legacy owner");
+            frameVerificationTuple(expectedBatch, RouteType.TENANT_CALLBACK_KEY.name(),
+                    null, ownerId, row.getExpectedTenantId(), row.getExpectedAdAccountId(),
+                    row.getExpectedKeyVersion(), row.getExpectedActive(), row.getExpectedAcceptUntil(),
+                    row.getExpectedKeyHash(), row.getExpectedTombstonedAt());
+            expectedCount++;
+            if (row.getRegistryId() != null) {
+                frameVerificationTuple(actualBatch, row.getActualRouteType(),
+                        row.getActualProviderCallbackRouteId(), row.getActualTenantCallbackKeyId(),
+                        row.getActualTenantId(), row.getActualAdAccountId(), row.getActualKeyVersion(),
+                        row.getActualActive(), row.getActualAcceptUntil(), row.getActualKeyHash(),
+                        row.getActualTombstonedAt());
+                actualCount++;
+            }
+            if (!sameVerificationPair(row)) {
+                mismatchCount++;
+            }
+            cursor = Math.max(cursor, ownerId);
+        }
+        byte[] expectedBatchHash = expectedBatch.digest();
+        byte[] actualBatchHash = actualBatch.digest();
+        byte[] expectedRollingHash = sha256(
+                state.getVerificationExpectedRollingHash(), expectedBatchHash);
+        byte[] actualRollingHash = sha256(
+                state.getVerificationActualRollingHash(), actualBatchHash);
         try {
-            int changed = mismatchCount == 0
-                    ? migrationMapper.recordVerification(state.getPhaseRevision(), expectedCount, verifiedCount,
-                    0L, verificationHash, verifiedAt, null, null)
-                    : migrationMapper.recordBlocked(state.getPhaseRevision(), blockedReasonHash, verifiedAt);
-            if (changed != 1) {
+            if (migrationMapper.updateVerificationProgress(state.getPhaseRevision(),
+                    state.getVerificationRunId(), cursor, expectedCount, actualCount, mismatchCount,
+                    expectedRollingHash, actualRollingHash, now()) != 1) {
+                throw concurrentMigration();
+            }
+        } finally {
+            Arrays.fill(expectedBatchHash, (byte) 0);
+            Arrays.fill(actualBatchHash, (byte) 0);
+            Arrays.fill(expectedRollingHash, (byte) 0);
+            Arrays.fill(actualRollingHash, (byte) 0);
+        }
+        return MigrationStepResult.continueMigration();
+    }
+
+    private MigrationStepResult finishVerification(SkitAdCallbackRouteRegistryMigrationDO state) {
+        boolean matches = state.getVerificationProgressMismatchCount() == 0L
+                && state.getVerificationExpectedProgressCount()
+                .equals(state.getVerificationActualProgressCount())
+                && MessageDigest.isEqual(state.getVerificationExpectedRollingHash(),
+                state.getVerificationActualRollingHash());
+        LocalDateTime verifiedAt = now();
+        if (!matches) {
+            byte[] blockedReasonHash = sha256(
+                    "callback-registry-verification-mismatch".getBytes(StandardCharsets.US_ASCII));
+            try {
+                if (migrationMapper.recordBlocked(state.getPhaseRevision(), blockedReasonHash,
+                        verifiedAt) != 1) {
+                    throw concurrentMigration();
+                }
+            } finally {
+                Arrays.fill(blockedReasonHash, (byte) 0);
+            }
+            return MigrationStepResult.blocked();
+        }
+        byte[] verificationHash = sha256(
+                "callback-registry-verification-final-v1".getBytes(StandardCharsets.US_ASCII),
+                longBytes(state.getVerificationRunId()),
+                longBytes(state.getVerificationSnapshotEpoch()),
+                longBytes(state.getVerificationCursorCallbackKeyId()),
+                longBytes(state.getVerificationExpectedProgressCount()),
+                state.getVerificationExpectedRollingHash(),
+                state.getVerificationActualRollingHash());
+        try {
+            if (migrationMapper.completeVerificationAndEnterShadow(state.getPhaseRevision(),
+                    state.getVerificationRunId(), state.getVerificationExpectedProgressCount(),
+                    state.getVerificationActualProgressCount(), verificationHash, verifiedAt) != 1) {
                 throw concurrentMigration();
             }
         } finally {
             Arrays.fill(verificationHash, (byte) 0);
-            if (blockedReasonHash != null) {
-                Arrays.fill(blockedReasonHash, (byte) 0);
-            }
         }
-        return requiredState(migrationMapper.selectSingletonForUpdate());
+        SkitAdCallbackRouteRegistryMigrationDO completed = requiredState(
+                migrationMapper.selectSingletonForUpdate());
+        return MigrationStepResult.complete(report(completed));
     }
 
-    private byte[] digestRows(boolean actualRegistryRows) {
-        MessageDigest digest = sha256Digest();
-        long cursor = 0;
-        while (true) {
-            List<SkitAdCallbackRouteRegistryDO> rows = actualRegistryRows
-                    ? registryMapper.selectTenantRoutesAfterId(cursor, BACKFILL_BATCH_SIZE)
-                    : registryMapper.selectLegacyTenantKeysAfterId(cursor, BACKFILL_BATCH_SIZE);
-            if (rows == null || rows.isEmpty()) {
-                return digest.digest();
-            }
-            for (SkitAdCallbackRouteRegistryDO row : rows) {
-                frame(digest, "TENANT_CALLBACK_KEY");
-                frame(digest, row.getTenantCallbackKeyId());
-                frame(digest, row.getTenantId());
-                frame(digest, row.getAdAccountId());
-                frame(digest, row.getKeyVersion());
-                frame(digest, row.getKeyHash());
-                frame(digest, row.getActive());
-                frame(digest, row.getAcceptUntil());
-                frame(digest, actualRegistryRows ? row.getTombstonedAt() : row.getRevokedAt());
-                cursor = Math.max(cursor, requiredPositive(row.getTenantCallbackKeyId(),
-                        "Tenant callback-key verification row has no owner"));
-            }
+    private static void requireVerificationProgress(SkitAdCallbackRouteRegistryMigrationDO state) {
+        if (state.getCredentialMutationEpoch() == null || state.getVerificationRunId() == null
+                || state.getVerificationRunId() <= 0 || state.getVerificationSnapshotEpoch() == null
+                || state.getVerificationCursorCallbackKeyId() == null
+                || state.getVerificationExpectedProgressCount() == null
+                || state.getVerificationActualProgressCount() == null
+                || state.getVerificationProgressMismatchCount() == null
+                || state.getVerificationExpectedRollingHash() == null
+                || state.getVerificationActualRollingHash() == null) {
+            throw new IllegalStateException("Callback registry verification progress is unavailable");
         }
+    }
+
+    private static boolean sameVerificationPair(SkitAdCallbackRouteRegistryVerificationRow row) {
+        return row.getRegistryId() != null && row.getRegistryId() > 0
+                && RouteType.TENANT_CALLBACK_KEY.name().equals(row.getActualRouteType())
+                && row.getActualProviderCallbackRouteId() == null
+                && Objects.equals(row.getTenantCallbackKeyId(), row.getActualTenantCallbackKeyId())
+                && Objects.equals(row.getExpectedTenantId(), row.getActualTenantId())
+                && Objects.equals(row.getExpectedAdAccountId(), row.getActualAdAccountId())
+                && Objects.equals(row.getExpectedKeyVersion(), row.getActualKeyVersion())
+                && Objects.equals(row.getExpectedActive(), row.getActualActive())
+                && Objects.equals(row.getExpectedAcceptUntil(), row.getActualAcceptUntil())
+                && row.getExpectedKeyHash() != null && row.getActualKeyHash() != null
+                && MessageDigest.isEqual(row.getExpectedKeyHash(), row.getActualKeyHash())
+                && Objects.equals(row.getExpectedTombstonedAt(), row.getActualTombstonedAt());
+    }
+
+    private static void frameVerificationTuple(MessageDigest digest, String routeType,
+                                               Long providerRouteId, Long tenantKeyId,
+                                               Long tenantId, Long adAccountId, Integer keyVersion,
+                                               Boolean active, LocalDateTime acceptUntil,
+                                               byte[] keyHash, LocalDateTime tombstonedAt) {
+        frame(digest, routeType);
+        frame(digest, providerRouteId);
+        frame(digest, tenantKeyId);
+        frame(digest, tenantId);
+        frame(digest, adAccountId);
+        frame(digest, keyVersion);
+        frame(digest, active);
+        frame(digest, acceptUntil);
+        frame(digest, keyHash);
+        frame(digest, tombstonedAt);
+    }
+
+    private static byte[] verificationSeed() {
+        return sha256("callback-registry-verification-seed-v1".getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private static byte[] longBytes(long value) {
+        return ByteBuffer.allocate(Long.BYTES).putLong(value).array();
     }
 
     private void insertOrValidate(SkitAdCallbackRouteRegistryDO requested) {
@@ -327,7 +534,7 @@ public class SkitCallbackRouteRegistryService {
                 requested.getTenantCallbackKeyId());
         if (!sameTenantOwnerAndState(requested, byHash)
                 || !sameTenantOwnerAndState(requested, byOwner)) {
-            throw new IllegalStateException("Callback registry key ownership conflict");
+            throw new RegistryOwnershipConflictException();
         }
     }
 
@@ -477,6 +684,14 @@ public class SkitCallbackRouteRegistryService {
         return boundary != null && !value.isBefore(boundary);
     }
 
+    private void requireMutation(TenantKeyMutation mutation) {
+        if (mutation == null || mutation.owner != this || !mutation.active
+                || !TransactionSynchronizationManager.isActualTransactionActive()
+                || TransactionSynchronizationManager.getResource(tenantMutationResourceKey) != mutation) {
+            throw new IllegalStateException("Tenant callback-key mutation gate is unavailable");
+        }
+    }
+
     private static void requireLookupArguments(byte[] keyHash, LocalDateTime receivedAt) {
         if (keyHash == null || keyHash.length != 32 || receivedAt == null) {
             throw rejected();
@@ -592,7 +807,33 @@ public class SkitCallbackRouteRegistryService {
 
     public static final class RegistryMigrationBlockedException extends IllegalStateException {
         public RegistryMigrationBlockedException() {
-            super("Callback registry migration verification is blocked");
+            super("Callback registry migration is blocked");
+        }
+    }
+
+    /** Opaque transaction-bound capability proving the singleton mutation gate is held. */
+    public static final class TenantKeyMutation {
+        private final SkitCallbackRouteRegistryService owner;
+        private final long tenantId;
+        private final long adAccountId;
+        private volatile boolean active = true;
+
+        private TenantKeyMutation(SkitCallbackRouteRegistryService owner,
+                                  long tenantId, long adAccountId) {
+            this.owner = owner;
+            this.tenantId = tenantId;
+            this.adAccountId = adAccountId;
+        }
+
+        @Override
+        public String toString() {
+            return "TenantKeyMutation{tenantId=" + tenantId + ", adAccountId=" + adAccountId + '}';
+        }
+    }
+
+    private static final class RegistryOwnershipConflictException extends IllegalStateException {
+        private RegistryOwnershipConflictException() {
+            super("Callback registry key ownership conflict");
         }
     }
 
@@ -723,6 +964,20 @@ public class SkitCallbackRouteRegistryService {
                     legacy.getRevokedAt());
         }
 
+        public static TenantCallbackKeyRegistration fromLegacy(SkitAdCallbackKeyDO legacy,
+                                                                LocalDateTime fallbackRegisteredAt) {
+            Objects.requireNonNull(legacy, "legacy");
+            return new TenantCallbackKeyRegistration(
+                    requiredPositive(legacy.getId(), "Legacy callback key has no durable identifier"),
+                    legacy.getCallbackKeyHash(), requiredPositive(legacy.getTenantId(),
+                    "Legacy callback key has no tenant owner"),
+                    requiredPositive(legacy.getAdAccountId(), "Legacy callback key has no account owner"),
+                    legacy.getKeyVersion() == null ? 0 : legacy.getKeyVersion(),
+                    Boolean.TRUE.equals(legacy.getActive()), legacy.getAcceptUntil(),
+                    legacy.getCreateTime() == null ? fallbackRegisteredAt : legacy.getCreateTime(),
+                    legacy.getRevokedAt());
+        }
+
         void validate() {
             if (tenantCallbackKeyId <= 0 || keyHash == null || keyHash.length != 32
                     || tenantId <= 0 || adAccountId <= 0 || keyVersion <= 0 || registeredAt == null) {
@@ -742,6 +997,10 @@ public class SkitCallbackRouteRegistryService {
 
         long getTenantCallbackKeyId() {
             return tenantCallbackKeyId;
+        }
+
+        private boolean belongsTo(long expectedTenantId, long expectedAdAccountId) {
+            return tenantId == expectedTenantId && adAccountId == expectedAdAccountId;
         }
 
         @Override

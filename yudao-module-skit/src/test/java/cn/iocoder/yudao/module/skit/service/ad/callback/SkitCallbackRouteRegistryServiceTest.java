@@ -14,6 +14,8 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionOperations;
 
 import java.nio.charset.StandardCharsets;
@@ -27,6 +29,7 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -34,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -73,6 +77,38 @@ class SkitCallbackRouteRegistryServiceTest {
     }
 
     @Test
+    void preCutoverProviderOwnerRejectsWithoutLegacyFallback() {
+        for (String phase : Arrays.asList("DUAL_WRITE", "BACKFILL", "VERIFY")) {
+            byte[] keyHash = new byte[32];
+            Arrays.fill(keyHash, (byte) 23);
+            LocalDateTime receivedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+            SkitAdCallbackRouteRegistryMapper registryMapper =
+                    mock(SkitAdCallbackRouteRegistryMapper.class);
+            SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                    mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+            SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
+            when(migrationMapper.selectSingleton()).thenReturn(migration(phase));
+            when(registryMapper.selectLookupByKeyHash(any(byte[].class))).thenReturn(
+                    new SkitAdCallbackRouteRegistryDO().setId(10L)
+                            .setRouteType("PROVIDER_CALLBACK_ROUTE")
+                            .setProviderCallbackRouteId(18L).setRegisteredAt(receivedAt));
+            cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO legacy =
+                    new cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO()
+                            .setId(72L).setAdAccountId(52L).setKeyVersion(1).setActive(true);
+            legacy.setTenantId(42L);
+            when(legacyMapper.selectByHash(any(byte[].class))).thenReturn(legacy);
+            SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                    registryMapper, migrationMapper, legacyMapper, new SimpleMeterRegistry(),
+                    Clock.fixed(NOW, ZoneOffset.UTC));
+
+            assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
+                    () -> service.lookupTenantReward(keyHash, receivedAt), phase);
+            verify(registryMapper).selectLookupByKeyHash(keyHash);
+            verify(legacyMapper, never()).selectByHash(any(byte[].class));
+        }
+    }
+
+    @Test
     void issuingTenantKeyRegistersTheSameHashAndOwnerInsideRotation() throws Exception {
         SkitAdAccountMapper accountMapper = mock(SkitAdAccountMapper.class);
         SkitAdCallbackKeyMapper callbackMapper = mock(SkitAdCallbackKeyMapper.class);
@@ -103,7 +139,7 @@ class SkitCallbackRouteRegistryServiceTest {
         org.mockito.ArgumentCaptor<SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration> captured =
                 org.mockito.ArgumentCaptor.forClass(
                         SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration.class);
-        verify(registryService).registerTenantKey(captured.capture());
+        verify(registryService).registerTenantKey(org.mockito.ArgumentMatchers.isNull(), captured.capture());
         assertEquals(61L, captured.getValue().getTenantCallbackKeyId());
         assertEquals("TenantCallbackKeyRegistration{tenantCallbackKeyId=61, tenantId=41, "
                         + "adAccountId=51, keyVersion=1}", captured.getValue().toString());
@@ -161,24 +197,18 @@ class SkitCallbackRouteRegistryServiceTest {
                 mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
         SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
         SkitAdCallbackRouteRegistryMigrationDO verifying = migration("VERIFY")
-                .setPhaseRevision(2L);
-        SkitAdCallbackRouteRegistryMigrationDO blocked = migration("VERIFY")
-                .setPhaseRevision(3L).setBlockedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
-        when(migrationMapper.selectSingletonForUpdate()).thenReturn(verifying, blocked);
-        when(registryMapper.countLegacyTenantKeys()).thenReturn(1L);
-        when(registryMapper.countTenantRoutes()).thenReturn(0L);
-        when(registryMapper.countTenantRouteMismatches()).thenReturn(1L);
-        SkitAdCallbackRouteRegistryDO legacy = new SkitAdCallbackRouteRegistryDO()
-                .setTenantCallbackKeyId(7L).setTenantId(41L).setAdAccountId(51L)
-                .setKeyVersion(1).setKeyHash(new byte[32]).setActive(true)
-                .setRegisteredAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
-        when(registryMapper.selectLegacyTenantKeysAfterId(0L,
-                SkitCallbackRouteRegistryService.BACKFILL_BATCH_SIZE))
-                .thenReturn(Collections.singletonList(legacy));
-        when(registryMapper.selectLegacyTenantKeysAfterId(7L,
-                SkitCallbackRouteRegistryService.BACKFILL_BATCH_SIZE))
-                .thenReturn(Collections.emptyList());
-        when(registryMapper.selectTenantRoutesAfterId(0L,
+                .setPhaseRevision(2L).setCredentialMutationEpoch(3L)
+                .setVerificationRunId(1L).setVerificationSnapshotEpoch(3L)
+                .setVerificationCursorCallbackKeyId(7L)
+                .setVerificationExpectedProgressCount(1L)
+                .setVerificationActualProgressCount(0L)
+                .setVerificationProgressMismatchCount(1L)
+                .setVerificationExpectedRollingHash(new byte[32])
+                .setVerificationActualRollingHash(new byte[] {1, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0});
+        when(migrationMapper.selectSingletonForUpdate()).thenReturn(verifying);
+        when(registryMapper.selectVerificationPairsAfterId(7L,
                 SkitCallbackRouteRegistryService.BACKFILL_BATCH_SIZE))
                 .thenReturn(Collections.emptyList());
         when(migrationMapper.recordBlocked(eq(2L), any(byte[].class),
@@ -199,6 +229,120 @@ class SkitCallbackRouteRegistryServiceTest {
         assertThrows(SkitCallbackRouteRegistryService.RegistryMigrationBlockedException.class,
                 service::backfillAndVerifyTenantKeys);
         assertEquals(true, committed.get());
+    }
+
+    @Test
+    void backfillOwnershipConflictCommitsBlockedEvidenceBeforeTheCallerSeesFailure() {
+        SkitAdCallbackRouteRegistryMapper registryMapper =
+                mock(SkitAdCallbackRouteRegistryMapper.class);
+        SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+        SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
+        SkitAdCallbackRouteRegistryMigrationDO backfilling = migration("BACKFILL")
+                .setPhaseRevision(7L);
+        SkitAdCallbackRouteRegistryMigrationDO blocked = migration("BACKFILL")
+                .setPhaseRevision(8L).setBlockedAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+        when(migrationMapper.selectSingletonForUpdate()).thenReturn(backfilling, blocked);
+        SkitAdCallbackRouteRegistryDO legacy = new SkitAdCallbackRouteRegistryDO()
+                .setTenantCallbackKeyId(7L).setTenantId(41L).setAdAccountId(51L)
+                .setKeyVersion(1).setKeyHash(new byte[32]).setActive(true)
+                .setRegisteredAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
+        when(registryMapper.selectLegacyTenantKeysAfterId(0L,
+                SkitCallbackRouteRegistryService.BACKFILL_BATCH_SIZE))
+                .thenReturn(Collections.singletonList(legacy));
+        when(registryMapper.selectLookupByKeyHash(any(byte[].class))).thenReturn(
+                new SkitAdCallbackRouteRegistryDO().setRouteType("PROVIDER_CALLBACK_ROUTE")
+                        .setProviderCallbackRouteId(99L));
+        when(migrationMapper.recordBlocked(eq(7L), any(byte[].class),
+                any(LocalDateTime.class))).thenReturn(1);
+        AtomicBoolean committed = new AtomicBoolean();
+        TransactionOperations transactions = new TransactionOperations() {
+            @Override
+            public <T> T execute(org.springframework.transaction.support.TransactionCallback<T> action) {
+                T result = action.doInTransaction(mock(TransactionStatus.class));
+                committed.set(true);
+                return result;
+            }
+        };
+        SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                registryMapper, migrationMapper, legacyMapper, new SimpleMeterRegistry(),
+                transactions, Clock.fixed(NOW, ZoneOffset.UTC));
+
+        assertThrows(SkitCallbackRouteRegistryService.RegistryMigrationBlockedException.class,
+                service::backfillAndVerifyTenantKeys);
+        assertEquals(true, committed.get());
+        org.mockito.InOrder order = inOrder(registryMapper, migrationMapper);
+        order.verify(registryMapper).selectLookupByKeyHash(any(byte[].class));
+        order.verify(migrationMapper).recordBlocked(eq(7L), any(byte[].class),
+                any(LocalDateTime.class));
+    }
+
+    @Test
+    void standaloneRegistrationCannotBypassTheProductionTransactionGate() {
+        SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                mock(SkitAdCallbackRouteRegistryMapper.class),
+                mock(SkitAdCallbackRouteRegistryMigrationMapper.class),
+                mock(SkitAdCallbackKeyMapper.class), new SimpleMeterRegistry(),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration registration =
+                new SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration(
+                        71L, new byte[32], 41L, 51L, 1,
+                        LocalDateTime.ofInstant(NOW, ZoneOffset.UTC), null);
+
+        assertThrows(IllegalStateException.class,
+                () -> service.registerTenantKey(registration));
+    }
+
+    @Test
+    void opaqueMutationCapabilityIsScopedToOneActiveTransaction() {
+        SkitAdCallbackRouteRegistryMapper registryMapper =
+                mock(SkitAdCallbackRouteRegistryMapper.class);
+        SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+        SkitAdCallbackRouteRegistryMigrationDO dualWrite =
+                migration("DUAL_WRITE").setCredentialMutationEpoch(0L);
+        when(migrationMapper.selectSingleton()).thenReturn(dualWrite);
+        when(migrationMapper.selectSingletonForUpdate()).thenReturn(dualWrite);
+        when(migrationMapper.incrementCredentialMutationEpoch(eq(4L),
+                any(LocalDateTime.class))).thenReturn(1);
+        AtomicReference<SkitAdCallbackRouteRegistryDO> inserted = new AtomicReference<>();
+        doAnswer(invocation -> {
+            SkitAdCallbackRouteRegistryDO row = invocation.getArgument(0);
+            row.setId(81L);
+            inserted.set(row);
+            return 1;
+        }).when(registryMapper).insert(any(SkitAdCallbackRouteRegistryDO.class));
+        when(registryMapper.selectLookupByKeyHash(any(byte[].class)))
+                .thenAnswer(invocation -> inserted.get());
+        when(registryMapper.selectByTenantCallbackKeyId(71L))
+                .thenAnswer(invocation -> inserted.get());
+        SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                registryMapper, migrationMapper, mock(SkitAdCallbackKeyMapper.class),
+                new SimpleMeterRegistry(), Clock.fixed(NOW, ZoneOffset.UTC));
+        SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration registration =
+                new SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration(
+                        71L, new byte[32], 41L, 51L, 1,
+                        LocalDateTime.ofInstant(NOW, ZoneOffset.UTC), null);
+
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            SkitCallbackRouteRegistryService.TenantKeyMutation mutation =
+                    service.beginTenantKeyMutation(41L, 51L);
+            service.registerTenantKey(mutation, registration);
+            for (TransactionSynchronization synchronization
+                    : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+            }
+            assertThrows(IllegalStateException.class,
+                    () -> service.registerTenantKey(mutation, registration));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        verify(migrationMapper).incrementCredentialMutationEpoch(eq(4L),
+                any(LocalDateTime.class));
+        verify(registryMapper).insert(any(SkitAdCallbackRouteRegistryDO.class));
     }
 
     private static SkitAdCallbackRouteRegistryMigrationDO migration(String phase) {

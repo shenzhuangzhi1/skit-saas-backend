@@ -38,6 +38,8 @@ class SkitCallbackRoutingServiceTest {
         assertEquals(29L, route.getAdAccountId());
         assertEquals(4, route.getCallbackKeyVersion());
         assertFalse(route.toString().contains(rawKey));
+        assertEquals("CallbackRoute{tenantId=17, adAccountId=29, callbackKeyVersion=4}",
+                route.toString());
     }
 
     @Test

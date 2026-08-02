@@ -19,8 +19,21 @@ public class SkitAdCallbackRouteRegistryMigrationDO {
     private Integer singletonId;
     private String migrationPhase;
     private Long phaseRevision;
+    private Long credentialMutationEpoch;
     private Long lastCallbackKeyId;
     private Integer lastBatchSize;
+    private Long verificationRunId;
+    private Long verificationSnapshotEpoch;
+    private Long verificationCursorCallbackKeyId;
+    private Long verificationExpectedProgressCount;
+    private Long verificationActualProgressCount;
+    private Long verificationProgressMismatchCount;
+    @JsonIgnore
+    @ToString.Exclude
+    private byte[] verificationExpectedRollingHash;
+    @JsonIgnore
+    @ToString.Exclude
+    private byte[] verificationActualRollingHash;
     private Long expectedRowCount;
     private Long verifiedRowCount;
     private Long verificationMismatchCount;

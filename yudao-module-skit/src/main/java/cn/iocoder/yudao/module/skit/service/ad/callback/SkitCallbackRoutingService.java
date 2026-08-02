@@ -103,8 +103,7 @@ public class SkitCallbackRoutingService {
         @Override
         public String toString() {
             return "CallbackRoute{tenantId=" + tenantId + ", adAccountId=" + adAccountId
-                    + ", callbackKeyVersion=" + callbackKeyVersion + ", active=" + active
-                    + ", acceptUntil=" + acceptUntil + '}';
+                    + ", callbackKeyVersion=" + callbackKeyVersion + '}';
         }
     }
 

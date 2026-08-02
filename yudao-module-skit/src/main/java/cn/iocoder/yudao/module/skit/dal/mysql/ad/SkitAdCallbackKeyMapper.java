@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.dal.mysql.ad;
 
 import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
@@ -9,6 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Mapper
 public interface SkitAdCallbackKeyMapper {
@@ -33,6 +35,12 @@ public interface SkitAdCallbackKeyMapper {
             + "AND `ad_account_id`=#{adAccountId} AND `active`=b'1' AND `revoked_at` IS NULL")
     SkitAdCallbackKeyDO selectActive(@Param("tenantId") Long tenantId,
                                      @Param("adAccountId") Long adAccountId);
+
+    @Select("SELECT * FROM `skit_ad_callback_key` WHERE `tenant_id`=#{tenantId} "
+            + "AND `ad_account_id`=#{adAccountId} AND `revoked_at` IS NULL ORDER BY `id` FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // explicit tenant/account scope preserves MySQL ORDER BY ... FOR UPDATE
+    List<SkitAdCallbackKeyDO> selectUnrevokedForUpdate(@Param("tenantId") Long tenantId,
+                                                       @Param("adAccountId") Long adAccountId);
 
     @Select("SELECT * FROM `skit_ad_callback_key` WHERE `callback_key_hash`=#{callbackKeyHash} LIMIT 1")
     SkitAdCallbackKeyDO selectByHash(@Param("callbackKeyHash") byte[] callbackKeyHash);

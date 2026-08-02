@@ -28,6 +28,14 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.apache.ibatis.executor.Executor;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.plugin.Interceptor;
+import org.apache.ibatis.plugin.Intercepts;
+import org.apache.ibatis.plugin.Invocation;
+import org.apache.ibatis.plugin.Signature;
+import org.apache.ibatis.session.ResultHandler;
+import org.apache.ibatis.session.RowBounds;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -57,15 +65,18 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -114,13 +125,13 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
 
     @Test
     @Order(1)
-    void tenantCreateRotateRevokeAndProviderCollisionRollbackAreAtomic() throws Exception {
+    void historicalRotateAndRevokeBackfillOwnersBeforeRetireOrTombstone() throws Exception {
         long tenantId = 9101L;
         long accountId = 9102L;
         insertAccount(tenantId, accountId, "ATOMIC");
 
-        String first = credentialService.rotateCallbackKey(
-                tenantId, accountId, Duration.ofMinutes(20)).consumeCallbackKey();
+        String first = Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(1));
+        insertLegacyCallbackKey(tenantId, accountId, 1, first, true, null);
         String second = credentialService.rotateCallbackKey(
                 tenantId, accountId, Duration.ofMinutes(20)).consumeCallbackKey();
         assertTenantRegistryOwner(first, tenantId, accountId, 1);
@@ -139,6 +150,25 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
                 Integer.class, tenantId, accountId));
         assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
                 () -> registryService.lookup(sha256(second), LocalDateTime.now().plusSeconds(1)));
+
+        long historicalTenant = 9103L;
+        long historicalAccount = 9104L;
+        insertAccount(historicalTenant, historicalAccount, "HISTORICAL_REVOKE");
+        LocalDateTime stillAccepted = LocalDateTime.now().plusHours(1);
+        insertLegacyCallbackKey(historicalTenant, historicalAccount, 1,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(61)),
+                false, stillAccepted);
+        insertLegacyCallbackKey(historicalTenant, historicalAccount, 2,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(93)),
+                false, stillAccepted);
+        insertLegacyCallbackKey(historicalTenant, historicalAccount, 3,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(125)),
+                true, null);
+        assertTrue(credentialService.revokeAllCallbackKeys(historicalTenant, historicalAccount));
+        assertEquals(3, jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_callback_route_registry r "
+                        + "JOIN skit_ad_callback_key k ON k.id=r.tenant_callback_key_id "
+                        + "WHERE k.tenant_id=? AND k.ad_account_id=? AND r.tombstoned_at=k.revoked_at",
+                Integer.class, historicalTenant, historicalAccount));
 
         long collisionTenant = 9111L;
         long collisionAccount = 9112L;
@@ -164,18 +194,20 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
 
     @Test
     @Order(2)
-    void concurrentRotationAndCommittedBackfillReachReentrantEnforcedRegistry() throws Exception {
+    void committedVerificationBatchesRestartAfterGatedCredentialMutation() throws Exception {
         long tenantId = 9201L;
         long accountId = 9202L;
         insertAccount(tenantId, accountId, "CONCURRENT");
         insertLegacyBackfillFixture(205);
+        assertEquals(1, jdbc().update("UPDATE skit_ad_callback_route_registry_migration SET "
+                + "migration_phase='BACKFILL',phase_revision=phase_revision+1,updated_at=CURRENT_TIMESTAMP "
+                + "WHERE singleton_id=1 AND migration_phase='DUAL_WRITE'"));
 
         int rotations = 20;
-        ExecutorService executor = Executors.newFixedThreadPool(rotations + 1);
-        CountDownLatch ready = new CountDownLatch(rotations + 1);
+        ExecutorService executor = Executors.newFixedThreadPool(rotations);
+        CountDownLatch ready = new CountDownLatch(rotations);
         CountDownLatch start = new CountDownLatch(1);
         List<Future<String>> issued = new ArrayList<>();
-        Future<SkitCallbackRouteRegistryService.RegistryMigrationReport> migration;
         try {
             for (int index = 0; index < rotations; index++) {
                 issued.add(executor.submit(() -> {
@@ -185,11 +217,6 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
                             tenantId, accountId, Duration.ofMinutes(30)).consumeCallbackKey();
                 }));
             }
-            migration = executor.submit(() -> {
-                ready.countDown();
-                assertTrue(start.await(30, TimeUnit.SECONDS));
-                return registryService.backfillAndVerifyTenantKeys();
-            });
             assertTrue(ready.await(30, TimeUnit.SECONDS));
             start.countDown();
             Set<String> keys = new HashSet<>();
@@ -197,24 +224,76 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
                 keys.add(future.get(60, TimeUnit.SECONDS));
             }
             assertEquals(rotations, keys.size());
-            SkitCallbackRouteRegistryService.RegistryMigrationReport first =
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+
+        VerificationMutationBarrier barrier = context.getBean(VerificationMutationBarrier.class);
+        barrier.arm();
+        ExecutorService migrationExecutor = Executors.newSingleThreadExecutor();
+        ExecutorService mutationExecutor = Executors.newSingleThreadExecutor(
+                work -> new Thread(work, VerificationMutationBarrier.MUTATION_THREAD_NAME));
+        Future<SkitCallbackRouteRegistryService.RegistryMigrationReport> migration =
+                migrationExecutor.submit(registryService::backfillAndVerifyTenantKeys);
+        Future<String> mutation = null;
+        try {
+            assertTrue(barrier.awaitSecondVerificationBatch(),
+                    "second verification batch did not reach the transaction barrier");
+            VerificationProgress firstProgress = verificationProgress();
+            assertEquals("VERIFY", firstProgress.phase);
+            assertEquals(200L, firstProgress.expectedCount);
+            assertEquals(firstProgress.expectedCount, firstProgress.actualCount);
+            assertEquals(0L, firstProgress.mismatchCount);
+
+            long mutationTenant = 9211L;
+            long mutationAccount = 9212L;
+            insertAccount(mutationTenant, mutationAccount, "VERIFY_MUTATION");
+            mutation = mutationExecutor.submit(() -> credentialService.rotateCallbackKey(
+                    mutationTenant, mutationAccount, Duration.ofMinutes(30)).consumeCallbackKey());
+            assertTrue(barrier.awaitMutationGateAttempt(),
+                    "credential mutation did not queue on the verification gate");
+            barrier.releaseSecondVerificationBatch();
+            assertTrue(barrier.awaitMutationOwnsGate(),
+                    "credential mutation did not acquire the gate after the second batch commit");
+            VerificationProgress secondProgress = verificationProgress();
+            assertEquals(firstProgress.runId, secondProgress.runId);
+            assertTrue(secondProgress.cursor > firstProgress.cursor);
+            assertTrue(secondProgress.expectedCount > firstProgress.expectedCount);
+            assertEquals(secondProgress.expectedCount, secondProgress.actualCount);
+            assertEquals(0L, secondProgress.mismatchCount);
+
+            barrier.releaseMutationGate();
+            assertTrue(barrier.awaitRestartedVerificationBatch(),
+                    "verification did not restart from cursor zero after credential mutation");
+            VerificationProgress restarted = verificationProgress();
+            assertEquals(firstProgress.runId + 1, restarted.runId);
+            assertEquals(0L, restarted.cursor);
+            assertEquals(0L, restarted.expectedCount);
+            assertEquals(0L, restarted.actualCount);
+            assertEquals(0L, restarted.mismatchCount);
+            assertTrue(restarted.snapshotEpoch > firstProgress.snapshotEpoch);
+            barrier.releaseRestartedVerificationBatch();
+
+            String mutationKey = mutation.get(60, TimeUnit.SECONDS);
+            assertNotNull(mutationKey);
+            SkitCallbackRouteRegistryService.RegistryMigrationReport completed =
                     migration.get(60, TimeUnit.SECONDS);
             assertEquals(SkitCallbackRouteRegistryService.MigrationPhase.SHADOW_READ,
-                    first.getPhase());
-            assertEquals(first, registryService.backfillAndVerifyTenantKeys());
+                    completed.getPhase());
+            assertEquals(completed, registryService.backfillAndVerifyTenantKeys());
+            VerificationProgress finalProgress = verificationProgress();
+            assertEquals(restarted.runId, finalProgress.runId);
+            assertTrue(finalProgress.expectedCount > 200L);
+            assertEquals(finalProgress.expectedCount, finalProgress.actualCount);
+            assertEquals(0L, finalProgress.mismatchCount);
             assertEquals(jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_callback_key", Long.class),
                     jdbc().queryForObject("SELECT COUNT(*) FROM skit_ad_callback_route_registry "
                             + "WHERE route_type='TENANT_CALLBACK_KEY'", Long.class));
-            for (String raw : keys) {
-                SkitCallbackRouteRegistryService.RouteLookup route = registryService.lookup(
-                        sha256(raw), LocalDateTime.now());
-                assertEquals(tenantId, route.getTenantId());
-                assertEquals(accountId, route.getAdAccountId());
-            }
-            String routable = keys.iterator().next();
+
+            String routable = issued.get(0).get(60, TimeUnit.SECONDS);
             assertEquals(tenantId, routingService.resolveTenantReward(
                     routable, LocalDateTime.now()).getTenantId());
-
             registryService.enableHashFirstReads();
             assertEquals("HASH_FIRST", migrationPhase());
             registryService.enableHashFirstReads();
@@ -226,11 +305,11 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
             assertEquals(999999L, TenantContextHolder.getTenantId());
             assertFalse(TenantContextHolder.isIgnore());
             assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
-                    () -> routingService.resolveTenantReward(
-                            providerRawKey, LocalDateTime.now()));
+                    () -> routingService.resolveTenantReward(providerRawKey, LocalDateTime.now()));
         } finally {
-            start.countDown();
-            executor.shutdownNow();
+            barrier.releaseAll();
+            migrationExecutor.shutdownNow();
+            mutationExecutor.shutdownNow();
         }
     }
 
@@ -243,6 +322,31 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         assertEquals(tenantId, lookup.getTenantId());
         assertEquals(accountId, lookup.getAdAccountId());
         assertEquals(version, lookup.getKeyVersion());
+    }
+
+    private void insertLegacyCallbackKey(long tenantId, long accountId, int version,
+                                         String rawKey, boolean active,
+                                         LocalDateTime acceptUntil) {
+        jdbc().update("INSERT INTO skit_ad_callback_key "
+                        + "(tenant_id,ad_account_id,key_version,callback_key_hash,active,accept_until) "
+                        + "VALUES (?,?,?,?,?,?)",
+                tenantId, accountId, version, sha256(rawKey), active, acceptUntil);
+    }
+
+    private VerificationProgress verificationProgress() {
+        return jdbc().queryForObject("SELECT migration_phase,verification_run_id,"
+                        + "verification_snapshot_epoch,verification_cursor_callback_key_id,"
+                        + "verification_expected_progress_count,verification_actual_progress_count,"
+                        + "verification_progress_mismatch_count "
+                        + "FROM skit_ad_callback_route_registry_migration WHERE singleton_id=1",
+                (resultSet, rowNumber) -> new VerificationProgress(
+                        resultSet.getString("migration_phase"),
+                        resultSet.getLong("verification_run_id"),
+                        resultSet.getLong("verification_snapshot_epoch"),
+                        resultSet.getLong("verification_cursor_callback_key_id"),
+                        resultSet.getLong("verification_expected_progress_count"),
+                        resultSet.getLong("verification_actual_progress_count"),
+                        resultSet.getLong("verification_progress_mismatch_count")));
     }
 
     private void insertProviderRegistryOwner(byte[] keyHash) {
@@ -321,6 +425,138 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         }
     }
 
+    private static final class VerificationProgress {
+        private final String phase;
+        private final long runId;
+        private final long snapshotEpoch;
+        private final long cursor;
+        private final long expectedCount;
+        private final long actualCount;
+        private final long mismatchCount;
+
+        private VerificationProgress(String phase, long runId, long snapshotEpoch,
+                                     long cursor, long expectedCount, long actualCount,
+                                     long mismatchCount) {
+            this.phase = phase;
+            this.runId = runId;
+            this.snapshotEpoch = snapshotEpoch;
+            this.cursor = cursor;
+            this.expectedCount = expectedCount;
+            this.actualCount = actualCount;
+            this.mismatchCount = mismatchCount;
+        }
+    }
+
+    @Intercepts(@Signature(type = Executor.class, method = "query",
+            args = {MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class}))
+    static final class VerificationMutationBarrier implements Interceptor {
+
+        static final String MUTATION_THREAD_NAME = "registry-verification-credential-mutation";
+        private static final String VERIFICATION_SELECT =
+                "SkitAdCallbackRouteRegistryMapper.selectVerificationPairsAfterId";
+        private static final String SINGLETON_LOCK =
+                "SkitAdCallbackRouteRegistryMigrationMapper.selectSingletonForUpdate";
+
+        private final AtomicInteger verificationSelectCount = new AtomicInteger();
+        private final CountDownLatch secondVerificationBatch = new CountDownLatch(1);
+        private final CountDownLatch releaseSecondVerificationBatch = new CountDownLatch(1);
+        private final CountDownLatch mutationGateAttempt = new CountDownLatch(1);
+        private final CountDownLatch mutationOwnsGate = new CountDownLatch(1);
+        private final CountDownLatch releaseMutationGate = new CountDownLatch(1);
+        private final CountDownLatch restartedVerificationBatch = new CountDownLatch(1);
+        private final CountDownLatch releaseRestartedVerificationBatch = new CountDownLatch(1);
+        private volatile boolean armed;
+        private volatile boolean mutationAttempted;
+
+        void arm() {
+            armed = true;
+        }
+
+        @Override
+        public Object intercept(Invocation invocation) throws Throwable {
+            MappedStatement statement = (MappedStatement) invocation.getArgs()[0];
+            String statementId = statement.getId();
+            if (!armed) {
+                return invocation.proceed();
+            }
+            if (statementId.endsWith(SINGLETON_LOCK)
+                    && MUTATION_THREAD_NAME.equals(Thread.currentThread().getName())) {
+                mutationAttempted = true;
+                mutationGateAttempt.countDown();
+                Object result = invocation.proceed();
+                mutationOwnsGate.countDown();
+                awaitRelease(releaseMutationGate, "credential mutation gate release");
+                return result;
+            }
+            if (!statementId.endsWith(VERIFICATION_SELECT)) {
+                return invocation.proceed();
+            }
+            long afterId = afterId(invocation.getArgs()[1]);
+            int selectNumber = verificationSelectCount.incrementAndGet();
+            if (selectNumber == 2) {
+                secondVerificationBatch.countDown();
+                awaitRelease(releaseSecondVerificationBatch, "second verification batch release");
+            } else if (mutationAttempted && afterId == 0L) {
+                restartedVerificationBatch.countDown();
+                awaitRelease(releaseRestartedVerificationBatch,
+                        "restarted verification batch release");
+            }
+            return invocation.proceed();
+        }
+
+        boolean awaitSecondVerificationBatch() throws InterruptedException {
+            return secondVerificationBatch.await(30, TimeUnit.SECONDS);
+        }
+
+        boolean awaitMutationGateAttempt() throws InterruptedException {
+            return mutationGateAttempt.await(30, TimeUnit.SECONDS);
+        }
+
+        boolean awaitMutationOwnsGate() throws InterruptedException {
+            return mutationOwnsGate.await(30, TimeUnit.SECONDS);
+        }
+
+        boolean awaitRestartedVerificationBatch() throws InterruptedException {
+            return restartedVerificationBatch.await(30, TimeUnit.SECONDS);
+        }
+
+        void releaseSecondVerificationBatch() {
+            releaseSecondVerificationBatch.countDown();
+        }
+
+        void releaseMutationGate() {
+            releaseMutationGate.countDown();
+        }
+
+        void releaseRestartedVerificationBatch() {
+            releaseRestartedVerificationBatch.countDown();
+        }
+
+        void releaseAll() {
+            releaseSecondVerificationBatch();
+            releaseMutationGate();
+            releaseRestartedVerificationBatch();
+        }
+
+        private static long afterId(Object parameter) {
+            if (!(parameter instanceof Map)) {
+                throw new IllegalStateException("Verification mapper parameters are unavailable");
+            }
+            Object value = ((Map<?, ?>) parameter).get("afterId");
+            if (!(value instanceof Number)) {
+                throw new IllegalStateException("Verification cursor parameter is unavailable");
+            }
+            return ((Number) value).longValue();
+        }
+
+        private static void awaitRelease(CountDownLatch latch, String boundary)
+                throws InterruptedException {
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Timed out waiting for " + boundary);
+            }
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement(proxyTargetClass = true)
     @MapperScan(basePackages = {
@@ -344,7 +580,8 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
 
         @Bean
         MybatisSqlSessionFactoryBean sqlSessionFactory(DataSource dataSource,
-                                                       MybatisPlusInterceptor interceptor) {
+                                                       MybatisPlusInterceptor interceptor,
+                                                       VerificationMutationBarrier barrier) {
             MybatisConfiguration configuration = new MybatisConfiguration();
             configuration.setMapUnderscoreToCamelCase(true);
             MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration,
@@ -357,8 +594,13 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
             factory.setDataSource(dataSource);
             factory.setConfiguration(configuration);
-            factory.setPlugins(interceptor);
+            factory.setPlugins(interceptor, barrier);
             return factory;
+        }
+
+        @Bean
+        VerificationMutationBarrier verificationMutationBarrier() {
+            return new VerificationMutationBarrier();
         }
 
         @Bean

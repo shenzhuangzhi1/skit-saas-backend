@@ -22,7 +22,9 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Service
@@ -81,11 +83,16 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
     private CallbackKeyIssue rotateCallbackKeyInsideTenant(long tenantId, long adAccountId,
                                                            Duration priorAcceptanceWindow) {
         lockAccount(tenantId, adAccountId);
+        SkitCallbackRouteRegistryService.TenantKeyMutation mutation =
+                callbackRouteRegistryService.beginTenantKeyMutation(tenantId, adAccountId);
         int nextVersion = nextVersion(callbackKeyMapper.selectMaxVersion(tenantId, adAccountId));
         SkitAdCallbackKeyDO prior = callbackKeyMapper.selectActiveForUpdate(tenantId, adAccountId);
         validateCallbackRowScope(prior, tenantId, adAccountId);
         LocalDateTime rotationTime = now();
         if (prior != null) {
+            callbackRouteRegistryService.registerTenantKey(mutation,
+                    SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration.fromLegacy(
+                            prior, rotationTime));
             retireCallbackVersion(prior, tenantId, adAccountId,
                     rotationTime.plus(priorAcceptanceWindow));
         }
@@ -116,7 +123,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
                 }
                 continue;
             }
-            callbackRouteRegistryService.registerTenantKey(
+            callbackRouteRegistryService.registerTenantKey(mutation,
                     new SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration(
                             row.getId() == null ? 0L : row.getId(), keyHash,
                             tenantId, adAccountId, nextVersion, rotationTime, null));
@@ -138,13 +145,21 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
 
     private boolean revokeAllCallbackKeysInsideTenant(long tenantId, long adAccountId) {
         lockAccount(tenantId, adAccountId);
+        SkitCallbackRouteRegistryService.TenantKeyMutation mutation =
+                callbackRouteRegistryService.beginTenantKeyMutation(tenantId, adAccountId);
         LocalDateTime revokedAt = now();
+        List<SkitAdCallbackKeyDO> historical = callbackKeyMapper.selectUnrevokedForUpdate(
+                tenantId, adAccountId);
+        callbackRouteRegistryService.registerTenantKeys(mutation, historical.stream()
+                .map(row -> SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration.fromLegacy(
+                        row, revokedAt))
+                .collect(Collectors.toList()));
         int changed = callbackKeyMapper.revokeAllUnrevokedVersions(
                 tenantId, adAccountId, revokedAt);
-        if (changed < 0) {
-            throw new IllegalStateException("Callback credential revocation count is invalid");
+        if (changed != historical.size()) {
+            throw new IllegalStateException("Callback credential revocation count mismatch");
         }
-        callbackRouteRegistryService.tombstoneRevokedTenantKeys(
+        callbackRouteRegistryService.tombstoneRevokedTenantKeys(mutation,
                 tenantId, adAccountId, revokedAt, changed);
         return changed > 0;
     }

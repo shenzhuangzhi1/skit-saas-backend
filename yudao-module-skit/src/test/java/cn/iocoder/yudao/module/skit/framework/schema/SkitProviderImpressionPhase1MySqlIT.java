@@ -96,7 +96,8 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
         assertNotNull(triggerDefinition("trg_platform_provider_command_audit_no_delete"));
         assertEquals(1, jdbc().queryForObject(
                 "SELECT COUNT(*) FROM `skit_ad_callback_route_registry_migration` WHERE `singleton_id`=1 "
-                        + "AND `migration_phase`='DUAL_WRITE' AND `last_callback_key_id`=0", Integer.class));
+                        + "AND `migration_phase`='DUAL_WRITE' AND `last_callback_key_id`=0 "
+                        + "AND `credential_mutation_epoch`=0 AND `verification_run_id`=0", Integer.class));
 
         String storedChecksum = jdbc().queryForObject(
                 "SELECT `checksum` FROM `skit_schema_migration` WHERE `version`=?",
@@ -132,18 +133,63 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                         + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
         assertEquals(1, jdbc().update(
                 "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='VERIFY',"
-                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
-        assertThrows(DataAccessException.class, () -> jdbc().update(
-                "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='SHADOW_READ',"
+                        + "`verification_run_id`=`verification_run_id`+1,"
+                        + "`verification_snapshot_epoch`=`credential_mutation_epoch`,"
+                        + "`verification_cursor_callback_key_id`=0,"
+                        + "`verification_expected_progress_count`=0,"
+                        + "`verification_actual_progress_count`=0,"
+                        + "`verification_progress_mismatch_count`=0,"
+                        + "`verification_expected_rolling_hash`=UNHEX(REPEAT('22',32)),"
+                        + "`verification_actual_rolling_hash`=UNHEX(REPEAT('22',32)),"
                         + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
         assertEquals(1, jdbc().update(
                 "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                        + "`verification_cursor_callback_key_id`=10,"
+                        + "`verification_expected_progress_count`=10,"
+                        + "`verification_actual_progress_count`=10,"
+                        + "`verification_expected_rolling_hash`=UNHEX(REPEAT('33',32)),"
+                        + "`verification_actual_rolling_hash`=UNHEX(REPEAT('33',32)),"
+                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                        + "`verification_cursor_callback_key_id`=9,"
+                        + "`verification_expected_rolling_hash`=UNHEX(REPEAT('44',32)),"
+                        + "`verification_actual_rolling_hash`=UNHEX(REPEAT('44',32)),"
+                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                        + "`credential_mutation_epoch`=`credential_mutation_epoch`+1,"
+                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='SHADOW_READ',"
                         + "`expected_row_count`=10,`verified_row_count`=10,"
                         + "`verification_mismatch_count`=0,"
-                        + "`verification_hash`=UNHEX(REPEAT('22',32)),`verified_at`=CURRENT_TIMESTAMP,"
+                        + "`verification_hash`=UNHEX(REPEAT('55',32)),`verified_at`=CURRENT_TIMESTAMP,"
+                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                        + "`verification_run_id`=`verification_run_id`+1,"
+                        + "`verification_snapshot_epoch`=`credential_mutation_epoch`,"
+                        + "`verification_cursor_callback_key_id`=0,"
+                        + "`verification_expected_progress_count`=0,"
+                        + "`verification_actual_progress_count`=0,"
+                        + "`verification_progress_mismatch_count`=0,"
+                        + "`verification_expected_rolling_hash`=UNHEX(REPEAT('66',32)),"
+                        + "`verification_actual_rolling_hash`=UNHEX(REPEAT('66',32)),"
+                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                        + "`verification_cursor_callback_key_id`=10,"
+                        + "`verification_expected_progress_count`=10,"
+                        + "`verification_actual_progress_count`=10,"
+                        + "`verification_expected_rolling_hash`=UNHEX(REPEAT('77',32)),"
+                        + "`verification_actual_rolling_hash`=UNHEX(REPEAT('77',32)),"
                         + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
         assertEquals(1, jdbc().update(
                 "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='SHADOW_READ',"
+                        + "`expected_row_count`=10,`verified_row_count`=10,"
+                        + "`verification_mismatch_count`=0,"
+                        + "`verification_hash`=UNHEX(REPEAT('88',32)),`verified_at`=CURRENT_TIMESTAMP,"
                         + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
     }
 

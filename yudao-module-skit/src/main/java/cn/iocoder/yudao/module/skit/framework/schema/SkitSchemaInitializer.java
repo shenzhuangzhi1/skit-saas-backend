@@ -4711,6 +4711,24 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     "varchar(16) NOT NULL DEFAULT 'DUAL_WRITE'");
             validateColumnDefinition("skit_ad_callback_route_registry_migration", "phase_revision",
                     "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration", "credential_mutation_epoch",
+                    "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration", "verification_run_id",
+                    "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration", "verification_snapshot_epoch",
+                    "bigint DEFAULT NULL");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration",
+                    "verification_cursor_callback_key_id", "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration",
+                    "verification_expected_progress_count", "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration",
+                    "verification_actual_progress_count", "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration",
+                    "verification_progress_mismatch_count", "bigint NOT NULL DEFAULT 0");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration",
+                    "verification_expected_rolling_hash", "binary(32) DEFAULT NULL");
+            validateColumnDefinition("skit_ad_callback_route_registry_migration",
+                    "verification_actual_rolling_hash", "binary(32) DEFAULT NULL");
             validateColumnDefinition("skit_ad_callback_route_registry_migration", "verification_hash",
                     "binary(32) DEFAULT NULL");
             validateColumnDefinition("skit_ad_callback_route_registry_migration", "blocked_reason_hash",
@@ -4994,10 +5012,32 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         "`migration_phase` IN "
                                 + "('DUAL_WRITE','BACKFILL','VERIFY','SHADOW_READ','HASH_FIRST','ENFORCED')"),
                 new Task2CheckSpec("skit_ad_callback_route_registry_migration",
-                        "ck_callback_route_registry_migration_revision", "`phase_revision`>=0"),
+                        "ck_callback_route_registry_migration_revision",
+                        "`phase_revision`>=0 AND `credential_mutation_epoch`>=0 "
+                                + "AND `verification_run_id`>=0"),
                 new Task2CheckSpec("skit_ad_callback_route_registry_migration",
                         "ck_callback_route_registry_migration_cursor",
-                        "`last_callback_key_id`>=0 AND `last_batch_size`>=0"),
+                        "`last_callback_key_id`>=0 AND `last_batch_size`>=0 "
+                                + "AND `verification_cursor_callback_key_id`>=0 "
+                                + "AND `verification_expected_progress_count`>=0 "
+                                + "AND `verification_actual_progress_count`>=0 "
+                                + "AND `verification_actual_progress_count`"
+                                + "<=`verification_expected_progress_count` "
+                                + "AND `verification_progress_mismatch_count`>=0 "
+                                + "AND `verification_progress_mismatch_count`"
+                                + "<=`verification_expected_progress_count`"),
+                new Task2CheckSpec("skit_ad_callback_route_registry_migration",
+                        "ck_callback_route_registry_migration_verification_progress",
+                        "(`verification_run_id`=0 AND `verification_snapshot_epoch` IS NULL "
+                                + "AND `verification_cursor_callback_key_id`=0 "
+                                + "AND `verification_expected_progress_count`=0 "
+                                + "AND `verification_actual_progress_count`=0 "
+                                + "AND `verification_progress_mismatch_count`=0 "
+                                + "AND `verification_expected_rolling_hash` IS NULL "
+                                + "AND `verification_actual_rolling_hash` IS NULL) OR "
+                                + "(`verification_run_id`>0 AND `verification_snapshot_epoch`>=0 "
+                                + "AND `verification_expected_rolling_hash` IS NOT NULL "
+                                + "AND `verification_actual_rolling_hash` IS NOT NULL)"),
                 new Task2CheckSpec("skit_ad_callback_route_registry_migration",
                         "ck_callback_route_registry_migration_verification",
                         "(`expected_row_count` IS NULL AND `verified_row_count` IS NULL "

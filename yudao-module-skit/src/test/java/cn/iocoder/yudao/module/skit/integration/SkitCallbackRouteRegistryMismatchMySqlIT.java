@@ -65,13 +65,10 @@ class SkitCallbackRouteRegistryMismatchMySqlIT extends SkitMySqlIntegrationTestB
         assertEquals(1, jdbc().update("UPDATE skit_ad_callback_route_registry_migration SET "
                 + "migration_phase='BACKFILL',phase_revision=1,updated_at=CURRENT_TIMESTAMP "
                 + "WHERE singleton_id=1 AND migration_phase='DUAL_WRITE' AND phase_revision=0"));
-        assertEquals(1, jdbc().update("UPDATE skit_ad_callback_route_registry_migration SET "
-                + "migration_phase='VERIFY',phase_revision=2,updated_at=CURRENT_TIMESTAMP "
-                + "WHERE singleton_id=1 AND migration_phase='BACKFILL' AND phase_revision=1"));
 
         assertThrows(SkitCallbackRouteRegistryService.RegistryMigrationBlockedException.class,
                 registryService::backfillAndVerifyTenantKeys);
-        assertEquals("VERIFY", migrationPhase());
+        assertEquals("BACKFILL", migrationPhase());
         assertNotNull(jdbc().queryForObject("SELECT blocked_at FROM "
                 + "skit_ad_callback_route_registry_migration WHERE singleton_id=1",
                 java.sql.Timestamp.class));
