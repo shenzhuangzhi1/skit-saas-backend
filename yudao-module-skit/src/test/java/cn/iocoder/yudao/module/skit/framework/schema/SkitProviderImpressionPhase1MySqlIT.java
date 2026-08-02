@@ -3,8 +3,10 @@ package cn.iocoder.yudao.module.skit.framework.schema;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
@@ -116,20 +118,47 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                 "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='VERIFY',"
                         + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
 
+        TransactionTemplate blockedProbe = new TransactionTemplate(
+                new DataSourceTransactionManager(dataSource()));
+        blockedProbe.executeWithoutResult(status -> {
+            assertEquals(1, jdbc().update(
+                    "UPDATE `skit_ad_callback_route_registry_migration` "
+                            + "SET `migration_phase`='BACKFILL',"
+                            + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+            assertEquals(1, jdbc().update(
+                    "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                            + "`blocked_reason_hash`=UNHEX(REPEAT('11',32)),"
+                            + "`blocked_at`=CURRENT_TIMESTAMP,`phase_revision`=`phase_revision`+1 "
+                            + "WHERE `singleton_id`=1"));
+            assertThrows(DataAccessException.class, () -> jdbc().update(
+                    "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='VERIFY',"
+                            + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+            assertThrows(DataAccessException.class, () -> jdbc().update(
+                    "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                            + "`blocked_reason_hash`=NULL,`blocked_at`=NULL,"
+                            + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+            assertThrows(DataAccessException.class, () -> jdbc().update(
+                    "UPDATE `skit_ad_callback_route_registry_migration` SET "
+                            + "`blocked_reason_hash`=UNHEX(REPEAT('22',32)),"
+                            + "`blocked_at`=DATE_ADD(`blocked_at`,INTERVAL 1 SECOND),"
+                            + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
+            assertEquals(repeat("11", 32), jdbc().queryForObject(
+                    "SELECT HEX(`blocked_reason_hash`) FROM "
+                            + "`skit_ad_callback_route_registry_migration` WHERE `singleton_id`=1",
+                    String.class).toLowerCase());
+            assertNotNull(jdbc().queryForObject(
+                    "SELECT `blocked_at` FROM `skit_ad_callback_route_registry_migration` "
+                            + "WHERE `singleton_id`=1", Timestamp.class));
+            status.setRollbackOnly();
+        });
+        assertEquals(1, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM `skit_ad_callback_route_registry_migration` "
+                        + "WHERE `singleton_id`=1 AND `migration_phase`='DUAL_WRITE' "
+                        + "AND `phase_revision`=0 AND `blocked_reason_hash` IS NULL "
+                        + "AND `blocked_at` IS NULL", Integer.class));
+
         assertEquals(1, jdbc().update(
                 "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='BACKFILL',"
-                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
-        assertEquals(1, jdbc().update(
-                "UPDATE `skit_ad_callback_route_registry_migration` SET "
-                        + "`blocked_reason_hash`=UNHEX(REPEAT('11',32)),"
-                        + "`blocked_at`=CURRENT_TIMESTAMP,`phase_revision`=`phase_revision`+1 "
-                        + "WHERE `singleton_id`=1"));
-        assertThrows(DataAccessException.class, () -> jdbc().update(
-                "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='VERIFY',"
-                        + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
-        assertEquals(1, jdbc().update(
-                "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='BACKFILL',"
-                        + "`blocked_reason_hash`=NULL,`blocked_at`=NULL,"
                         + "`phase_revision`=`phase_revision`+1 WHERE `singleton_id`=1"));
         assertEquals(1, jdbc().update(
                 "UPDATE `skit_ad_callback_route_registry_migration` SET `migration_phase`='VERIFY',"
@@ -551,6 +580,14 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
         return jdbc().queryForObject("SELECT `ACTION_STATEMENT` FROM information_schema.TRIGGERS "
                         + "WHERE `TRIGGER_SCHEMA`=DATABASE() AND `TRIGGER_NAME`=?",
                 String.class, trigger);
+    }
+
+    private static String repeat(String value, int count) {
+        StringBuilder result = new StringBuilder(value.length() * count);
+        for (int i = 0; i < count; i++) {
+            result.append(value);
+        }
+        return result.toString();
     }
 
 }

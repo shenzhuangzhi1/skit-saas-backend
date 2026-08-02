@@ -197,6 +197,32 @@ class SkitProviderImpressionPhase1SchemaContractTest {
         assertTrue(standalone.contains("-- Skit 阶段 1 全局 provider callback capture 表（7 张）"));
     }
 
+    @Test
+    void canonicalMigrationStateMatchesJavaTableAndTriggerExactly() throws Exception {
+        List<SkitProviderImpressionPhase1Schema.Step> steps =
+                SkitProviderImpressionPhase1Schema.steps();
+        String migrationTable = tableSql(steps,
+                "skit_ad_callback_route_registry_migration");
+        SkitProviderImpressionPhase1Schema.Step trigger = steps.stream()
+                .filter(step -> "trg_callback_route_registry_migration_monotonic"
+                        .equals(step.getName()))
+                .findFirst().orElseThrow(() -> new AssertionError("missing migration trigger"));
+        String canonical = canonicalBlock(
+                repositoryRoot().resolve("sql/mysql/skit-saas.sql"));
+
+        assertContains(trigger.getAction(),
+                "OLD.`blocked_at` IS NOT NULL AND NOT ("
+                        + "NEW.`blocked_at` <=> OLD.`blocked_at` AND "
+                        + "NEW.`blocked_reason_hash` <=> OLD.`blocked_reason_hash`)");
+        assertTrue(canonical.contains(migrationTable + "$$"),
+                "canonical migration table must exactly match the Java migration table");
+        String canonicalTrigger = "CREATE TRIGGER `" + trigger.getName() + "` BEFORE "
+                + trigger.getEvent() + " ON `" + trigger.getTable() + "` FOR EACH ROW "
+                + trigger.getAction() + "$$";
+        assertTrue(canonical.contains(canonicalTrigger),
+                "canonical migration trigger must exactly match the Java trigger action");
+    }
+
     private static SkitSchemaInitializer.Migration migration(int version) throws Exception {
         SkitSchemaInitializer initializer = new SkitSchemaInitializer(mock(JdbcTemplate.class));
         Field field = SkitSchemaInitializer.class.getDeclaredField("migrations");

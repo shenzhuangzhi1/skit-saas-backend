@@ -50,7 +50,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -73,6 +75,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -95,6 +98,7 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
     private SkitAdAccountMapper accountMapper;
     private SkitAdCallbackKeyMapper callbackKeyMapper;
     private SkitAdRewardSecretVersionMapper rewardSecretMapper;
+    private PlatformTransactionManager transactionManager;
     private String providerRawKey;
 
     @BeforeAll
@@ -109,6 +113,7 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
         accountMapper = context.getBean(SkitAdAccountMapper.class);
         callbackKeyMapper = context.getBean(SkitAdCallbackKeyMapper.class);
         rewardSecretMapper = context.getBean(SkitAdRewardSecretVersionMapper.class);
+        transactionManager = context.getBean(PlatformTransactionManager.class);
     }
 
     @AfterEach
@@ -311,6 +316,68 @@ class SkitCallbackRouteRegistryMySqlIT extends SkitMySqlIntegrationTestBase {
             migrationExecutor.shutdownNow();
             mutationExecutor.shutdownNow();
         }
+    }
+
+    @Test
+    @Order(3)
+    void suspendedOuterMutationCannotAuthorizeRequiresNewRegistryCommit() {
+        long tenantId = 9301L;
+        long accountId = 9302L;
+        insertAccount(tenantId, accountId, "TOKEN_SUSPEND");
+        TenantContextHolder.setTenantId(tenantId);
+
+        String innerRawKey = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(sequence(157));
+        byte[] innerHash = sha256(innerRawKey);
+        insertLegacyCallbackKey(tenantId, accountId, 1, innerRawKey, false, null);
+        SkitAdCallbackKeyDO innerCandidate = callbackKeyMapper.selectByHash(innerHash);
+        assertNotNull(innerCandidate);
+        SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration innerRegistration =
+                SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration.fromLegacy(
+                        innerCandidate, LocalDateTime.now().withNano(0));
+
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+        TransactionTemplate requiresNew = new TransactionTemplate(transactionManager);
+        requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        AtomicLong rolledBackLegacyId = new AtomicLong();
+        byte[] outerHash = sha256("outer-transaction-callback-key");
+
+        outer.executeWithoutResult(status -> {
+            SkitCallbackRouteRegistryService.TenantKeyMutation mutation =
+                    registryService.beginTenantKeyMutation(tenantId, accountId);
+            SkitAdCallbackKeyDO outerLegacy = new SkitAdCallbackKeyDO()
+                    .setAdAccountId(accountId).setKeyVersion(2)
+                    .setCallbackKeyHash(outerHash).setActive(true);
+            outerLegacy.setTenantId(tenantId);
+            assertEquals(1, callbackKeyMapper.insert(outerLegacy));
+            assertNotNull(outerLegacy.getId());
+            rolledBackLegacyId.set(outerLegacy.getId());
+
+            assertThrows(IllegalStateException.class, () -> requiresNew.executeWithoutResult(
+                    innerStatus -> registryService.registerTenantKey(mutation, innerRegistration)));
+            assertEquals(0, jdbc().queryForObject(
+                    "SELECT COUNT(*) FROM `skit_ad_callback_route_registry` "
+                            + "WHERE `tenant_callback_key_id`=?", Integer.class,
+                    innerCandidate.getId()));
+
+            registryService.registerTenantKey(mutation,
+                    SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration.fromLegacy(
+                            outerLegacy, LocalDateTime.now().withNano(0)));
+            assertEquals(1, jdbc().queryForObject(
+                    "SELECT COUNT(*) FROM `skit_ad_callback_route_registry` "
+                            + "WHERE `tenant_callback_key_id`=?", Integer.class,
+                    outerLegacy.getId()));
+            status.setRollbackOnly();
+        });
+
+        assertTrue(rolledBackLegacyId.get() > 0L);
+        assertEquals(0, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM `skit_ad_callback_key` WHERE `id`=?",
+                Integer.class, rolledBackLegacyId.get()));
+        assertEquals(0, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM `skit_ad_callback_route_registry` "
+                        + "WHERE `tenant_callback_key_id` IN (?,?)", Integer.class,
+                innerCandidate.getId(), rolledBackLegacyId.get()));
     }
 
     private void assertTenantRegistryOwner(String rawKey, long tenantId,

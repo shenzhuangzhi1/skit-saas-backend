@@ -220,15 +220,15 @@ public class SkitCallbackRouteRegistryService {
         });
         TenantKeyMutation mutation = new TenantKeyMutation(this, tenantId, adAccountId);
         TransactionSynchronizationManager.bindResource(tenantMutationResourceKey, mutation);
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCompletion(int status) {
-                mutation.active = false;
-                if (TransactionSynchronizationManager.getResource(tenantMutationResourceKey) == mutation) {
-                    TransactionSynchronizationManager.unbindResource(tenantMutationResourceKey);
-                }
+        try {
+            TransactionSynchronizationManager.registerSynchronization(mutation.synchronization);
+        } catch (RuntimeException | Error registrationFailure) {
+            mutation.active = false;
+            if (TransactionSynchronizationManager.getResource(tenantMutationResourceKey) == mutation) {
+                TransactionSynchronizationManager.unbindResource(tenantMutationResourceKey);
             }
-        });
+            throw registrationFailure;
+        }
         return mutation;
     }
 
@@ -686,10 +686,23 @@ public class SkitCallbackRouteRegistryService {
 
     private void requireMutation(TenantKeyMutation mutation) {
         if (mutation == null || mutation.owner != this || !mutation.active
+                || mutation.suspended
                 || !TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()
+                || !hasCurrentSynchronization(mutation.synchronization)
                 || TransactionSynchronizationManager.getResource(tenantMutationResourceKey) != mutation) {
             throw new IllegalStateException("Tenant callback-key mutation gate is unavailable");
         }
+    }
+
+    private static boolean hasCurrentSynchronization(TransactionSynchronization expected) {
+        for (TransactionSynchronization current
+                : TransactionSynchronizationManager.getSynchronizations()) {
+            if (current == expected) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void requireLookupArguments(byte[] keyHash, LocalDateTime receivedAt) {
@@ -816,18 +829,70 @@ public class SkitCallbackRouteRegistryService {
         private final SkitCallbackRouteRegistryService owner;
         private final long tenantId;
         private final long adAccountId;
+        private final TransactionSynchronization synchronization;
         private volatile boolean active = true;
+        private volatile boolean suspended;
 
         private TenantKeyMutation(SkitCallbackRouteRegistryService owner,
                                   long tenantId, long adAccountId) {
             this.owner = owner;
             this.tenantId = tenantId;
             this.adAccountId = adAccountId;
+            this.synchronization = new TenantKeyMutationSynchronization(
+                    owner.tenantMutationResourceKey, this);
         }
 
         @Override
         public String toString() {
             return "TenantKeyMutation{tenantId=" + tenantId + ", adAccountId=" + adAccountId + '}';
+        }
+    }
+
+    private static final class TenantKeyMutationSynchronization
+            implements TransactionSynchronization {
+
+        private final Object resourceKey;
+        private final TenantKeyMutation mutation;
+
+        private TenantKeyMutationSynchronization(Object resourceKey,
+                                                  TenantKeyMutation mutation) {
+            this.resourceKey = resourceKey;
+            this.mutation = mutation;
+        }
+
+        @Override
+        public void suspend() {
+            if (!mutation.active || mutation.suspended
+                    || !TransactionSynchronizationManager.isSynchronizationActive()
+                    || !hasCurrentSynchronization(this)
+                    || TransactionSynchronizationManager.getResource(resourceKey) != mutation) {
+                throw new IllegalStateException(
+                        "Tenant callback-key mutation gate cannot be suspended");
+            }
+            TransactionSynchronizationManager.unbindResource(resourceKey);
+            mutation.suspended = true;
+        }
+
+        @Override
+        public void resume() {
+            if (!mutation.active || !mutation.suspended
+                    || !TransactionSynchronizationManager.isActualTransactionActive()
+                    || !TransactionSynchronizationManager.isSynchronizationActive()
+                    || TransactionSynchronizationManager.hasResource(resourceKey)) {
+                throw new IllegalStateException(
+                        "Tenant callback-key mutation gate cannot be resumed");
+            }
+            TransactionSynchronizationManager.bindResource(resourceKey, mutation);
+            mutation.suspended = false;
+        }
+
+        @Override
+        public void afterCompletion(int status) {
+            mutation.active = false;
+            mutation.suspended = false;
+            if (TransactionSynchronizationManager.getResource(resourceKey) == mutation) {
+                TransactionSynchronizationManager.unbindResource(resourceKey);
+            }
         }
     }
 
