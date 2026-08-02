@@ -55,3 +55,4 @@ deploy/local.env
 .DS_Store
 **/.DS_Store
 outputs/
+.worktrees/
