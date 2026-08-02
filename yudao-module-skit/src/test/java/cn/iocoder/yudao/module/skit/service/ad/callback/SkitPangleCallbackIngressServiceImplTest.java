@@ -63,6 +63,7 @@ class SkitPangleCallbackIngressServiceImplTest {
             LocalDateTime.of(2026, 7, 14, 23, 20);
 
     private SkitCallbackRoutingService routingService;
+    private SkitCallbackRouteRegistryService registryService;
     private SkitAdCredentialVersionService credentialService;
     private SkitAdSessionTokenService tokenService;
     private SkitAdSessionMapper sessionMapper;
@@ -77,7 +78,8 @@ class SkitPangleCallbackIngressServiceImplTest {
     @BeforeEach
     void setUp() {
         credentialService = mock(SkitAdCredentialVersionService.class);
-        routingService = new SkitCallbackRoutingService(credentialService);
+        registryService = mock(SkitCallbackRouteRegistryService.class);
+        routingService = new SkitCallbackRoutingService(registryService);
         tokenService = new SkitHmacAdSessionTokenService(1, Collections.singletonMap(1,
                 "0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.US_ASCII)));
         customData = tokenService.issue("pangle-ingress-session").consumeCustomData();
@@ -92,8 +94,8 @@ class SkitPangleCallbackIngressServiceImplTest {
                 credentialService, tokenService, sessionMapper, attestationMapper,
                 inboxWakeService, rateLimiter, clock);
 
-        when(credentialService.resolveCallbackKey(CALLBACK_KEY, RECEIVED_AT))
-                .thenReturn(new SkitAdCredentialVersionService.CallbackKeyResolution(
+        when(registryService.lookupTenantReward(any(byte[].class), eq(RECEIVED_AT)))
+                .thenReturn(SkitCallbackRouteRegistryService.RouteLookup.tenant(
                         TENANT_ID, TAKU_ACCOUNT_ID, 4, true, null));
         session = session();
         when(sessionMapper.selectByTokenHashForUpdate(
@@ -333,8 +335,8 @@ class SkitPangleCallbackIngressServiceImplTest {
 
     @Test
     void unknownCallbackKeyIsFalseWithoutSessionLookup() {
-        when(credentialService.resolveCallbackKey(CALLBACK_KEY, RECEIVED_AT))
-                .thenThrow(new SkitAdCredentialVersionService.CredentialUnavailableException());
+        when(registryService.lookupTenantReward(any(byte[].class), eq(RECEIVED_AT)))
+                .thenThrow(new SkitCallbackRouteRegistryService.CallbackRouteRejectedException());
 
         assertFalse(service.receiveReward(CALLBACK_KEY,
                 signedQuery("transaction-9", USER_ID, "coins", "1"), "203.0.113.8"));

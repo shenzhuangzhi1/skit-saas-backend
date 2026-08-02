@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdRewardSecretVersionMapper
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoService;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAesGcmCredentialCryptoService;
 import cn.iocoder.yudao.module.skit.integration.SkitMySqlIntegrationTestBase;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRouteRegistryService;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -250,6 +251,7 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
         doReturn(0).when(failingRewardMapper).selectMaxVersion(tenantId, accountId);
         SkitAdCredentialVersionServiceImpl service = new SkitAdCredentialVersionServiceImpl(
                 accountMapper(), callbackMapper(), failingRewardMapper, cryptoService(),
+                mock(SkitCallbackRouteRegistryService.class),
                 Clock.systemUTC(), new SecureRandom());
         assertThrows(RuntimeException.class, () -> inTransaction(() -> service.rotateRewardSecret(
                 tenantId, accountId, "replacement-secret".getBytes(StandardCharsets.UTF_8),
@@ -296,7 +298,7 @@ class SkitAdCredentialVersionMySqlIT extends SkitMySqlIntegrationTestBase {
 
     private SkitAdCredentialVersionServiceImpl service(SecureRandom random) {
         return new SkitAdCredentialVersionServiceImpl(accountMapper(), callbackMapper(), rewardMapper(),
-                cryptoService(), Clock.systemUTC(), random);
+                cryptoService(), mock(SkitCallbackRouteRegistryService.class), Clock.systemUTC(), random);
     }
 
     private SkitAdCredentialCryptoService cryptoService() {

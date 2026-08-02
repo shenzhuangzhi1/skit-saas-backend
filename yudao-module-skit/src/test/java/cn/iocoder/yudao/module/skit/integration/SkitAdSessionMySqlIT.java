@@ -2081,7 +2081,15 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         @Bean
         SkitCallbackRoutingService callbackRoutingService(
                 SkitAdCredentialVersionService credentialService) {
-            return new SkitCallbackRoutingService(credentialService);
+            SkitCallbackRoutingService routingService = mock(SkitCallbackRoutingService.class);
+            when(routingService.resolve(any(String.class), any(LocalDateTime.class))).thenAnswer(invocation -> {
+                SkitAdCredentialVersionService.CallbackKeyResolution resolved =
+                        credentialService.resolveCallbackKey(invocation.getArgument(0), invocation.getArgument(1));
+                return new SkitCallbackRoutingService.CallbackRoute(resolved.getTenantId(),
+                        resolved.getAdAccountId(), resolved.getVersion(), resolved.isActive(),
+                        resolved.getAcceptUntil());
+            });
+            return routingService;
         }
 
         @Bean
@@ -2171,6 +2179,11 @@ class SkitAdSessionMySqlIT extends SkitMySqlIntegrationTestBase {
         @Override
         public CallbackKeyIssue rotateCallbackKey(long tenantId, long adAccountId,
                                                   Duration priorAcceptanceWindow) {
+            throw unsupported();
+        }
+
+        @Override
+        public boolean revokeAllCallbackKeys(long tenantId, long adAccountId) {
             throw unsupported();
         }
 

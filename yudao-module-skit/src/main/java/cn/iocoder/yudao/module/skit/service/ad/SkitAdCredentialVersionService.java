@@ -15,6 +15,9 @@ public interface SkitAdCredentialVersionService {
 
     CallbackKeyIssue rotateCallbackKey(long tenantId, long adAccountId, Duration priorAcceptanceWindow);
 
+    /** Immediately revokes every active or retired-but-still-accepted tenant callback key. */
+    boolean revokeAllCallbackKeys(long tenantId, long adAccountId);
+
     CredentialMetadata rotateRewardSecret(long tenantId, long adAccountId, byte[] rewardSecret,
                                           Duration priorAcceptanceWindow);
 

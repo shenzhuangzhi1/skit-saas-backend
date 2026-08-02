@@ -1,6 +1,5 @@
 package cn.iocoder.yudao.module.skit.service.ad.callback;
 
-import cn.iocoder.yudao.module.skit.service.ad.SkitAdCredentialVersionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -14,21 +13,23 @@ import static org.mockito.Mockito.when;
 
 class SkitCallbackRoutingServiceTest {
 
-    private SkitAdCredentialVersionService credentialService;
+    private SkitCallbackRouteRegistryService registryService;
     private SkitCallbackRoutingService routingService;
 
     @BeforeEach
     void setUp() {
-        credentialService = mock(SkitAdCredentialVersionService.class);
-        routingService = new SkitCallbackRoutingService(credentialService);
+        registryService = mock(SkitCallbackRouteRegistryService.class);
+        routingService = new SkitCallbackRoutingService(registryService);
     }
 
     @Test
     void derivesExactlyOneImmutableTenantRouteWithoutRetainingRawKey() {
         String rawKey = repeat('A', 43);
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 14, 23, 10);
-        when(credentialService.resolveCallbackKey(rawKey, receivedAt)).thenReturn(
-                new SkitAdCredentialVersionService.CallbackKeyResolution(
+        when(registryService.lookupTenantReward(
+                org.mockito.ArgumentMatchers.any(byte[].class),
+                org.mockito.ArgumentMatchers.eq(receivedAt))).thenReturn(
+                SkitCallbackRouteRegistryService.RouteLookup.tenant(
                         17L, 29L, 4, false, receivedAt.plusMinutes(5)));
 
         SkitCallbackRoutingService.CallbackRoute route = routingService.resolve(rawKey, receivedAt);
@@ -43,8 +44,10 @@ class SkitCallbackRoutingServiceTest {
     void rejectsCrossBoundaryOrMalformedCredentialResolution() {
         String rawKey = repeat('B', 43);
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 14, 23, 10);
-        when(credentialService.resolveCallbackKey(rawKey, receivedAt)).thenReturn(
-                new SkitAdCredentialVersionService.CallbackKeyResolution(
+        when(registryService.lookupTenantReward(
+                org.mockito.ArgumentMatchers.any(byte[].class),
+                org.mockito.ArgumentMatchers.eq(receivedAt))).thenReturn(
+                SkitCallbackRouteRegistryService.RouteLookup.tenant(
                         0L, 29L, 4, true, null));
 
         assertThrows(IllegalStateException.class,

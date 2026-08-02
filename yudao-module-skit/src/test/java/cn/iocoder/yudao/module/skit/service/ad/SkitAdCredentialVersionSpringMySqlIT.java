@@ -13,6 +13,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdRewardSecretVersionMapper
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoService;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAesGcmCredentialCryptoService;
 import cn.iocoder.yudao.module.skit.integration.SkitMySqlIntegrationTestBase;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRouteRegistryService;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
@@ -295,7 +296,8 @@ class SkitAdCredentialVersionSpringMySqlIT extends SkitMySqlIntegrationTestBase 
                 SkitAdRewardSecretVersionMapper rewardSecretMapper,
                 SkitAdCredentialCryptoService cryptoService) {
             return new SkitAdCredentialVersionServiceImpl(accountMapper, callbackKeyMapper,
-                    rewardSecretMapper, cryptoService);
+                    rewardSecretMapper, cryptoService,
+                    org.mockito.Mockito.mock(SkitCallbackRouteRegistryService.class));
         }
     }
 

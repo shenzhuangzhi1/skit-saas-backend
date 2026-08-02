@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackKeyMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdRewardSecretVersionMapper;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRouteRegistryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -35,6 +36,7 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
     private final SkitAdCallbackKeyMapper callbackKeyMapper;
     private final SkitAdRewardSecretVersionMapper rewardSecretMapper;
     private final SkitAdCredentialCryptoService cryptoService;
+    private final SkitCallbackRouteRegistryService callbackRouteRegistryService;
     private final Clock clock;
     private final SecureRandom secureRandom;
 
@@ -42,20 +44,25 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
     public SkitAdCredentialVersionServiceImpl(SkitAdAccountMapper accountMapper,
                                               SkitAdCallbackKeyMapper callbackKeyMapper,
                                               SkitAdRewardSecretVersionMapper rewardSecretMapper,
-                                              SkitAdCredentialCryptoService cryptoService) {
+                                              SkitAdCredentialCryptoService cryptoService,
+                                              SkitCallbackRouteRegistryService callbackRouteRegistryService) {
         this(accountMapper, callbackKeyMapper, rewardSecretMapper, cryptoService,
+                callbackRouteRegistryService,
                 Clock.systemDefaultZone(), new SecureRandom());
     }
 
-    SkitAdCredentialVersionServiceImpl(SkitAdAccountMapper accountMapper,
-                                       SkitAdCallbackKeyMapper callbackKeyMapper,
-                                       SkitAdRewardSecretVersionMapper rewardSecretMapper,
-                                       SkitAdCredentialCryptoService cryptoService,
-                                       Clock clock, SecureRandom secureRandom) {
+    public SkitAdCredentialVersionServiceImpl(SkitAdAccountMapper accountMapper,
+                                              SkitAdCallbackKeyMapper callbackKeyMapper,
+                                              SkitAdRewardSecretVersionMapper rewardSecretMapper,
+                                              SkitAdCredentialCryptoService cryptoService,
+                                              SkitCallbackRouteRegistryService callbackRouteRegistryService,
+                                              Clock clock, SecureRandom secureRandom) {
         this.accountMapper = Objects.requireNonNull(accountMapper, "accountMapper");
         this.callbackKeyMapper = Objects.requireNonNull(callbackKeyMapper, "callbackKeyMapper");
         this.rewardSecretMapper = Objects.requireNonNull(rewardSecretMapper, "rewardSecretMapper");
         this.cryptoService = Objects.requireNonNull(cryptoService, "cryptoService");
+        this.callbackRouteRegistryService = Objects.requireNonNull(
+                callbackRouteRegistryService, "callbackRouteRegistryService");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.secureRandom = Objects.requireNonNull(secureRandom, "secureRandom");
     }
@@ -88,16 +95,18 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
             secureRandom.nextBytes(randomBytes);
             String callbackKey = Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
             Arrays.fill(randomBytes, (byte) 0);
+            if (callbackKey.startsWith("acct_")) {
+                continue;
+            }
+            byte[] keyHash = sha256(callbackKey);
             SkitAdCallbackKeyDO row = new SkitAdCallbackKeyDO()
                     .setAdAccountId(adAccountId).setKeyVersion(nextVersion)
-                    .setCallbackKeyHash(sha256(callbackKey)).setActive(true);
+                    .setCallbackKeyHash(keyHash).setActive(true);
             row.setTenantId(tenantId);
             try {
                 if (callbackKeyMapper.insert(row) != 1) {
                     throw new IllegalStateException("Callback credential version was not inserted");
                 }
-                return new CallbackKeyIssue(tenantId, adAccountId, nextVersion,
-                        rotationTime, callbackKey);
             } catch (DuplicateKeyException collision) {
                 // Account locking and the monotonic version make the global hash the only retryable unique key.
                 // Generate unrelated material without looking up or exposing the colliding tenant row.
@@ -105,9 +114,39 @@ public class SkitAdCredentialVersionServiceImpl implements SkitAdCredentialVersi
                     throw new IllegalStateException("Could not allocate a globally unique callback credential",
                             collision);
                 }
+                continue;
             }
+            callbackRouteRegistryService.registerTenantKey(
+                    new SkitCallbackRouteRegistryService.TenantCallbackKeyRegistration(
+                            row.getId() == null ? 0L : row.getId(), keyHash,
+                            tenantId, adAccountId, nextVersion, rotationTime, null));
+            return new CallbackKeyIssue(tenantId, adAccountId, nextVersion,
+                    rotationTime, callbackKey);
         }
         throw new IllegalStateException("Could not allocate a globally unique callback credential");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean revokeAllCallbackKeys(long tenantId, long adAccountId) {
+        validateScope(tenantId, adAccountId);
+        AtomicReference<Boolean> revoked = new AtomicReference<>(Boolean.FALSE);
+        TenantUtils.execute(tenantId, () -> revoked.set(
+                revokeAllCallbackKeysInsideTenant(tenantId, adAccountId)));
+        return Boolean.TRUE.equals(revoked.get());
+    }
+
+    private boolean revokeAllCallbackKeysInsideTenant(long tenantId, long adAccountId) {
+        lockAccount(tenantId, adAccountId);
+        LocalDateTime revokedAt = now();
+        int changed = callbackKeyMapper.revokeAllUnrevokedVersions(
+                tenantId, adAccountId, revokedAt);
+        if (changed < 0) {
+            throw new IllegalStateException("Callback credential revocation count is invalid");
+        }
+        callbackRouteRegistryService.tombstoneRevokedTenantKeys(
+                tenantId, adAccountId, revokedAt, changed);
+        return changed > 0;
     }
 
     @Override

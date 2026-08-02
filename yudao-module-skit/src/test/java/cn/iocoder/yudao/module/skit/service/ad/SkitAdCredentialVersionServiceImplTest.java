@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoServi
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoConfiguration;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAdCredentialCryptoProperties;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitAesGcmCredentialCryptoService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRouteRegistryService;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,6 +82,8 @@ class SkitAdCredentialVersionServiceImplTest {
     private SkitAdCallbackKeyMapper callbackKeyMapper;
     @Mock
     private SkitAdRewardSecretVersionMapper rewardSecretMapper;
+    @Mock
+    private SkitCallbackRouteRegistryService callbackRouteRegistryService;
 
     private Clock clock;
     private SkitAdCredentialCryptoService crypto;
@@ -202,6 +205,26 @@ class SkitAdCredentialVersionServiceImplTest {
         verify(callbackKeyMapper, times(2)).insert(any(SkitAdCallbackKeyDO.class));
         verify(callbackKeyMapper, never()).selectByHash(any(byte[].class));
         verify(callbackKeyMapper).retireActiveVersion(anyLong(), anyLong(), anyLong(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void tenantCallbackGenerationReservesTheAcctPrefixForProviderRoutes() {
+        String reservedRaw = "acct_" + repeat('A', 38);
+        byte[] reserved = Base64.getUrlDecoder().decode(reservedRaw);
+        byte[] tenantMaterial = sequence(64);
+        SkitAdCredentialVersionServiceImpl service = service(
+                new SequenceSecureRandom(reserved, tenantMaterial));
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(callbackKeyMapper.selectMaxVersion(TENANT_ID, ACCOUNT_ID)).thenReturn(0);
+        when(callbackKeyMapper.selectActiveForUpdate(TENANT_ID, ACCOUNT_ID)).thenReturn(null);
+        when(callbackKeyMapper.insert(any(SkitAdCallbackKeyDO.class))).thenReturn(1);
+
+        String issued = service.rotateCallbackKey(
+                TENANT_ID, ACCOUNT_ID, Duration.ZERO).consumeCallbackKey();
+
+        assertFalse(issued.startsWith("acct_"));
+        assertEquals(Base64.getUrlEncoder().withoutPadding().encodeToString(tenantMaterial), issued);
+        verify(callbackKeyMapper).insert(any(SkitAdCallbackKeyDO.class));
     }
 
     @Test
@@ -388,6 +411,24 @@ class SkitAdCredentialVersionServiceImplTest {
         order.verify(accountMapper).lockByTenantAndId(TENANT_ID, ACCOUNT_ID);
         order.verify(rewardSecretMapper).revokeAllUnrevokedVersions(
                 TENANT_ID, ACCOUNT_ID, revokedAt);
+    }
+
+    @Test
+    void explicitCallbackKeyRevocationTombstonesEveryUnrevokedRegistryOwner() {
+        SkitAdCredentialVersionServiceImpl service = service(new SequenceSecureRandom());
+        LocalDateTime revokedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        when(accountMapper.lockByTenantAndId(TENANT_ID, ACCOUNT_ID)).thenReturn(ACCOUNT_ID);
+        when(callbackKeyMapper.revokeAllUnrevokedVersions(
+                TENANT_ID, ACCOUNT_ID, revokedAt)).thenReturn(2);
+
+        assertTrue(service.revokeAllCallbackKeys(TENANT_ID, ACCOUNT_ID));
+
+        InOrder order = inOrder(accountMapper, callbackKeyMapper, callbackRouteRegistryService);
+        order.verify(accountMapper).lockByTenantAndId(TENANT_ID, ACCOUNT_ID);
+        order.verify(callbackKeyMapper).revokeAllUnrevokedVersions(
+                TENANT_ID, ACCOUNT_ID, revokedAt);
+        order.verify(callbackRouteRegistryService).tombstoneRevokedTenantKeys(
+                TENANT_ID, ACCOUNT_ID, revokedAt, 2);
     }
 
     @Test
@@ -606,7 +647,7 @@ class SkitAdCredentialVersionServiceImplTest {
                                                         SkitAdCredentialCryptoService suppliedCrypto,
                                                         Clock suppliedClock) {
         return new SkitAdCredentialVersionServiceImpl(accountMapper, callbackKeyMapper, rewardSecretMapper,
-                suppliedCrypto, suppliedClock, random);
+                suppliedCrypto, callbackRouteRegistryService, suppliedClock, random);
     }
 
     private static SkitAdCallbackKeyDO callbackRow(int version, boolean active) {
@@ -668,6 +709,12 @@ class SkitAdCredentialVersionServiceImplTest {
             result[index] = (byte) (start + index);
         }
         return result;
+    }
+
+    private static String repeat(char value, int count) {
+        char[] result = new char[count];
+        Arrays.fill(result, value);
+        return new String(result);
     }
 
     private static final class SequenceSecureRandom extends SecureRandom {
