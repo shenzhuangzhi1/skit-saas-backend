@@ -8,6 +8,9 @@ import cn.iocoder.yudao.framework.common.exception.ErrorCode;
 public interface ErrorCodeConstants {
 
     ErrorCode PLATFORM_ADMIN_REQUIRED = new ErrorCode(1_030_001_000, "仅平台超级管理员可执行该操作");
+    ErrorCode PROVIDER_CURRENT_PASSWORD_INVALID = new ErrorCode(1_030_001_005, "当前密码校验失败");
+    ErrorCode PROVIDER_COMMAND_INVALID = new ErrorCode(1_030_001_006, "平台广告账号命令不合法");
+    ErrorCode PROVIDER_RESOURCE_NOT_FOUND = new ErrorCode(1_030_001_007, "平台广告账号资源不存在");
     ErrorCode AGENT_NOT_EXISTS = new ErrorCode(1_030_001_001, "代理商不存在");
     ErrorCode AGENT_CODE_EXISTS = new ErrorCode(1_030_001_002, "代理商编码已存在");
     ErrorCode AGENT_ARCHIVED = new ErrorCode(1_030_001_003, "代理商已归档，请先恢复后再启用");
