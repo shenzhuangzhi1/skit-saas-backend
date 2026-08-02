@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.skit.service.provider;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -16,6 +17,7 @@ import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdProviderConnectionM
 import cn.iocoder.yudao.module.skit.service.ad.SkitCallbackPublicUrlService;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRouteRegistryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Field;
 import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -90,40 +92,7 @@ class SkitProviderConnectionServiceTest {
 
   @Test
   void issueWithoutTransactionSynchronizationFailsClosedBeforeReturningUrl() {
-    SkitAdProviderConnectionMapper connectionMapper = mock(SkitAdProviderConnectionMapper.class);
-    SkitAdProviderCallbackRouteMapper routeMapper = mock(SkitAdProviderCallbackRouteMapper.class);
-    SkitCallbackRouteRegistryService registryService = mock(SkitCallbackRouteRegistryService.class);
-    SkitAdProviderConnectionDO connection =
-        new SkitAdProviderConnectionDO().setId(1L).setState("CONFIGURING");
-    SkitAdProviderCallbackRouteDO route =
-        new SkitAdProviderCallbackRouteDO()
-            .setId(2L)
-            .setProviderConnectionId(1L)
-            .setState("DRAFT")
-            .setPurpose(SkitProviderConnectionService.RoutePurpose.GATE_TEST.name());
-    when(routeMapper.selectById(2L)).thenReturn(route);
-    when(routeMapper.selectByIdForUpdate(2L)).thenReturn(route);
-    when(connectionMapper.selectByIdForUpdate(1L)).thenReturn(connection);
-    when(registryService.registerProviderRoute(any())).thenReturn(3L);
-    when(routeMapper.issueCas(
-            anyLong(),
-            anyLong(),
-            any(String.class),
-            any(String.class),
-            anyInt(),
-            anyInt(),
-            any(byte[].class),
-            any(byte[].class),
-            anyLong(),
-            any(java.time.LocalDateTime.class)))
-        .thenReturn(1);
-    SkitProviderConnectionServiceImpl service =
-        new SkitProviderConnectionServiceImpl(
-            connectionMapper,
-            routeMapper,
-            registryService,
-            new SkitCallbackPublicUrlService("https://callback.example.test/app-api"),
-            new DefaultSkitProviderImpressionProductionGate());
+    SkitProviderConnectionServiceImpl service = issuableService();
 
     assertThrows(
         IllegalStateException.class,
@@ -131,41 +100,8 @@ class SkitProviderConnectionServiceTest {
   }
 
   @Test
-  void rollbackCompletionDestroysAnIssuedUrlBeforeItCanBeConsumed() throws Exception {
-    SkitAdProviderConnectionMapper connectionMapper = mock(SkitAdProviderConnectionMapper.class);
-    SkitAdProviderCallbackRouteMapper routeMapper = mock(SkitAdProviderCallbackRouteMapper.class);
-    SkitCallbackRouteRegistryService registryService = mock(SkitCallbackRouteRegistryService.class);
-    SkitAdProviderConnectionDO connection =
-        new SkitAdProviderConnectionDO().setId(1L).setState("CONFIGURING");
-    SkitAdProviderCallbackRouteDO route =
-        new SkitAdProviderCallbackRouteDO()
-            .setId(2L)
-            .setProviderConnectionId(1L)
-            .setState("DRAFT")
-            .setPurpose(SkitProviderConnectionService.RoutePurpose.GATE_TEST.name());
-    when(routeMapper.selectById(2L)).thenReturn(route);
-    when(routeMapper.selectByIdForUpdate(2L)).thenReturn(route);
-    when(connectionMapper.selectByIdForUpdate(1L)).thenReturn(connection);
-    when(registryService.registerProviderRoute(any())).thenReturn(3L);
-    when(routeMapper.issueCas(
-            anyLong(),
-            anyLong(),
-            any(String.class),
-            any(String.class),
-            anyInt(),
-            anyInt(),
-            any(byte[].class),
-            any(byte[].class),
-            anyLong(),
-            any(java.time.LocalDateTime.class)))
-        .thenReturn(1);
-    SkitProviderConnectionServiceImpl service =
-        new SkitProviderConnectionServiceImpl(
-            connectionMapper,
-            routeMapper,
-            registryService,
-            new SkitCallbackPublicUrlService("https://callback.example.test/app-api"),
-            new DefaultSkitProviderImpressionProductionGate());
+  void precommitConsumptionIsRejectedAndRollbackDestroysTheRetainedUrl() throws Exception {
+    SkitProviderConnectionServiceImpl service = issuableService();
 
     TransactionSynchronizationManager.initSynchronization();
     try {
@@ -180,11 +116,103 @@ class SkitProviderConnectionServiceTest {
                   method ->
                       method.getName().startsWith("get")
                           && method.getName().toLowerCase().contains("url")));
-      TransactionSynchronizationManager.getSynchronizations()
-          .forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
+      assertThrows(IllegalStateException.class, issued::consumeCallbackUrl);
+      char[] retainedUrl = retainedUrlBuffer(issued);
+      assertFalse(isCleared(retainedUrl));
+
+      completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+      assertTrue(isCleared(retainedUrl));
       assertThrows(IllegalStateException.class, issued::consumeCallbackUrl);
     } finally {
       TransactionSynchronizationManager.clearSynchronization();
     }
+  }
+
+  @Test
+  void commitCompletionAllowsExactlyOneCallbackUrlConsumption() {
+    SkitProviderConnectionServiceImpl service = issuableService();
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      SkitProviderConnectionService.IssuedRoute issued =
+          service.issueOnce(new SkitProviderConnectionService.IssueRouteCommand(2L, 7L));
+      assertThrows(IllegalStateException.class, issued::consumeCallbackUrl);
+
+      completeTransaction(TransactionSynchronization.STATUS_COMMITTED);
+
+      char[] url = issued.consumeCallbackUrl();
+      try {
+        assertFalse(isCleared(url));
+      } finally {
+        Arrays.fill(url, '\0');
+      }
+      assertThrows(IllegalStateException.class, issued::consumeCallbackUrl);
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+  }
+
+  private static SkitProviderConnectionServiceImpl issuableService() {
+    SkitAdProviderConnectionMapper connectionMapper = mock(SkitAdProviderConnectionMapper.class);
+    SkitAdProviderCallbackRouteMapper routeMapper = mock(SkitAdProviderCallbackRouteMapper.class);
+    SkitCallbackRouteRegistryService registryService = mock(SkitCallbackRouteRegistryService.class);
+    SkitAdProviderConnectionDO connection =
+        new SkitAdProviderConnectionDO().setId(1L).setState("CONFIGURING");
+    SkitAdProviderCallbackRouteDO route =
+        new SkitAdProviderCallbackRouteDO()
+            .setId(2L)
+            .setProviderConnectionId(1L)
+            .setState("DRAFT")
+            .setPurpose(SkitProviderConnectionService.RoutePurpose.GATE_TEST.name());
+    when(routeMapper.selectById(2L)).thenReturn(route);
+    when(routeMapper.selectByIdForUpdate(2L)).thenReturn(route);
+    when(connectionMapper.selectByIdForUpdate(1L)).thenReturn(connection);
+    when(registryService.registerProviderRoute(any())).thenReturn(3L);
+    when(routeMapper.issueCas(
+            anyLong(),
+            anyLong(),
+            any(String.class),
+            any(String.class),
+            anyInt(),
+            anyInt(),
+            any(byte[].class),
+            any(byte[].class),
+            anyLong(),
+            any(java.time.LocalDateTime.class)))
+        .thenReturn(1);
+    SkitProviderConnectionServiceImpl service =
+        new SkitProviderConnectionServiceImpl(
+            connectionMapper,
+            routeMapper,
+            registryService,
+            new SkitCallbackPublicUrlService("https://callback.example.test/app-api"),
+            new DefaultSkitProviderImpressionProductionGate());
+    return service;
+  }
+
+  private static void completeTransaction(int status) {
+    if (status == TransactionSynchronization.STATUS_COMMITTED) {
+      TransactionSynchronizationManager.getSynchronizations()
+          .forEach(TransactionSynchronization::afterCommit);
+    }
+    TransactionSynchronizationManager.getSynchronizations()
+        .forEach(synchronization -> synchronization.afterCompletion(status));
+  }
+
+  private static char[] retainedUrlBuffer(SkitProviderConnectionService.IssuedRoute issued)
+      throws ReflectiveOperationException {
+    Field url = issued.getClass().getDeclaredField("url");
+    url.setAccessible(true);
+    return (char[]) url.get(issued);
+  }
+
+  private static boolean isCleared(char[] value) {
+    for (char character : value) {
+      if (character != '\0') {
+        return false;
+      }
+    }
+    return true;
   }
 }

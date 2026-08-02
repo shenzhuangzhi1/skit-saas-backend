@@ -501,6 +501,11 @@ public class SkitProviderConnectionServiceImpl implements SkitProviderConnection
     TransactionSynchronizationManager.registerSynchronization(
         new TransactionSynchronization() {
           @Override
+          public void afterCommit() {
+            issued.markCommitted();
+          }
+
+          @Override
           public void afterCompletion(int status) {
             if (status != STATUS_COMMITTED) {
               issued.destroy();
@@ -513,6 +518,7 @@ public class SkitProviderConnectionServiceImpl implements SkitProviderConnection
     private final long routeId;
     private final String fingerprint;
     private char[] url;
+    private boolean committed;
 
     private OneTimeIssuedRoute(long id, String fp, char[] url) {
       routeId = id;
@@ -521,13 +527,21 @@ public class SkitProviderConnectionServiceImpl implements SkitProviderConnection
     }
 
     public synchronized char[] consumeCallbackUrl() {
+      if (!committed) {
+        throw new IllegalStateException("Callback URL is unavailable before transaction commit");
+      }
       if (url == null) throw new IllegalStateException("Callback URL has already been consumed");
       char[] result = url;
       url = null;
       return result;
     }
 
+    synchronized void markCommitted() {
+      committed = true;
+    }
+
     synchronized void destroy() {
+      committed = false;
       if (url != null) {
         Arrays.fill(url, '\0');
         url = null;
