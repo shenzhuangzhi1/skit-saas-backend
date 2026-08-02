@@ -13,6 +13,7 @@ backend_log_file=""
 portable_lock_dir=""
 server_env_file="${SERVER_ENV_FILE:-}"
 cleanup_server_env=0
+production_gate_file=""
 
 cleanup() {
   exit_code=$?
@@ -28,6 +29,9 @@ cleanup() {
   fi
   if [ "${cleanup_server_env}" = "1" ] && [ -n "${server_env_file}" ]; then
     rm -f "${server_env_file}"
+  fi
+  if [ -n "${production_gate_file}" ]; then
+    rm -f "${production_gate_file}"
   fi
   if [ -n "${portable_lock_dir}" ]; then
     rmdir "${portable_lock_dir}" >/dev/null 2>&1 || true
@@ -100,6 +104,13 @@ persisted_credential_key=""
 persisted_credential_key_id=""
 persisted_session_token_key=""
 persisted_session_token_key_version=""
+persisted_provider_callback_payload_key=""
+persisted_provider_callback_payload_key_id=""
+persisted_provider_callback_audit_hmac_key=""
+invoked_gate_environment_fingerprint="${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT:-}"
+invoked_gate_operations_public_key="${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY:-}"
+invoked_gate_manifest_base64="${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64:-}"
+invoked_gate_signature="${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE:-}"
 set -a
 if [ -f .env ]; then
   # shellcheck disable=SC1091
@@ -108,7 +119,14 @@ if [ -f .env ]; then
   persisted_credential_key_id="${SKIT_AD_CREDENTIAL_KEY_ID:-}"
   persisted_session_token_key="${SKIT_AD_SESSION_TOKEN_KEY:-}"
   persisted_session_token_key_version="${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-}"
+  persisted_provider_callback_payload_key="${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY:-}"
+  persisted_provider_callback_payload_key_id="${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:-}"
+  persisted_provider_callback_audit_hmac_key="${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY:-}"
 fi
+SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT="${invoked_gate_environment_fingerprint}"
+SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY="${invoked_gate_operations_public_key}"
+SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64="${invoked_gate_manifest_base64}"
+SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE="${invoked_gate_signature}"
 if [ -e "${server_env_file}" ] || [ -L "${server_env_file}" ]; then
   if [ -L "${server_env_file}" ] || [ ! -f "${server_env_file}" ]; then
     echo "The uploaded server environment must be a regular file."
@@ -134,6 +152,13 @@ fi
 if [ -n "${persisted_session_token_key}" ]; then
   SKIT_AD_SESSION_TOKEN_KEY="${persisted_session_token_key}"
   SKIT_AD_SESSION_TOKEN_KEY_VERSION="${persisted_session_token_key_version:-1}"
+fi
+if [ -n "${persisted_provider_callback_payload_key}" ]; then
+  SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY="${persisted_provider_callback_payload_key}"
+  SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID="${persisted_provider_callback_payload_key_id:-primary}"
+fi
+if [ -n "${persisted_provider_callback_audit_hmac_key}" ]; then
+  SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY="${persisted_provider_callback_audit_hmac_key}"
 fi
 upsert_env() {
   key="$1"
@@ -368,6 +393,78 @@ if [[ ! "${SKIT_AD_CREDENTIAL_KEY_ID}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
   exit 1
 fi
 
+# Provider callback wire payloads and their audit fingerprints have independent custody from every
+# existing advertising/API key. Persisted .env values win so routine releases never rotate them.
+SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID="${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:-primary}"
+if [[ ! "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+  echo "SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID must contain 1 to 64 safe identifier characters."
+  exit 1
+fi
+if [ -z "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY:-}" ]; then
+  if command -v openssl >/dev/null 2>&1; then
+    SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY="$(openssl rand -hex 16)"
+  else
+    SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+fi
+case "${#SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY}" in
+  16|24|32) ;;
+  *)
+    echo "SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY must contain exactly 16, 24, or 32 single-byte characters."
+    exit 1
+    ;;
+esac
+if [[ ! "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+  echo "SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY contains unsafe characters for server-side environment persistence."
+  exit 1
+fi
+
+if [ -z "${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY:-}" ]; then
+  if command -v openssl >/dev/null 2>&1; then
+    SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY="$(openssl rand -hex 32)"
+  else
+    SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+fi
+if [ "${#SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY}" -lt 32 ] \
+   || [ "${#SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY}" -gt 128 ]; then
+  echo "SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY must contain 32 to 128 single-byte characters."
+  exit 1
+fi
+if [[ ! "${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+  echo "SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY contains unsafe characters for server-side environment persistence."
+  exit 1
+fi
+
+assert_independent_key_material() {
+  key_names=(
+    SKIT_AD_ENCRYPTION_KEY
+    SKIT_AD_CREDENTIAL_KEY
+    SKIT_AD_SESSION_TOKEN_KEY
+    SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY
+    SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY
+    YUDAO_API_ENCRYPT_REQUEST_KEY
+    YUDAO_API_ENCRYPT_RESPONSE_KEY
+  )
+  left_index=0
+  while [ "${left_index}" -lt "${#key_names[@]}" ]; do
+    left_name="${key_names[${left_index}]}"
+    left_value="${!left_name}"
+    right_index=$((left_index + 1))
+    while [ "${right_index}" -lt "${#key_names[@]}" ]; do
+      right_name="${key_names[${right_index}]}"
+      right_value="${!right_name}"
+      if [ -n "${left_value}" ] && [ "${left_value}" = "${right_value}" ]; then
+        echo "${left_name} and ${right_name} must use independent key material."
+        exit 1
+      fi
+      right_index=$((right_index + 1))
+    done
+    left_index=$((left_index + 1))
+  done
+}
+assert_independent_key_material
+
 # Callback templates use one explicit deployment origin. Never infer it from an incoming Host or
 # X-Forwarded-* header. A localhost HTTP default keeps first-time offline activation possible, but
 # readiness deliberately blocks ENFORCED until the operator supplies an HTTPS public origin.
@@ -396,6 +493,8 @@ case "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" in
 esac
 
 validate_retained_keyring() {
+  # Operations retains provider payload entries for at least seven days after rotation; this
+  # validator accepts only explicit bounded key ids/material and never performs implicit expiry.
   file="$1"
   seen_file="$(mktemp)"
   valid=1
@@ -448,6 +547,23 @@ validate_retained_keyring() {
           break
         fi
         ;;
+      skit.ad.provider-callback-payload-encryption.keys.*)
+        retained_provider_id="${property_name#skit.ad.provider-callback-payload-encryption.keys.}"
+        if [[ ! "${retained_provider_id}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] ||
+           [[ ! "${property_value}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+          valid=0
+          break
+        fi
+        case "${#property_value}" in
+          16|24|32) ;;
+          *) valid=0; break ;;
+        esac
+        if [ "${retained_provider_id}" = "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID}" ] &&
+           [ "${property_value}" != "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY}" ]; then
+          valid=0
+          break
+        fi
+        ;;
       *)
         valid=0
         break
@@ -472,6 +588,105 @@ decode_retained_keyring() {
   fi
   echo "SKIT_AD_RETAINED_KEYRING_BASE64 is not valid base64."
   return 1
+}
+
+decode_canonical_gate_base64() {
+  encoded="$1"
+  destination="$2"
+  minimum_bytes="$3"
+  maximum_bytes="$4"
+  if [[ ! "${encoded}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] ||
+     [ $(( ${#encoded} % 4 )) -ne 0 ]; then
+    return 1
+  fi
+  if ! printf '%s' "${encoded}" | base64 --decode > "${destination}" 2>/dev/null &&
+     ! printf '%s' "${encoded}" | base64 -D > "${destination}" 2>/dev/null; then
+    return 1
+  fi
+  decoded_size="$(LC_ALL=C wc -c < "${destination}" | tr -d '[:space:]')"
+  if [ "${decoded_size}" -lt "${minimum_bytes}" ] ||
+     [ "${decoded_size}" -gt "${maximum_bytes}" ]; then
+    return 1
+  fi
+  canonical_value="$(base64 < "${destination}" | tr -d '\r\n')"
+  [ "${canonical_value}" = "${encoded}" ]
+}
+
+prepare_provider_impression_gate_runtime_config() {
+  runtime_secrets_dir="runtime-secrets"
+  production_gate_file="${runtime_secrets_dir}/provider-impression-production-gate.properties"
+  if [ -L "${runtime_secrets_dir}" ] ||
+     { [ -e "${runtime_secrets_dir}" ] && [ ! -d "${runtime_secrets_dir}" ]; }; then
+    echo "Provider impression runtime secrets path must be a regular directory."
+    return 1
+  fi
+  install -d -m 0700 "${runtime_secrets_dir}"
+  chmod 700 "${runtime_secrets_dir}"
+  rm -f "${production_gate_file}"
+
+  gate_values=(
+    "${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT:-}"
+    "${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY:-}"
+    "${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64:-}"
+    "${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE:-}"
+  )
+  configured_gate_values=0
+  for gate_value in "${gate_values[@]}"; do
+    if [ -n "${gate_value}" ]; then
+      configured_gate_values=$((configured_gate_values + 1))
+    fi
+  done
+  if [ "${configured_gate_values}" -eq 0 ]; then
+    return
+  fi
+  if [ "${configured_gate_values}" -ne "${#gate_values[@]}" ]; then
+    echo "Provider impression production gate evidence must be supplied as one complete set."
+    return 1
+  fi
+  if [[ ! "${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Provider impression production gate environment fingerprint is invalid."
+    return 1
+  fi
+
+  decoded_public_key="$(mktemp)"
+  decoded_manifest="$(mktemp)"
+  decoded_signature="$(mktemp)"
+  if ! decode_canonical_gate_base64 \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY}" "${decoded_public_key}" 256 1024 ||
+     ! decode_canonical_gate_base64 \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64}" "${decoded_manifest}" 1 8192 ||
+     ! decode_canonical_gate_base64 \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE}" "${decoded_signature}" 256 1024; then
+    rm -f "${decoded_public_key}" "${decoded_manifest}" "${decoded_signature}"
+    echo "Provider impression production gate evidence is not bounded canonical base64."
+    return 1
+  fi
+  last_manifest_byte="$(tail -c 1 "${decoded_manifest}" | od -An -tu1 | tr -d '[:space:]')"
+  if [ "${last_manifest_byte}" != "10" ] ||
+     ! od -An -tu1 "${decoded_manifest}" | awk '
+       { for (field_index = 1; field_index <= NF; field_index++) {
+           if ($field_index != 10 && ($field_index < 33 || $field_index > 126)) exit 1
+         }
+       }'; then
+    rm -f "${decoded_public_key}" "${decoded_manifest}" "${decoded_signature}"
+    echo "Provider impression production gate manifest is not canonical ASCII text."
+    return 1
+  fi
+  rm -f "${decoded_public_key}" "${decoded_manifest}" "${decoded_signature}"
+
+  staged_gate_file="$(mktemp "${runtime_secrets_dir}/.provider-impression-gate.XXXXXX")"
+  {
+    printf 'skit.ad.provider-impression-production-gate.environment-fingerprint=%s\n' \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT}"
+    printf 'skit.ad.provider-impression-production-gate.operations-public-key=%s\n' \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY}"
+    printf 'skit.ad.provider-impression-production-gate.manifest-base64=%s\n' \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64}"
+    printf 'skit.ad.provider-impression-production-gate.signature=%s\n' \
+      "${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE}"
+  } > "${staged_gate_file}"
+  chmod 600 "${staged_gate_file}"
+  mv "${staged_gate_file}" "${production_gate_file}"
 }
 
 prepare_retained_keyring() {
@@ -516,6 +731,7 @@ prepare_retained_keyring() {
 }
 
 prepare_retained_keyring
+prepare_provider_impression_gate_runtime_config
 
 upsert_env MYSQL_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD}"
 upsert_env YUDAO_API_ENCRYPT_ENABLED "${YUDAO_API_ENCRYPT_ENABLED}"
@@ -532,7 +748,17 @@ upsert_env SKIT_AD_CREDENTIAL_KEY "${SKIT_AD_CREDENTIAL_KEY}"
 upsert_env SKIT_AD_CREDENTIAL_KEY_ID "${SKIT_AD_CREDENTIAL_KEY_ID}"
 upsert_env SKIT_AD_SESSION_TOKEN_KEY "${SKIT_AD_SESSION_TOKEN_KEY}"
 upsert_env SKIT_AD_SESSION_TOKEN_KEY_VERSION "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}"
+upsert_env SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID}"
+upsert_env SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY "${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY}"
+upsert_env SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY "${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY}"
 upsert_env SKIT_AD_CALLBACK_PUBLIC_BASE_URL "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}"
+for legacy_gate_env in \
+    SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT \
+    SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY \
+    SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64 \
+    SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE; do
+  remove_env "${legacy_gate_env}"
+done
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"
@@ -679,6 +905,34 @@ fi
 compose -f docker-compose.prod.yml --env-file .env \
   up -d --no-deps --force-recreate backend
 
+write_verified_deployment_proof() {
+  expected_image="${IMAGE_NAME}:${IMAGE_TAG}"
+  running_image="$(docker_cmd inspect --format '{{.Config.Image}}' skit-saas-backend)"
+  running_revision="$(docker_cmd image inspect --format \
+    '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${expected_image}")"
+  if [ "${running_image}" != "${expected_image}" ]; then
+    echo "Running backend image does not match the requested immutable release."
+    return 1
+  fi
+  if [ "${running_revision}" != "${IMAGE_TAG}" ]; then
+    echo "Running backend image revision label does not match the requested release."
+    return 1
+  fi
+  proof_file="backend-deployment-proof.env"
+  staged_proof="$(mktemp .backend-deployment-proof.XXXXXX)"
+  {
+    printf 'status=ACTIVATED\n'
+    printf 'release_id=%s\n' "${RELEASE_ID:-local}"
+    printf 'image=%s\n' "${expected_image}"
+    printf 'revision=%s\n' "${running_revision}"
+    printf 'health=UP\n'
+    printf 'topology=single-host-single-backend\n'
+    printf 'production_route_issuance=BLOCKED_PENDING_SIGNED_HA_EVIDENCE\n'
+  } > "${staged_proof}"
+  chmod 644 "${staged_proof}"
+  mv "${staged_proof}" "${proof_file}"
+}
+
 health_url="http://127.0.0.1:${BACKEND_PORT:-48080}${BACKEND_HEALTH_PATH:-/actuator/health}"
 health_body_file="$(mktemp)"
 backend_log_file="$(mktemp)"
@@ -724,6 +978,10 @@ for _ in $(seq 1 90); do
         break
       fi
       print_network_capability_error_diagnostic
+      if ! write_verified_deployment_proof; then
+        echo "Backend health passed but immutable deployment proof failed."
+        break
+      fi
       rm -f "${health_body_file}" "${backend_log_file}"
       health_body_file=""
       backend_log_file=""

@@ -13,10 +13,20 @@ and the server pulls that image during activation. SSH only uploads Compose,
 activation scripts, and database initialization SQL.
 
 The backend host port binds to `127.0.0.1`; public API traffic must enter through the frontend
-Nginx proxy. Each Taku reward/impression callback URL contains a write-only routing key and must
-be handled as a secret. Do not paste the URL into tickets or logs. The dedicated Nginx callback
-location disables access logging while forwarding the original path and query unchanged for
-server-side signature verification.
+Nginx proxy. Taku has confirmed that impression S2S is account-level: one account uses one unified,
+long-lived callback URL, and newly added apps inherit it. It is not a per-tenant, per-app, or
+per-placement URL. Taku also confirmed that this address cannot be queried, changed, or rotated
+through Open API. Whether the shared callback reliably includes `package_name`, `placement_id`,
+and `show_custom_ext` still requires written Taku confirmation, so capture-only Phase 1 must not
+attribute tenant revenue, calculate commission, or unlock content.
+
+Every Taku reward/impression callback URL contains a write-only routing key and must be handled as
+a secret. Do not paste the URL into tickets or logs. The dedicated Nginx callback location disables
+access logging while forwarding the original path and query unchanged for server-side verification.
+One shared callback include applies a 64 KiB request-line and header ceiling, 250 ms connect/send
+timeouts, a 1 s read timeout, no upstream retry, no request body forwarding, and fixed proxy-IP
+overwrite to both Taku and Pangle routes. Callback error logs are suppressed so a request target or
+query cannot enter proxy output.
 
 The backend deliberately loads Spring profiles in the order `runtime,prod`. `runtime` contains only
 the server port, MySQL pool, Redis, clustered JDBC Quartz, and INFO logging baseline needed by the
@@ -34,8 +44,8 @@ placeholders with no real default. This includes the inactive local/dev profiles
 broker passwords, Spring Boot Admin passwords, WeChat secrets, social-login credentials, map/API
 keys, and API-encryption key pairs are no longer embedded in the production JAR. The complete
 variable list is maintained in `deploy/.env.example`. Local developers set only the variables for
-their selected profile; routine production activation continues to manage only the three current
-advertising keys and the optional retained-key file.
+their selected profile; routine production activation manages the five current advertising/capture
+keys and the optional retained-key file.
 
 ## Server prerequisites
 
@@ -87,14 +97,19 @@ Set these secrets in each repository that deploys to the server:
 - `MYSQL_ROOT_PASSWORD`: production MySQL root password.
 
 The backend activation script generates independent secure random values for the legacy
-`SKIT_AD_ENCRYPTION_KEY`, credential-envelope `SKIT_AD_CREDENTIAL_KEY`, and advertising-session
-signature `SKIT_AD_SESSION_TOKEN_KEY` on the first release. It assigns the envelope key id
+`SKIT_AD_ENCRYPTION_KEY`, credential-envelope `SKIT_AD_CREDENTIAL_KEY`, advertising-session
+signature `SKIT_AD_SESSION_TOKEN_KEY`, provider payload
+`SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY`, and provider audit
+`SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY` on the first release. It assigns the envelope key id
 `SKIT_AD_CREDENTIAL_KEY_ID=primary`, assigns the signature key version
-`SKIT_AD_SESSION_TOKEN_KEY_VERSION=1`, and stores every value in the server-side `.env`; later
+`SKIT_AD_SESSION_TOKEN_KEY_VERSION=1`, assigns provider payload key id
+`SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=primary`, and stores every value in the mode-`0600`
+server-side `.env`; later
 SaaS and App releases reuse them automatically. To use managed keys instead, inject the values
 before the first backend activation. The session signature key must contain at least 32 safe
-ASCII characters, its version must be a positive 32-bit integer, and it must not equal either
-advertising encryption key. Never rotate a key without first completing the corresponding
+ASCII characters, its version must be a positive 32-bit integer, the audit HMAC key must contain
+at least 32 random bytes, and no key may equal material used for another purpose. Never rotate a
+key without first completing the corresponding
 credential re-encryption or active-session compatibility procedure.
 
 Configure each agent tenant's base64 X.509 DER RSA public key in its App release profile. The
@@ -108,11 +123,10 @@ Set repository variable `SKIT_AD_CALLBACK_PUBLIC_BASE_URL` to the public backend
 `SKIT_PUBLIC_HTTPS_DOMAIN` after the `Provision public HTTPS` workflow completes; deployments then
 derive the same HTTPS callback origin. The workflow requires the `LETSENCRYPT_EMAIL` repository
 secret and configures the host Nginx proxy, certificate renewal reload hook, and HTTPS health check.
-Provider callback templates are built
-only from this value and never from `Host` or `X-Forwarded-*` request headers. If the variable is
-omitted, CI derives an HTTP URL from `SERVER_HOST` for initial OFF/SHADOW testing; ENFORCED remains
-blocked until the configured public URL uses HTTPS. Activation validates and persists the value,
-so routine backend releases require no callback reconfiguration.
+Provider callback templates are built only from this value and never from `Host` or
+`X-Forwarded-*` request headers. A configured deployment does not derive a callback origin from
+`SERVER_HOST`: one of the explicit public URL or HTTPS domain variables is required. Activation
+validates and persists the value, so routine backend releases require no callback reconfiguration.
 
 Routine SaaS, frontend, and App releases do not rotate this material. Backend activation persists
 the current key values and versions in the server-side `.env`, frontend activation remains
@@ -127,6 +141,7 @@ byte thereafter. The only accepted entries are:
 ```properties
 skit.ad.credential-encryption.keys.<old-key-id>=<old-aes-key>
 skit.ad.session-token.keys.<old-positive-version>=<old-hmac-key>
+skit.ad.provider-callback-payload-encryption.keys.<old-key-id>=<old-aes-key>
 ```
 
 An operator can edit that `0600` file during a controlled rotation, or seed it once by supplying a
@@ -134,6 +149,36 @@ base64-encoded properties file as `SKIT_AD_RETAINED_KEYRING_BASE64`. Supplying d
 contents after the file exists fails the release instead of silently rotating retained keys. Do not
 put the encoded value in GitHub logs or commit the decoded file. Empty keyrings are normal, so
 ordinary SaaS and App releases require no extra key-management step.
+Retain an old provider payload key for at least seven days after a controlled rotation so delayed
+capture rows remain decryptable; remove it only after the retention window and purge evidence are
+complete.
+
+The checked-in Compose stack is intentionally one host with one backend, one MySQL, and one Redis.
+It may receive proven capture-only or `GATE_TEST` traffic, but it is not production route-issuance
+evidence. `deploy/test-provider-impression-callback-gate.sh --environment ci` verifies only the
+non-secret repository fixture. The `production-equivalent` mode must keep failing with the stable
+single-host reason until operations supplies genuine, short-lived RSA-SHA256 evidence for every
+cross-failure-domain check. Missing gate configuration is startup-safe and issue/submit
+fail-closed; no boolean or profile bypass exists.
+
+When a future HA environment has all 13 required evidence checks, its short-lived canonical
+manifest is signed offline with RSA-SHA256. The operations private key must never reach this
+repository, GitHub Actions, an image, the server, a database, a log, or an API. The deployment run
+accepts only these four protected values:
+
+- `SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT`
+- `SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY` (canonical Base64 X.509 DER)
+- `SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64`
+- `SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE`
+
+They are staged in the run-scoped mode-`0600` `server.env`, consumed and unlinked before any child
+process, then written to a mode-`0600` Spring properties file under the mode-`0700`
+`runtime-secrets` directory. Compose mounts that directory read-only. Activation removes the file
+after the backend is healthy (and on every failure), and explicitly removes any legacy gate entries
+from the persistent `.env`. A later container restart therefore remains capture-startup-safe while
+production issue/submit returns the stable fail-closed denial until fresh evidence is injected.
+Every issue and submit invocation rechecks the signature, TTL, route, HTTPS origin, path/template
+versions, environment fingerprint, and deployment contract fingerprint.
 
 Activation never infers from a missing local marker that database credentials are
 legacy ciphertext, so ordinary releases and disaster recovery cannot silently clear

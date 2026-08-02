@@ -6,6 +6,7 @@ workflow="${repo_root}/.github/workflows/cicd.yml"
 activation="${repo_root}/deploy/activate-backend.sh"
 release_env_cleanup="${repo_root}/deploy/cleanup-backend-release-env.sh"
 known_hosts="${repo_root}/deploy/known_hosts"
+provider_gate="${repo_root}/deploy/test-provider-impression-callback-gate.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -124,11 +125,72 @@ fi
 grep -Fq 'yudao-module-skit,yudao-module-system,yudao-module-infra' "${workflow}" \
   || fail "focused CI does not include infrastructure security tests"
 for selector in 'Taku*Test' 'SpringUtilsTest' 'AdminServerConfigurationTest' \
-  'ApiAccessLogInterceptorTest' '*SecretRedactionTest'; do
+  'ApiAccessLogInterceptorTest' 'XssFilterCallbackExclusionTest' '*SecretRedactionTest'; do
   grep -Fq "${selector}" "${workflow}" \
     || fail "focused CI misses ${selector}"
 done
 grep -Fq './deploy/test-release-security.sh' "${workflow}" \
   || fail "backend CI does not run the release-security contract"
+
+[[ -x "${provider_gate}" ]] \
+  || fail "provider impression callback deployment gate is missing or not executable"
+bash -n "${provider_gate}" \
+  || fail "provider impression callback deployment gate has invalid shell syntax"
+if "${provider_gate}" --environment ci --draft-connection-id 42 --force >/dev/null 2>&1; then
+  fail "provider impression callback deployment gate accepts a force bypass"
+fi
+"${provider_gate}" --environment ci --draft-connection-id 42 >/dev/null \
+  || fail "repository-only signed CI fixture does not pass"
+production_gate_output="$(mktemp)"
+if "${provider_gate}" --environment production-equivalent --draft-connection-id 42 \
+    >"${production_gate_output}" 2>&1; then
+  fail "single-host production-equivalent topology incorrectly permits key issuance"
+fi
+grep -Fxq 'FAIL: required callback topology is single-host/single-backend; production key issuance is blocked' \
+  "${production_gate_output}" \
+  || fail "production-equivalent topology block reason is not stable"
+grep -Fq './deploy/test-provider-impression-callback-gate.sh' "${workflow}" \
+  && grep -Fq -- '--environment ci' "${workflow}" \
+  || fail "backend CI does not run the provider impression callback CI gate"
+grep -Fq 'production key issuance is blocked' "${workflow}" \
+  || fail "backend CI does not assert the deliberate production-equivalent issuance block"
+for gate_environment in \
+    SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT \
+    SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY \
+    SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64 \
+    SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE; do
+  grep -Fq "${gate_environment}: \${{ secrets.${gate_environment} }}" "${workflow}" \
+    || fail "backend deployment does not accept ephemeral ${gate_environment} evidence"
+  grep -Fq "printf '${gate_environment}=%q\\n'" "${workflow}" \
+    || fail "backend deployment does not stage ${gate_environment} in protected server.env"
+  if grep -Fq "upsert_env ${gate_environment}" "${activation}"; then
+    fail "backend activation persists ephemeral ${gate_environment} in .env"
+  fi
+done
+grep -Fq 'runtime_secrets_dir="runtime-secrets"' "${activation}" \
+  && grep -Fq 'provider-impression-production-gate.properties' "${activation}" \
+  || fail "backend activation does not create an ephemeral provider impression gate file"
+grep -Fq 'rm -f "${production_gate_file}"' "${activation}" \
+  || fail "backend activation does not remove ephemeral provider impression gate evidence"
+operations_private_key_name='SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_'"PRIVATE_KEY"
+if grep -Rq --exclude-dir=.git --exclude-dir=target \
+    "${operations_private_key_name}" "${repo_root}"; then
+  fail "operations private key material is exposed to the repository or deployment runtime"
+fi
+grep -Fq 'id: activate_backend' "${workflow}" \
+  || fail "backend activation does not expose an auditable step outcome"
+grep -Fq 'status=SKIPPED_NO_CONFIG' "${workflow}" \
+  || fail "backend CI does not record an explicit no-config deployment outcome"
+grep -Fq 'Deployment was configured but immutable activation proof did not complete.' "${workflow}" \
+  || fail "configured deployments may still finish green after activation is skipped"
+for immutable_proof in \
+  'status=ACTIVATED' \
+  'running backend image does not match' \
+  'org.opencontainers.image.revision' \
+  'production_route_issuance=BLOCKED_PENDING_SIGNED_HA_EVIDENCE'; do
+  if ! grep -Fiq "${immutable_proof}" "${activation}" "${workflow}"; then
+    fail "backend activation proof misses ${immutable_proof}"
+  fi
+done
 
 echo "PASS: backend release security contracts are enforced"

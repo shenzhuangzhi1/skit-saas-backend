@@ -8,6 +8,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdProviderCallbackRouteDO;
@@ -151,6 +153,50 @@ class SkitProviderConnectionServiceTest {
     } finally {
       TransactionSynchronizationManager.clearSynchronization();
     }
+  }
+
+  @Test
+  void markSubmittedRechecksTheProductionGateBeforeItsDatabaseMutation() {
+    SkitAdProviderConnectionMapper connectionMapper = mock(SkitAdProviderConnectionMapper.class);
+    SkitAdProviderCallbackRouteMapper routeMapper = mock(SkitAdProviderCallbackRouteMapper.class);
+    SkitAdProviderConnectionDO connection =
+        new SkitAdProviderConnectionDO().setId(1L).setState("CONFIGURING");
+    SkitAdProviderCallbackRouteDO route =
+        new SkitAdProviderCallbackRouteDO()
+            .setId(2L)
+            .setProviderConnectionId(1L)
+            .setState("ISSUED")
+            .setPurpose(SkitProviderConnectionService.RoutePurpose.PRODUCTION.name());
+    when(routeMapper.selectById(2L)).thenReturn(route);
+    when(routeMapper.selectByIdForUpdate(2L)).thenReturn(route);
+    when(connectionMapper.selectByIdForUpdate(1L)).thenReturn(connection);
+    SkitProviderImpressionProductionGate expiredGate =
+        (connectionId, routeId, actorId) -> {
+          throw new IllegalStateException("Production provider callback issuance is gated");
+        };
+    SkitProviderConnectionServiceImpl service =
+        new SkitProviderConnectionServiceImpl(
+            connectionMapper,
+            routeMapper,
+            mock(SkitCallbackRouteRegistryService.class),
+            new SkitCallbackPublicUrlService("https://callback.example.test/app-api"),
+            expiredGate);
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            service.markSubmitted(
+                new SkitProviderConnectionService.MarkSubmittedCommand(
+                    2L, 7L, "AM-42", "provider-reference", "taku-am@example.test")));
+
+    verify(routeMapper, never())
+        .submitCas(
+            anyLong(),
+            any(String.class),
+            any(String.class),
+            any(String.class),
+            anyLong(),
+            any(java.time.LocalDateTime.class));
   }
 
   private static SkitProviderConnectionServiceImpl issuableService() {

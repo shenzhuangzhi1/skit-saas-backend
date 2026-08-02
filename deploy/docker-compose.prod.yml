@@ -53,10 +53,11 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-48080}:48080"
     volumes:
       - ./ad-keyring.properties:/run/secrets/skit-ad-keyring.properties:ro
+      - ./runtime-secrets:/run/secrets/skit-runtime:ro
     environment:
       # runtime contains only production connectivity; prod applies the fail-closed security policy.
       SPRING_PROFILES_ACTIVE: "runtime,prod"
-      SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties"
+      SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties,optional:file:/run/secrets/skit-runtime/provider-impression-production-gate.properties"
       MYSQL_HOST: mysql
       MYSQL_SERVICE_PORT: 3306
       MYSQL_DATABASE: ${MYSQL_DATABASE:-skit_saas}
@@ -72,6 +73,9 @@ services:
       SKIT_AD_CREDENTIAL_KEY_ID: ${SKIT_AD_CREDENTIAL_KEY_ID:-primary}
       SKIT_AD_SESSION_TOKEN_KEY: ${SKIT_AD_SESSION_TOKEN_KEY:?SKIT_AD_SESSION_TOKEN_KEY is required}
       SKIT_AD_SESSION_TOKEN_KEY_VERSION: ${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-1}
+      SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:-primary}
+      SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY:?SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY is required}
+      SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY: ${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY:?SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY is required}
       SKIT_AD_CALLBACK_PUBLIC_BASE_URL: ${SKIT_AD_CALLBACK_PUBLIC_BASE_URL:?SKIT_AD_CALLBACK_PUBLIC_BASE_URL is required}
       # Only the immediate Docker reverse proxy may supply the overwritten X-Real-IP value.
       SKIT_TRUSTED_PROXY_CIDRS: ${SKIT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}

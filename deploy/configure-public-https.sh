@@ -13,46 +13,53 @@ proxy_name="skit-public-https"
 proxy_root="/opt/${proxy_name}"
 webroot="${proxy_root}/webroot"
 proxy_config="${proxy_root}/server.conf"
+callback_include="${proxy_root}/callback-proxy.inc"
+callback_request_line_and_header_bytes="65536"
+application_raw_query_bytes="32768"
+application_parameter_count="64"
+application_max_value_bytes="24576"
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "Run this script as root through the controlled deployment workflow." >&2
-  exit 1
-fi
-if [[ ! "${domain}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] \
-  || [[ "${domain}" == *..* ]]; then
-  echo "A single DNS hostname is required." >&2
-  exit 1
-fi
-if [[ ! "${email}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
-  echo "LETSENCRYPT_EMAIL must be a valid certificate contact address." >&2
-  exit 1
-fi
-if [ "${frontend_upstream}" != "127.0.0.1:${frontend_port}" ]; then
-  echo "SKIT_FRONTEND_UPSTREAM must be 127.0.0.1:${frontend_port}." >&2
-  exit 1
-fi
-if [ "${callback_upstream}" != "127.0.0.1:${backend_port}" ]; then
-  echo "SKIT_BACKEND_UPSTREAM must be 127.0.0.1:${backend_port}." >&2
-  exit 1
-fi
-if [[ ! "${deploy_path}" =~ ^/?[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$ ]] \
-  || [[ "${deploy_path}" == *".."* ]]; then
-  echo "SKIT_DEPLOY_PATH must be a safe deployment directory." >&2
-  exit 1
-fi
-if [ ! -d "${deploy_path}" ] || [ -L "${deploy_path}" ]; then
-  echo "SKIT_DEPLOY_PATH does not identify a regular deployment directory." >&2
-  exit 1
-fi
-if [[ ! "${deploy_user}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
-  || ! id "${deploy_user}" >/dev/null 2>&1; then
-  echo "SKIT_DEPLOY_USER must identify the deployment SSH user." >&2
-  exit 1
-fi
-if ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
-  echo "Docker must be available to configure public HTTPS." >&2
-  exit 1
-fi
+validate_inputs() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "Run this script as root through the controlled deployment workflow." >&2
+    exit 1
+  fi
+  if [[ ! "${domain}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] \
+    || [[ "${domain}" == *..* ]]; then
+    echo "A single DNS hostname is required." >&2
+    exit 1
+  fi
+  if [[ ! "${email}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+    echo "LETSENCRYPT_EMAIL must be a valid certificate contact address." >&2
+    exit 1
+  fi
+  if [ "${frontend_upstream}" != "127.0.0.1:${frontend_port}" ]; then
+    echo "SKIT_FRONTEND_UPSTREAM must be 127.0.0.1:${frontend_port}." >&2
+    exit 1
+  fi
+  if [ "${callback_upstream}" != "127.0.0.1:${backend_port}" ]; then
+    echo "SKIT_BACKEND_UPSTREAM must be 127.0.0.1:${backend_port}." >&2
+    exit 1
+  fi
+  if [[ ! "${deploy_path}" =~ ^/?[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$ ]] \
+    || [[ "${deploy_path}" == *".."* ]]; then
+    echo "SKIT_DEPLOY_PATH must be a safe deployment directory." >&2
+    exit 1
+  fi
+  if [ ! -d "${deploy_path}" ] || [ -L "${deploy_path}" ]; then
+    echo "SKIT_DEPLOY_PATH does not identify a regular deployment directory." >&2
+    exit 1
+  fi
+  if [[ ! "${deploy_user}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+    || ! id "${deploy_user}" >/dev/null 2>&1; then
+    echo "SKIT_DEPLOY_USER must identify the deployment SSH user." >&2
+    exit 1
+  fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
+    echo "Docker must be available to configure public HTTPS." >&2
+    exit 1
+  fi
+}
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
@@ -119,6 +126,9 @@ restore_compose_environment() {
   require_container_env skit-saas-backend SKIT_AD_CREDENTIAL_KEY_ID
   require_container_env skit-saas-backend SKIT_AD_SESSION_TOKEN_KEY
   require_container_env skit-saas-backend SKIT_AD_SESSION_TOKEN_KEY_VERSION
+  require_container_env skit-saas-backend SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID
+  require_container_env skit-saas-backend SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY
+  require_container_env skit-saas-backend SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY
   require_container_env skit-saas-backend SKIT_AD_CALLBACK_PUBLIC_BASE_URL
 }
 
@@ -132,8 +142,45 @@ acquire_deploy_lock() {
   fi
 }
 
+assert_callback_contract_limits() {
+  if [ "${callback_request_line_and_header_bytes}" != "65536" ] \
+      || [ "${application_raw_query_bytes}" != "32768" ] \
+      || [ "${application_parameter_count}" != "64" ] \
+      || [ "${application_max_value_bytes}" != "24576" ] \
+      || [ "${application_raw_query_bytes}" -ge "${callback_request_line_and_header_bytes}" ]; then
+    echo "Callback ingress limits do not match the reviewed application contract." >&2
+    exit 1
+  fi
+}
+
+write_callback_include() {
+  cat > "${callback_include}" <<EOF
+access_log off;
+error_log /dev/null crit;
+proxy_pass http://${callback_upstream};
+proxy_http_version 1.1;
+proxy_connect_timeout 250ms;
+proxy_send_timeout 250ms;
+proxy_read_timeout 1s;
+proxy_next_upstream off;
+proxy_request_buffering off;
+proxy_buffering off;
+proxy_pass_request_body off;
+proxy_set_header Content-Length "";
+proxy_set_header Host \$host;
+proxy_set_header X-Real-IP \$remote_addr;
+proxy_set_header X-Forwarded-For \$remote_addr;
+proxy_set_header X-Forwarded-Host \$host;
+proxy_set_header X-Forwarded-Proto \$scheme;
+EOF
+  chmod 644 "${callback_include}"
+}
+
 write_http_config() {
   cat > "${proxy_config}" <<EOF
+client_header_buffer_size 64k;
+large_client_header_buffers 4 64k;
+
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     '' close;
@@ -151,27 +198,11 @@ server {
     }
 
     location ^~ /app-api/skit/ad-callback/taku/ {
-        access_log off;
-        error_log /dev/null crit;
-        proxy_pass http://${callback_upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        include /etc/nginx/snippets/skit-callback-proxy.conf;
     }
 
     location ^~ /app-api/skit/ad-callback/pangle/ {
-        access_log off;
-        error_log /dev/null crit;
-        proxy_pass http://${callback_upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        include /etc/nginx/snippets/skit-callback-proxy.conf;
     }
 
     location / {
@@ -191,6 +222,9 @@ EOF
 
 write_https_config() {
   cat > "${proxy_config}" <<EOF
+client_header_buffer_size 64k;
+large_client_header_buffers 4 64k;
+
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     '' close;
@@ -208,14 +242,12 @@ server {
     }
 
     location ^~ /app-api/skit/ad-callback/taku/ {
-        access_log off;
-        error_log /dev/null crit;
+        include /etc/nginx/snippets/skit-callback-proxy.conf;
         return 308 https://\$host\$request_uri;
     }
 
     location ^~ /app-api/skit/ad-callback/pangle/ {
-        access_log off;
-        error_log /dev/null crit;
+        include /etc/nginx/snippets/skit-callback-proxy.conf;
         return 308 https://\$host\$request_uri;
     }
 
@@ -238,27 +270,11 @@ server {
     add_header Strict-Transport-Security "max-age=15552000" always;
 
     location ^~ /app-api/skit/ad-callback/taku/ {
-        access_log off;
-        error_log /dev/null crit;
-        proxy_pass http://${callback_upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Proto https;
+        include /etc/nginx/snippets/skit-callback-proxy.conf;
     }
 
     location ^~ /app-api/skit/ad-callback/pangle/ {
-        access_log off;
-        error_log /dev/null crit;
-        proxy_pass http://${callback_upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Proto https;
+        include /etc/nginx/snippets/skit-callback-proxy.conf;
     }
 
     location / {
@@ -288,77 +304,88 @@ start_proxy() {
   docker run -d --name "${proxy_name}" --network host --restart unless-stopped \
     --label "app=${proxy_name}" \
     -v "${proxy_config}:/etc/nginx/conf.d/default.conf:ro" \
+    -v "${callback_include}:/etc/nginx/snippets/skit-callback-proxy.conf:ro" \
     -v "${webroot}:/var/www/certbot:ro" \
     -v /etc/letsencrypt:/etc/letsencrypt:ro \
     nginx:1.27-alpine >/dev/null
   docker exec "${proxy_name}" nginx -t >/dev/null
 }
 
-acquire_deploy_lock
-compose_file="${deploy_path}/docker-compose.prod.yml"
-if [ ! -f "${compose_file}" ] || [ -L "${compose_file}" ]; then
-  echo "The deployed Docker Compose file is missing or unsafe." >&2
-  exit 1
-fi
-if grep -Fq '      - "${FRONTEND_PORT:-80}:80"' "${compose_file}"; then
-  sed -i 's|      - "${FRONTEND_PORT:-80}:80"|      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"|' "${compose_file}"
-elif ! grep -Fq '      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"' "${compose_file}"; then
-  echo "The deployed frontend port mapping is not recognized." >&2
-  exit 1
-fi
-restore_compose_environment
-upsert_env FRONTEND_PORT "${frontend_port}"
-
-(
-  cd "${deploy_path}"
-  compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --force-recreate frontend
-)
-frontend_ready=0
-for _ in $(seq 1 60); do
-  if curl --fail --silent --show-error "http://${frontend_upstream}/" >/dev/null; then
-    frontend_ready=1
-    break
+main() {
+  validate_inputs
+  assert_callback_contract_limits
+  acquire_deploy_lock
+  compose_file="${deploy_path}/docker-compose.prod.yml"
+  if [ ! -f "${compose_file}" ] || [ -L "${compose_file}" ]; then
+    echo "The deployed Docker Compose file is missing or unsafe." >&2
+    exit 1
   fi
-  sleep 2
-done
-if [ "${frontend_ready}" != "1" ]; then
-  echo "The loopback frontend did not become ready after the port migration." >&2
-  exit 1
-fi
+  if grep -Fq '      - "${FRONTEND_PORT:-80}:80"' "${compose_file}"; then
+    sed -i 's|      - "${FRONTEND_PORT:-80}:80"|      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"|' "${compose_file}"
+  elif ! grep -Fq '      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"' "${compose_file}"; then
+    echo "The deployed frontend port mapping is not recognized." >&2
+    exit 1
+  fi
+  restore_compose_environment
+  upsert_env FRONTEND_PORT "${frontend_port}"
 
-install -d -m 0755 "${webroot}/.well-known/acme-challenge"
-write_http_config
-start_proxy
+  (
+    cd "${deploy_path}"
+    compose -f docker-compose.prod.yml --env-file .env up -d --no-deps --force-recreate frontend
+  )
+  frontend_ready=0
+  for _ in $(seq 1 60); do
+    if curl --fail --silent --show-error "http://${frontend_upstream}/" >/dev/null; then
+      frontend_ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "${frontend_ready}" != "1" ]; then
+    echo "The loopback frontend did not become ready after the port migration." >&2
+    exit 1
+  fi
 
-docker run --rm \
-  -v "${webroot}:/var/www/certbot" \
-  -v /etc/letsencrypt:/etc/letsencrypt \
-  certbot/certbot:latest certonly --webroot --webroot-path /var/www/certbot \
-  --domain "${domain}" --email "${email}" --agree-tos --non-interactive --keep-until-expiring
+  install -d -m 0755 "${webroot}/.well-known/acme-challenge"
+  write_callback_include
+  write_http_config
+  start_proxy
 
-if [ ! -s "/etc/letsencrypt/live/${domain}/fullchain.pem" ] \
-  || [ ! -s "/etc/letsencrypt/live/${domain}/privkey.pem" ]; then
-  echo "Certificate files were not created for ${domain}." >&2
-  exit 1
-fi
+  docker run --rm \
+    -v "${webroot}:/var/www/certbot" \
+    -v /etc/letsencrypt:/etc/letsencrypt \
+    certbot/certbot:latest certonly --webroot --webroot-path /var/www/certbot \
+    --domain "${domain}" --email "${email}" --agree-tos --non-interactive --keep-until-expiring
 
-write_https_config
-docker exec "${proxy_name}" nginx -t >/dev/null
-docker exec "${proxy_name}" nginx -s reload >/dev/null
+  if [ ! -s "/etc/letsencrypt/live/${domain}/fullchain.pem" ] \
+    || [ ! -s "/etc/letsencrypt/live/${domain}/privkey.pem" ]; then
+    echo "Certificate files were not created for ${domain}." >&2
+    exit 1
+  fi
 
-cat > /etc/cron.d/skit-public-https-renew <<EOF
+  assert_callback_contract_limits
+  write_https_config
+  docker exec "${proxy_name}" nginx -t >/dev/null
+  docker exec "${proxy_name}" nginx -s reload >/dev/null
+
+  cat > /etc/cron.d/skit-public-https-renew <<EOF
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 17 3 * * * root docker run --rm -v ${webroot}:/var/www/certbot -v /etc/letsencrypt:/etc/letsencrypt certbot/certbot:latest renew --quiet && docker exec ${proxy_name} nginx -s reload >> /var/log/${proxy_name}-renew.log 2>&1
 EOF
-chmod 644 /etc/cron.d/skit-public-https-renew
+  chmod 644 /etc/cron.d/skit-public-https-renew
 
-health_code="$(curl --noproxy '*' --resolve "${domain}:443:127.0.0.1" \
-  --connect-timeout 10 --silent --show-error --output /dev/null --write-out '%{http_code}' \
-  "https://${domain}/app-api/actuator/health")"
-if [ "${health_code}" != "200" ] && [ "${health_code}" != "401" ]; then
-  echo "HTTPS proxy health check returned HTTP ${health_code}." >&2
-  exit 1
+  health_code="$(curl --noproxy '*' --resolve "${domain}:443:127.0.0.1" \
+    --connect-timeout 10 --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    "https://${domain}/app-api/actuator/health")"
+  if [ "${health_code}" != "200" ] && [ "${health_code}" != "401" ]; then
+    echo "HTTPS proxy health check returned HTTP ${health_code}." >&2
+    exit 1
+  fi
+
+  echo "HTTPS is active for ${domain}."
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
-
-echo "HTTPS is active for ${domain}."

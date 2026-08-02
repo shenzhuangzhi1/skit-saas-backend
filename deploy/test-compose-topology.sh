@@ -98,6 +98,9 @@ for required_runtime_environment in \
     'YUDAO_API_ENCRYPT_ENABLED: ${YUDAO_API_ENCRYPT_ENABLED:-false}' \
     'YUDAO_API_ENCRYPT_REQUEST_KEY: ${YUDAO_API_ENCRYPT_REQUEST_KEY:-}' \
     'YUDAO_API_ENCRYPT_RESPONSE_KEY: ${YUDAO_API_ENCRYPT_RESPONSE_KEY:-}' \
+    'SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:-primary}' \
+    'SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY:?SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY is required}' \
+    'SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY: ${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY:?SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY is required}' \
     'SKIT_TRUSTED_PROXY_CIDRS: ${SKIT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}'; do
   if ! grep -Fq -- "${required_runtime_environment}" <<<"${backend_service}"; then
     echo "FAIL: production runtime is missing ${required_runtime_environment}" >&2
@@ -259,6 +262,8 @@ assert_yaml_value "${prod_config}" "spring.boot.admin.client.enabled" "false"
 assert_yaml_value "${prod_config}" "management.endpoints.web.exposure.include" "health"
 assert_yaml_value "${prod_config}" "management.endpoint.health.show-details" "never"
 assert_yaml_value "${prod_config}" "management.endpoint.health.probes.enabled" "false"
+assert_yaml_value "${base_config}" "server.max-http-header-size" "64KB"
+assert_yaml_value "${prod_config}" "server.max-http-header-size" "64KB"
 assert_yaml_value "${prod_config}" "yudao.sms-code.begin-code" "100000"
 assert_yaml_value "${prod_config}" "yudao.sms-code.end-code" "999999"
 assert_yaml_value "${prod_config}" "yudao.wxa-code.env-version" "release"
@@ -273,6 +278,13 @@ done
 assert_yaml_value "${prod_config}" "mybatis-plus.encryptor.password" '${SKIT_AD_ENCRYPTION_KEY}'
 assert_yaml_value "${prod_config}" "skit.ad.credential-encryption.current-key" '${SKIT_AD_CREDENTIAL_KEY}'
 assert_yaml_value "${prod_config}" "skit.ad.session-token.current-key" '${SKIT_AD_SESSION_TOKEN_KEY}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-callback-payload-encryption.current-key-id" '${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:primary}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-callback-payload-encryption.current-key" '${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-callback-audit.hmac-key" '${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-impression-production-gate.environment-fingerprint" '${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT:}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-impression-production-gate.operations-public-key" '${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY:}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-impression-production-gate.manifest-base64" '${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64:}'
+assert_yaml_value "${prod_config}" "skit.ad.provider-impression-production-gate.signature" '${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE:}'
 assert_yaml_value "${prod_config}" "skit.ad.callback.public-base-url" '${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}'
 assert_yaml_value "${prod_config}" "skit.security.client-ip.trusted-proxy-cidrs" '${SKIT_TRUSTED_PROXY_CIDRS}'
 if [[ -n "$(yaml_value "${prod_config}" "skit.runtime-update.public-key")" ]] ||
@@ -282,6 +294,7 @@ if [[ -n "$(yaml_value "${prod_config}" "skit.runtime-update.public-key")" ]] ||
 fi
 assert_yaml_value "${base_config}" "skit.ad.credential-encryption.keys" "{}"
 assert_yaml_value "${base_config}" "skit.ad.session-token.keys" "{}"
+assert_yaml_value "${base_config}" "skit.ad.provider-callback-payload-encryption.keys" "{}"
 literal_secret_entries="$(for config_file in "${repo_root}"/yudao-server/src/main/resources/application*.yaml; do
   awk -v file="${config_file#"${repo_root}/"}" '
     {
@@ -317,18 +330,23 @@ if grep -Eq '^[[:space:]]+keys:[[:space:]]*' "${prod_config}"; then
   echo "FAIL: prod overlay must not reset externally supplied retained advertising key maps" >&2
   exit 1
 fi
-if ! grep -Fq 'SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties"' \
+if ! grep -Fq 'SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties,optional:file:/run/secrets/skit-runtime/provider-impression-production-gate.properties"' \
     <<<"${backend_service}" ||
    ! grep -Fq './ad-keyring.properties:/run/secrets/skit-ad-keyring.properties:ro' \
+    <<<"${backend_service}" ||
+   ! grep -Fq './runtime-secrets:/run/secrets/skit-runtime:ro' \
     <<<"${backend_service}"; then
-  echo "FAIL: retained advertising keys need an optional read-only 0600 keyring import" >&2
+  echo "FAIL: retained keys and ephemeral gate evidence need optional read-only imports" >&2
   exit 1
 fi
 
 MYSQL_ROOT_PASSWORD=test SKIT_AD_ENCRYPTION_KEY=test-only-key-000000000000000001 \
   SKIT_AD_CREDENTIAL_KEY=test-only-credential-key-0000001 SKIT_AD_CREDENTIAL_KEY_ID=primary \
   SKIT_AD_SESSION_TOKEN_KEY=test-only-session-token-key-00001 SKIT_AD_SESSION_TOKEN_KEY_VERSION=1 \
+  SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=primary \
+  SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=abcdef0123456789abcdef0123456789 \
+  SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
   SKIT_AD_CALLBACK_PUBLIC_BASE_URL=http://127.0.0.1/app-api \
   SKIT_TRUSTED_PROXY_CIDRS=172.31.240.30/32 \
   docker compose -f "${compose_file}" config >/dev/null
-echo "PASS: frontend topology is independent and backend ingress is proxy-only"
+echo "PASS: frontend topology is independent and backend ingress is proxy-only; this single host is not HA issuance evidence"

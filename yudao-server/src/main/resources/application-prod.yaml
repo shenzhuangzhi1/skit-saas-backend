@@ -29,6 +29,10 @@ springdoc:
   swagger-ui:
     enabled: false
 
+server:
+  # Keep Tomcat's request-target/header ceiling aligned with the public Nginx edge.
+  max-http-header-size: 64KB
+
 knife4j:
   enable: false
 
@@ -69,3 +73,14 @@ skit:
     session-token:
       current-key-version: ${SKIT_AD_SESSION_TOKEN_KEY_VERSION:1}
       current-key: ${SKIT_AD_SESSION_TOKEN_KEY}
+    provider-callback-payload-encryption:
+      current-key-id: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:primary}
+      current-key: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY}
+    provider-callback-audit:
+      hmac-key: ${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY}
+    # Missing signed operations evidence must not block capture startup; issue/submit remains denied.
+    provider-impression-production-gate:
+      environment-fingerprint: ${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT:}
+      operations-public-key: ${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY:}
+      manifest-base64: ${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64:}
+      signature: ${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE:}

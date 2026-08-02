@@ -25,6 +25,14 @@ if [[ "$*" == *"mysql-in-container"* && "$*" != *" -e "* ]]; then
   : > "${STUB_QUARTZ_STATE_FILE}"
   exit 0
 fi
+if [[ "$*" == *"inspect --format {{.Config.Image}}"* ]]; then
+  printf '%s:%s\n' "${IMAGE_NAME}" "${IMAGE_TAG}"
+  exit 0
+fi
+if [[ "$*" == *"image inspect --format"*"org.opencontainers.image.revision"* ]]; then
+  printf '%s\n' "${IMAGE_TAG}"
+  exit 0
+fi
 if [[ "$*" == *"inspect --format"* ]]; then
   printf '%s\n' "${BACKEND_INSPECT_STATE:-0 running}"
   exit 0

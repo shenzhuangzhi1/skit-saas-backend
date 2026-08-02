@@ -43,7 +43,8 @@ with socket.socket() as sock:
 PY
 }
 
-mkdir -p "${temp_root}/mysql/init"
+mkdir -p "${temp_root}/mysql/init" "${temp_root}/runtime-secrets"
+chmod 700 "${temp_root}/runtime-secrets"
 # Production uses fixed container names; remove them in the isolated smoke project so a developer's
 # local stack cannot be replaced or inspected accidentally.
 awk '$1 != "container_name:" && $1 != "name:" { print }' \
@@ -60,6 +61,8 @@ root_password="smoke-${RANDOM}-${RANDOM}-${RANDOM}"
 legacy_key="$(printf 'a%.0s' {1..32})"
 credential_key="$(printf 'b%.0s' {1..32})"
 session_key="$(printf 'c%.0s' {1..48})"
+provider_payload_key="$(printf 'd%.0s' {1..32})"
+provider_audit_hmac_key="$(printf 'e%.0s' {1..64})"
 {
   printf 'MYSQL_ROOT_PASSWORD=%s\n' "${root_password}"
   printf 'MYSQL_DATABASE=skit_saas\n'
@@ -74,6 +77,9 @@ session_key="$(printf 'c%.0s' {1..48})"
   printf 'SKIT_AD_CREDENTIAL_KEY_ID=smoke\n'
   printf 'SKIT_AD_SESSION_TOKEN_KEY=%s\n' "${session_key}"
   printf 'SKIT_AD_SESSION_TOKEN_KEY_VERSION=1\n'
+  printf 'SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=smoke-provider\n'
+  printf 'SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=%s\n' "${provider_payload_key}"
+  printf 'SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=%s\n' "${provider_audit_hmac_key}"
   printf 'SKIT_AD_CALLBACK_PUBLIC_BASE_URL=http://localhost:%s/app-api\n' "${backend_port}"
   printf 'SKIT_TRUSTED_PROXY_CIDRS=172.16.0.0/12\n'
   printf 'JAVA_OPTS=-Xms256m -Xmx512m -Djava.security.egd=file:/dev/./urandom\n'

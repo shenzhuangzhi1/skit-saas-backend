@@ -31,12 +31,34 @@ for argument in "$@"; do
     exit 99
   fi
 done
+if [[ -n "${EXPECTED_RUNTIME_GATE_FILE:-}" && "$*" != "version" ]]; then
+  if [[ ! -f "${EXPECTED_RUNTIME_GATE_FILE}" || -L "${EXPECTED_RUNTIME_GATE_FILE}" ]]; then
+    echo "FAIL: ephemeral provider impression gate file is absent during activation" >&2
+    exit 96
+  fi
+  if stat -c '%a' "${EXPECTED_RUNTIME_GATE_FILE}" >/dev/null 2>&1; then
+    gate_mode="$(stat -c '%a' "${EXPECTED_RUNTIME_GATE_FILE}")"
+  else
+    gate_mode="$(stat -f '%Lp' "${EXPECTED_RUNTIME_GATE_FILE}")"
+  fi
+  if [[ "${gate_mode}" != "600" ]] ||
+     ! grep -Fqx \
+       "skit.ad.provider-impression-production-gate.environment-fingerprint=${EXPECTED_GATE_ENVIRONMENT_FINGERPRINT}" \
+       "${EXPECTED_RUNTIME_GATE_FILE}"; then
+    echo "FAIL: ephemeral provider impression gate file is unsafe or incomplete" >&2
+    exit 95
+  fi
+fi
 printf '%q ' "$@" >> "${STUB_LOG}"
 printf '\n' >> "${STUB_LOG}"
 if [[ "$*" == *"information_schema.TABLES"* ]]; then
   printf '11:79:11\n'
 fi
-if [[ "$*" == *"inspect --format"* ]]; then
+if [[ "$*" == *"inspect --format {{.Config.Image}}"* ]]; then
+  printf '%s:%s\n' "${IMAGE_NAME}" "${IMAGE_TAG}"
+elif [[ "$*" == *"image inspect --format"*"org.opencontainers.image.revision"* ]]; then
+  printf '%s\n' "${IMAGE_TAG}"
+elif [[ "$*" == *"inspect --format"* ]]; then
   printf '0 running\n'
 fi
 exit 0
@@ -74,11 +96,27 @@ run_activation() {
 }
 
 run_activation first
+deployment_proof="${deploy_path}/backend-deployment-proof.env"
+for expected_proof_line in \
+    'status=ACTIVATED' \
+    'image=example/backend:first' \
+    'revision=first' \
+    'health=UP' \
+    'topology=single-host-single-backend' \
+    'production_route_issuance=BLOCKED_PENDING_SIGNED_HA_EVIDENCE'; do
+  if ! grep -Fxq "${expected_proof_line}" "${deployment_proof}"; then
+    echo "FAIL: activation proof is missing ${expected_proof_line}" >&2
+    exit 1
+  fi
+done
 first_key="$(sed -n 's/^SKIT_AD_ENCRYPTION_KEY=//p' "${deploy_path}/.env")"
 first_credential_key="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY=//p' "${deploy_path}/.env")"
 first_credential_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_path}/.env")"
 first_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
 first_session_token_key_version="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY_VERSION=//p' "${deploy_path}/.env")"
+first_provider_payload_key="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=//p' "${deploy_path}/.env")"
+first_provider_payload_key_id="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=//p' "${deploy_path}/.env")"
+first_provider_audit_hmac_key="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=//p' "${deploy_path}/.env")"
 first_callback_public_base_url="$(sed -n 's/^SKIT_AD_CALLBACK_PUBLIC_BASE_URL=//p' "${deploy_path}/.env")"
 first_api_encrypt_enabled="$(sed -n 's/^YUDAO_API_ENCRYPT_ENABLED=//p' "${deploy_path}/.env")"
 if [[ "${#first_key}" -ne 32 ]]; then
@@ -109,6 +147,27 @@ if [[ "${first_session_token_key}" == "${first_key}" ||
 fi
 if [[ "${first_session_token_key_version}" != "1" ]]; then
   echo "FAIL: first activation did not persist the default positive session-token key version" >&2
+  exit 1
+fi
+if [[ "${#first_provider_payload_key}" -ne 32 ||
+      "${first_provider_payload_key_id}" != "primary" ]]; then
+  echo "FAIL: first activation did not persist a valid provider payload key and stable key id" >&2
+  exit 1
+fi
+if [[ "${#first_provider_audit_hmac_key}" -lt 32 ||
+      ! "${first_provider_audit_hmac_key}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
+  echo "FAIL: first activation did not persist a safe provider audit HMAC key" >&2
+  exit 1
+fi
+for existing_key in "${first_key}" "${first_credential_key}" "${first_session_token_key}"; do
+  if [[ "${first_provider_payload_key}" == "${existing_key}" ||
+        "${first_provider_audit_hmac_key}" == "${existing_key}" ]]; then
+    echo "FAIL: provider callback keys reused existing advertising key material" >&2
+    exit 1
+  fi
+done
+if [[ "${first_provider_payload_key}" == "${first_provider_audit_hmac_key}" ]]; then
+  echo "FAIL: provider payload and audit HMAC keys must be independent" >&2
   exit 1
 fi
 if [[ "${first_callback_public_base_url}" != "http://localhost:48080/app-api" ]]; then
@@ -164,6 +223,9 @@ second_credential_key="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY=//p' "${deploy_path}/
 second_credential_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_path}/.env")"
 second_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
 second_session_token_key_version="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY_VERSION=//p' "${deploy_path}/.env")"
+second_provider_payload_key="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=//p' "${deploy_path}/.env")"
+second_provider_payload_key_id="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=//p' "${deploy_path}/.env")"
+second_provider_audit_hmac_key="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=//p' "${deploy_path}/.env")"
 second_clear_count="$(grep -c 'UPDATE\\ skit_ad_account\\ SET\\ app_key' "${stub_log}" || true)"
 if [[ "${second_key}" != "${first_key}" ]]; then
   echo "FAIL: subsequent activation rotated the persisted AES key" >&2
@@ -179,6 +241,12 @@ if [[ "${second_session_token_key}" != "${first_session_token_key}" ||
   echo "FAIL: subsequent activation rotated the persisted session-token key or version" >&2
   exit 1
 fi
+if [[ "${second_provider_payload_key}" != "${first_provider_payload_key}" ||
+      "${second_provider_payload_key_id}" != "${first_provider_payload_key_id}" ||
+      "${second_provider_audit_hmac_key}" != "${first_provider_audit_hmac_key}" ]]; then
+  echo "FAIL: subsequent activation rotated provider callback key material" >&2
+  exit 1
+fi
 if [[ "${second_clear_count}" -ne 0 ]]; then
   echo "FAIL: subsequent activation must not clear advertising credentials" >&2
   exit 1
@@ -192,6 +260,7 @@ keyring_plaintext="${temp_root}/keyring.properties"
 cat > "${keyring_plaintext}" <<'EOF'
 skit.ad.credential-encryption.keys.previous=previous-credential-key-00000001
 skit.ad.session-token.keys.7=previous-session-token-key-0000001
+skit.ad.provider-callback-payload-encryption.keys.previous-provider=fedcba9876543210fedcba9876543210
 EOF
 keyring_base64="$(base64 < "${keyring_plaintext}" | tr -d '\r\n')"
 STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
@@ -231,6 +300,9 @@ fi
   printf 'SKIT_AD_CREDENTIAL_KEY_ID=%s\n' 'override-key'
   printf 'SKIT_AD_SESSION_TOKEN_KEY=%s\n' 'override-session-token-key-00001'
   printf 'SKIT_AD_SESSION_TOKEN_KEY_VERSION=%s\n' '2'
+  printf 'SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=%s\n' '0123456789abcdef0123456789abcdef'
+  printf 'SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=%s\n' 'override-provider'
+  printf 'SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=%s\n' 'override-provider-audit-hmac-key-00001'
 } > "${deploy_path}/server.env"
 run_activation attempted-override
 if [[ -e "${deploy_path}/server.env" ]]; then
@@ -241,6 +313,9 @@ override_key="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY=//p' "${deploy_path}/.env")"
 override_key_id="$(sed -n 's/^SKIT_AD_CREDENTIAL_KEY_ID=//p' "${deploy_path}/.env")"
 override_session_token_key="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY=//p' "${deploy_path}/.env")"
 override_session_token_key_version="$(sed -n 's/^SKIT_AD_SESSION_TOKEN_KEY_VERSION=//p' "${deploy_path}/.env")"
+override_provider_payload_key="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=//p' "${deploy_path}/.env")"
+override_provider_payload_key_id="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=//p' "${deploy_path}/.env")"
+override_provider_audit_hmac_key="$(sed -n 's/^SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=//p' "${deploy_path}/.env")"
 if [[ "${override_key}" != "${first_credential_key}" ||
       "${override_key_id}" != "${first_credential_key_id}" ]]; then
   echo "FAIL: release-time server configuration overwrote persisted credential key material" >&2
@@ -249,6 +324,12 @@ fi
 if [[ "${override_session_token_key}" != "${first_session_token_key}" ||
       "${override_session_token_key_version}" != "${first_session_token_key_version}" ]]; then
   echo "FAIL: release-time server configuration overwrote persisted session-token key material" >&2
+  exit 1
+fi
+if [[ "${override_provider_payload_key}" != "${first_provider_payload_key}" ||
+      "${override_provider_payload_key_id}" != "${first_provider_payload_key_id}" ||
+      "${override_provider_audit_hmac_key}" != "${first_provider_audit_hmac_key}" ]]; then
+  echo "FAIL: release-time server configuration overwrote provider callback key material" >&2
   exit 1
 fi
 
@@ -336,6 +417,69 @@ if grep -Fq "${secret_arg_sentinel}" "${staged_log}"; then
   exit 1
 fi
 
+# Signed production-gate evidence is deployment-scoped. It may reach Spring only through the
+# temporary mode-0600 runtime properties file and must never survive activation in .env or on disk.
+gate_path="$(mktemp -d "${temp_root}/ephemeral-gate.XXXXXX")"
+cp "${compose_file}" "${gate_path}/docker-compose.prod.yml"
+gate_private_key="${temp_root}/gate-private.pem"
+gate_public_der="${temp_root}/gate-public.der"
+gate_manifest="${temp_root}/gate-manifest"
+gate_signature="${temp_root}/gate-signature"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+  -out "${gate_private_key}" >/dev/null 2>&1
+openssl pkey -in "${gate_private_key}" -pubout -outform DER \
+  -out "${gate_public_der}" >/dev/null 2>&1
+printf '%s\n' 'manifest_version=1' > "${gate_manifest}"
+openssl dgst -sha256 -sign "${gate_private_key}" -out "${gate_signature}" \
+  "${gate_manifest}"
+gate_environment_fingerprint='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+gate_public_key_base64="$(base64 < "${gate_public_der}" | tr -d '\r\n')"
+gate_manifest_base64="$(base64 < "${gate_manifest}" | tr -d '\r\n')"
+gate_signature_base64="$(base64 < "${gate_signature}" | tr -d '\r\n')"
+runtime_gate_file="${gate_path}/runtime-secrets/provider-impression-production-gate.properties"
+STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+  EXPECTED_RUNTIME_GATE_FILE="${runtime_gate_file}" \
+  EXPECTED_GATE_ENVIRONMENT_FINGERPRINT="${gate_environment_fingerprint}" \
+  DEPLOY_PATH="${gate_path}" IMAGE_NAME="example/backend" IMAGE_TAG="ephemeral-gate" \
+  MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
+  SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT="${gate_environment_fingerprint}" \
+  SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY="${gate_public_key_base64}" \
+  SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64="${gate_manifest_base64}" \
+  SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE="${gate_signature_base64}" \
+  "${activation_script}" >/dev/null
+if [[ -e "${runtime_gate_file}" || -L "${runtime_gate_file}" ]]; then
+  echo "FAIL: activation retained ephemeral provider impression gate evidence" >&2
+  exit 1
+fi
+if grep -Eq '^SKIT_PROVIDER_IMPRESSION_GATE_' "${gate_path}/.env"; then
+  echo "FAIL: activation persisted provider impression gate evidence in .env" >&2
+  exit 1
+fi
+if stat -c '%a' "${gate_path}/runtime-secrets" >/dev/null 2>&1; then
+  runtime_gate_dir_mode="$(stat -c '%a' "${gate_path}/runtime-secrets")"
+else
+  runtime_gate_dir_mode="$(stat -f '%Lp' "${gate_path}/runtime-secrets")"
+fi
+if [[ "${runtime_gate_dir_mode}" != "700" ]]; then
+  echo "FAIL: provider impression runtime secrets directory must use mode 0700" >&2
+  exit 1
+fi
+
+partial_gate_path="$(mktemp -d "${temp_root}/partial-gate.XXXXXX")"
+cp "${compose_file}" "${partial_gate_path}/docker-compose.prod.yml"
+if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+    DEPLOY_PATH="${partial_gate_path}" IMAGE_NAME="example/backend" IMAGE_TAG="partial-gate" \
+    MYSQL_ROOT_PASSWORD="test-root-password" \
+    SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT="${gate_environment_fingerprint}" \
+    "${activation_script}" >/dev/null 2>&1; then
+  echo "FAIL: activation accepted partial provider impression gate evidence" >&2
+  exit 1
+fi
+if [[ -e "${partial_gate_path}/runtime-secrets/provider-impression-production-gate.properties" ]]; then
+  echo "FAIL: failed activation retained partial provider impression gate evidence" >&2
+  exit 1
+fi
+
 # A supplied, already-valid key without any local marker is a normal restore scenario and must
 # not trigger destructive database writes.
 restore_path="$(mktemp -d "${temp_root}/restore.XXXXXX")"
@@ -349,6 +493,9 @@ STUB_LOG="${restore_log}" PATH="${stub_bin}:${PATH}" \
   SKIT_AD_CREDENTIAL_KEY_ID="restore-key" \
   SKIT_AD_SESSION_TOKEN_KEY="restore-session-token-key-00000001" \
   SKIT_AD_SESSION_TOKEN_KEY_VERSION="7" \
+  SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID="restore-provider" \
+  SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY="abcdef0123456789abcdef0123456789" \
+  SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY="restore-provider-audit-hmac-key-000001" \
   "${activation_script}" >/dev/null
 if grep -q 'UPDATE\\ skit_ad_account\\ SET\\ app_key' "${restore_log}"; then
   echo "FAIL: a valid supplied key without a marker triggered credential cleanup" >&2
@@ -362,6 +509,12 @@ fi
 if ! grep -q '^SKIT_AD_CREDENTIAL_KEY=abcdefghijklmnopqrstuvwx12345678$' "${restore_path}/.env" ||
    ! grep -q '^SKIT_AD_CREDENTIAL_KEY_ID=restore-key$' "${restore_path}/.env"; then
   echo "FAIL: supplied credential key material or key id was not persisted exactly" >&2
+  exit 1
+fi
+if ! grep -q '^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY=abcdef0123456789abcdef0123456789$' "${restore_path}/.env" ||
+   ! grep -q '^SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID=restore-provider$' "${restore_path}/.env" ||
+   ! grep -q '^SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY=restore-provider-audit-hmac-key-000001$' "${restore_path}/.env"; then
+  echo "FAIL: supplied provider callback key material was not persisted exactly" >&2
   exit 1
 fi
 
@@ -554,6 +707,61 @@ assert_reused_session_token_key() {
 assert_reused_session_token_key '12345678901234567890123456789012'
 assert_reused_session_token_key 'abcdefghijklmnopqrstuvwx12345678'
 
+assert_invalid_provider_payload_key() {
+  key="$1"
+  invalid_path="$(mktemp -d "${temp_root}/invalid-provider-payload.XXXXXX")"
+  cp "${compose_file}" "${invalid_path}/docker-compose.prod.yml"
+  if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+      DEPLOY_PATH="${invalid_path}" IMAGE_NAME="example/backend" IMAGE_TAG="invalid-provider-payload" \
+      MYSQL_ROOT_PASSWORD="test-root-password" \
+      SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY="${key}" \
+      "${activation_script}" >/dev/null 2>&1; then
+    echo "FAIL: activation accepted an unsafe or invalid-length provider payload key" >&2
+    exit 1
+  fi
+}
+
+assert_invalid_provider_audit_hmac_key() {
+  key="$1"
+  invalid_path="$(mktemp -d "${temp_root}/invalid-provider-audit.XXXXXX")"
+  cp "${compose_file}" "${invalid_path}/docker-compose.prod.yml"
+  if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+      DEPLOY_PATH="${invalid_path}" IMAGE_NAME="example/backend" IMAGE_TAG="invalid-provider-audit" \
+      MYSQL_ROOT_PASSWORD="test-root-password" \
+      SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY="${key}" \
+      "${activation_script}" >/dev/null 2>&1; then
+    echo "FAIL: activation accepted an unsafe or undersized provider audit HMAC key" >&2
+    exit 1
+  fi
+}
+
+assert_reused_provider_key() {
+  variable_name="$1"
+  collision_value="$2"
+  invalid_path="$(mktemp -d "${temp_root}/reused-provider-key.XXXXXX")"
+  cp "${compose_file}" "${invalid_path}/docker-compose.prod.yml"
+  if env STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+      DEPLOY_PATH="${invalid_path}" IMAGE_NAME="example/backend" IMAGE_TAG="reused-provider-key" \
+      MYSQL_ROOT_PASSWORD="test-root-password" \
+      SKIT_AD_ENCRYPTION_KEY="12345678901234567890123456789012" \
+      SKIT_AD_CREDENTIAL_KEY="abcdefghijklmnopqrstuvwx12345678" \
+      SKIT_AD_SESSION_TOKEN_KEY="valid-session-token-key-0000000001" \
+      "${variable_name}=${collision_value}" \
+      "${activation_script}" >/dev/null 2>&1; then
+    echo "FAIL: activation accepted ${variable_name} reused from another key purpose" >&2
+    exit 1
+  fi
+}
+
+assert_invalid_provider_payload_key '123456789012345'
+assert_invalid_provider_payload_key '123456789012345$'
+assert_invalid_provider_audit_hmac_key '1234567890123456789012345678901'
+assert_invalid_provider_audit_hmac_key '1234567890123456789012345678901$'
+assert_reused_provider_key SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY \
+  '12345678901234567890123456789012'
+assert_reused_provider_key SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY \
+  'valid-session-token-key-0000000001'
+
 invalid_id_path="$(mktemp -d "${temp_root}/invalid-id.XXXXXX")"
 cp "${compose_file}" "${invalid_id_path}/docker-compose.prod.yml"
 if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
@@ -561,6 +769,16 @@ if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
     MYSQL_ROOT_PASSWORD="test-root-password" SKIT_AD_CREDENTIAL_KEY_ID='bad key id' \
     "${activation_script}" >/dev/null 2>&1; then
   echo "FAIL: activation accepted an unsafe credential key id" >&2
+  exit 1
+fi
+
+invalid_provider_id_path="$(mktemp -d "${temp_root}/invalid-provider-id.XXXXXX")"
+cp "${compose_file}" "${invalid_provider_id_path}/docker-compose.prod.yml"
+if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
+    DEPLOY_PATH="${invalid_provider_id_path}" IMAGE_NAME="example/backend" IMAGE_TAG="invalid-provider-id" \
+    MYSQL_ROOT_PASSWORD="test-root-password" SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID='bad key id' \
+    "${activation_script}" >/dev/null 2>&1; then
+  echo "FAIL: activation accepted an unsafe provider payload key id" >&2
   exit 1
 fi
 

@@ -33,7 +33,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "8"
+          java-version: "17"
           cache: maven
           cache-dependency-path: '**/pom.xml'
 
@@ -44,12 +44,38 @@ jobs:
           ./deploy/test-encryption-key.sh
           ./deploy/test-activation-encryption-key.sh
           ./deploy/test-activation-health.sh
+          ./deploy/test-configure-public-https.sh
           ./deploy/test-release-security.sh
+
+      - name: Verify provider impression callback gates
+        run: |
+          set -euo pipefail
+          ./deploy/test-provider-impression-callback-gate.sh \
+            --environment ci --draft-connection-id 42
+          gate_output="$(mktemp)"
+          if ./deploy/test-provider-impression-callback-gate.sh \
+              --environment production-equivalent --draft-connection-id 42 \
+              >"${gate_output}" 2>&1; then
+            echo "::error::Single-host production key issuance was not blocked."
+            exit 1
+          fi
+          grep -Fxq \
+            'FAIL: required callback topology is single-host/single-backend; production key issuance is blocked' \
+            "${gate_output}"
+
+      - name: Shellcheck callback deployment contracts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck \
+            deploy/activate-backend.sh \
+            deploy/configure-public-https.sh \
+            deploy/test-provider-impression-callback-gate.sh
 
       - name: Run focused tenant lifecycle tests
         run: >-
-          mvn -B -pl yudao-module-skit,yudao-module-system,yudao-module-infra -am
-          -Dtest='Skit*Test,Taku*Test,*SecurityTest,SystemPlatformAdminGuardTest,TenantVisitContextInterceptorTest,AdminAuthServiceImplTest,OAuth2TokenServiceImplTest,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest,SpringUtilsTest,AdminServerConfigurationTest,ApiAccessLogInterceptorTest,*SecretRedactionTest'
+          mvn -B -T1 -pl yudao-module-skit,yudao-module-system,yudao-module-infra -am
+          -Dtest='Skit*Test,Taku*Test,*SecurityTest,SystemPlatformAdminGuardTest,TenantVisitContextInterceptorTest,AdminAuthServiceImplTest,OAuth2TokenServiceImplTest,OAuth2TokenServiceScopedRevocationTest,TenantPackageControllerTest,TenantPackageServiceImplTest,AdminUserServiceImplTest,SpringUtilsTest,AdminServerConfigurationTest,ApiAccessLogInterceptorTest,XssFilterCallbackExclusionTest,*SecretRedactionTest'
           -Dsurefire.failIfNoSpecifiedTests=false test
 
   mysql-integration:
@@ -74,18 +100,58 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "8"
+          java-version: "17"
           cache: maven
           cache-dependency-path: '**/pom.xml'
 
       - name: Verify Skit migrations against MySQL 8
         run: >-
-          mvn -B -pl yudao-module-skit -am
+          mvn -B -T1 -pl yudao-module-skit -am
           -Dtest=__NoSurefireTests__
-          -Dit.test='Skit*MySqlIT'
+          -Dit.test='*MySqlIT,*NginxTomcatIT'
           -Dsurefire.failIfNoSpecifiedTests=false
           -Dfailsafe.failIfNoSpecifiedTests=false
           test-compile failsafe:integration-test failsafe:verify
+
+      - name: Verify bounded GATE_TEST load artifact
+        env:
+          LOAD_RESULT: yudao-module-skit/target/provider-impression-load-result.json
+        run: |
+          set -euo pipefail
+          test -s "${LOAD_RESULT}"
+          jq -e \
+            --arg revision "${GITHUB_SHA}" \
+            '.schema_version == 1
+             and .purpose == "GATE_TEST"
+             and (.fixture_id | type == "string" and length >= 8 and length <= 128)
+             and .git_revision == $revision
+             and (.total_requests | type == "number" and . >= 1)
+             and (.concurrency | type == "number" and . >= 1)
+             and (.p99_ms | type == "number" and . >= 0 and . < 250)
+             and .committed_inbox_count >= 1
+             and .committed_attempt_count == .total_requests
+             and .missing_committed_attempts == 0
+             and .production_eligible == false
+             and (keys | sort) == ([
+               "committed_attempt_count", "committed_inbox_count", "concurrency",
+               "fixture_id", "git_revision", "missing_committed_attempts", "p99_ms",
+               "production_eligible", "purpose", "schema_version", "total_requests"
+             ] | sort)' \
+            "${LOAD_RESULT}" >/dev/null
+          if grep -Eiq \
+              'acct_[A-Za-z0-9_-]{38}|/app-api/skit/ad-callback/|raw[_-]?query|user[_-]?agent|remote[_-]?address' \
+              "${LOAD_RESULT}"; then
+            echo "::error::Bounded load artifact contains prohibited request identity material."
+            exit 1
+          fi
+
+      - name: Upload bounded GATE_TEST load artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-impression-gate-test-load-${{ github.sha }}
+          path: yudao-module-skit/target/provider-impression-load-result.json
+          if-no-files-found: error
+          retention-days: 14
 
   build-and-deploy:
     needs:
@@ -103,12 +169,12 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "8"
+          java-version: "17"
           cache: maven
           cache-dependency-path: '**/pom.xml'
 
       - name: Build server jar
-        run: mvn -B -pl yudao-server -am -DskipTests package
+        run: mvn -B -T1 -pl yudao-server -am -DskipTests package
 
       - name: Verify packaged runtime dependencies
         run: ./scripts/test-backend-packaged-dependencies.sh
@@ -282,6 +348,7 @@ jobs:
             "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
 
       - name: Activate backend on server
+        id: activate_backend
         if: steps.deploy_config.outputs.enabled == 'true'
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
@@ -297,6 +364,10 @@ jobs:
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
           SKIT_AD_CALLBACK_PUBLIC_BASE_URL: ${{ vars.SKIT_AD_CALLBACK_PUBLIC_BASE_URL }}
           SKIT_PUBLIC_HTTPS_DOMAIN: ${{ vars.SKIT_PUBLIC_HTTPS_DOMAIN }}
+          SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT }}
+          SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY }}
+          SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64 }}
+          SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
@@ -333,6 +404,14 @@ jobs:
               fi
             fi
             printf 'SKIT_AD_CALLBACK_PUBLIC_BASE_URL=%q\n' "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL%/}"
+            printf 'SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT=%q\n' \
+              "${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT}"
+            printf 'SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY=%q\n' \
+              "${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY}"
+            printf 'SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64=%q\n' \
+              "${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64}"
+            printf 'SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE=%q\n' \
+              "${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE}"
             printf 'GHCR_USERNAME=%q\n' "${GHCR_USERNAME}"
             printf 'GHCR_TOKEN=%q\n' "${GHCR_TOKEN}"
             printf 'SUDO_PASSWORD=%q\n' "${SUDO_PASSWORD}"
@@ -371,6 +450,12 @@ jobs:
             IMAGE_TAG="${IMAGE_TAG}" \
             "${remote_activation_script}"
           REMOTE
+          printf -v DEPLOY_PATH_Q '%q' "${DEPLOY_PATH}"
+          printf -v EXPECTED_IMAGE_Q '%q' "${IMAGE_NAME}:${IMAGE_TAG}"
+          printf -v EXPECTED_REVISION_Q '%q' "${IMAGE_TAG}"
+          .deploy/ssh "${SSH_TARGET}" \
+            "cd ${DEPLOY_PATH_Q} && test -f backend-deployment-proof.env && grep -Fxq status=ACTIVATED backend-deployment-proof.env && grep -Fxq image=${EXPECTED_IMAGE_Q} backend-deployment-proof.env && grep -Fxq revision=${EXPECTED_REVISION_Q} backend-deployment-proof.env && grep -Fxq topology=single-host-single-backend backend-deployment-proof.env && grep -Fxq production_route_issuance=BLOCKED_PENDING_SIGNED_HA_EVIDENCE backend-deployment-proof.env"
+          echo "activated=true" >> "${GITHUB_OUTPUT}"
 
       - name: Remove staged backend server environment
         if: always() && steps.deploy_config.outputs.enabled == 'true'
@@ -396,3 +481,39 @@ jobs:
           printf -v REMOTE_CLEANUP_SCRIPT_Q '%q' "${REMOTE_CLEANUP_SCRIPT}"
           .deploy/ssh "${SSH_TARGET}" \
             "DEPLOY_PATH=${DEPLOY_PATH_Q} RELEASE_ID=${RELEASE_ID_Q} bash ${REMOTE_CLEANUP_SCRIPT_Q}"
+
+      - name: Record and enforce backend deployment outcome
+        if: always()
+        env:
+          DEPLOY_CONFIGURED: ${{ steps.deploy_config.outputs.enabled }}
+          ACTIVATION_OUTCOME: ${{ steps.activate_backend.outcome }}
+          ACTIVATED: ${{ steps.activate_backend.outputs.activated }}
+        run: |
+          set -euo pipefail
+          mkdir -p deployment-evidence
+          if [ "${DEPLOY_CONFIGURED}" = "true" ]; then
+            if [ "${ACTIVATION_OUTCOME}" != "success" ] || [ "${ACTIVATED}" != "true" ]; then
+              echo "::error::Deployment was configured but immutable activation proof did not complete."
+              exit 1
+            fi
+            printf '%s\n' \
+              'status=ACTIVATED' \
+              "revision=${GITHUB_SHA}" \
+              'topology=single-host-single-backend' \
+              'production_route_issuance=BLOCKED_PENDING_SIGNED_HA_EVIDENCE' \
+              > deployment-evidence/backend-deployment-outcome.env
+          else
+            printf '%s\n' \
+              'status=SKIPPED_NO_CONFIG' \
+              "revision=${GITHUB_SHA}" \
+              > deployment-evidence/backend-deployment-outcome.env
+          fi
+
+      - name: Upload backend deployment outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-deployment-outcome-${{ github.sha }}-${{ github.run_attempt }}
+          path: deployment-evidence/backend-deployment-outcome.env
+          if-no-files-found: error
+          retention-days: 14

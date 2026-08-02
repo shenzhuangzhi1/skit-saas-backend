@@ -30,6 +30,8 @@ spring:
       time-to-live: 1h # 设置过期时间为 1 小时
 
 server:
+  # Tomcat counts the request target and headers together; Nginx uses the same 64 KiB ceiling.
+  max-http-header-size: 64KB
   servlet:
     encoding:
       enabled: true
@@ -99,6 +101,20 @@ skit:
       current-key-version: ${SKIT_AD_SESSION_TOKEN_KEY_VERSION:1}
       current-key: ${SKIT_AD_SESSION_TOKEN_KEY:}
       keys: {}
+    # Dedicated provider capture material. Retained AES entries remain in the mounted keyring for
+    # at least seven days after a controlled rotation.
+    provider-callback-payload-encryption:
+      current-key-id: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY_ID:primary}
+      current-key: ${SKIT_PROVIDER_CALLBACK_PAYLOAD_KEY:}
+      keys: {}
+    provider-callback-audit:
+      hmac-key: ${SKIT_PROVIDER_CALLBACK_AUDIT_HMAC_KEY:}
+    # Empty evidence is intentionally startup-safe and production-issuance fail-closed.
+    provider-impression-production-gate:
+      environment-fingerprint: ${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT:}
+      operations-public-key: ${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY:}
+      manifest-base64: ${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64:}
+      signature: ${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE:}
 
 mybatis-plus-join:
   banner: false # 是否打印 mybatis plus join banner，默认true
