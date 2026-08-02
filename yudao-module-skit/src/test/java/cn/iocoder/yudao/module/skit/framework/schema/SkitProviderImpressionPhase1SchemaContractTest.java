@@ -57,6 +57,12 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 SkitProviderImpressionPhase1Schema.steps();
         String manifest = steps.stream().map(SkitProviderImpressionPhase1Schema.Step::getManifestEntry)
                 .collect(Collectors.joining("\n"));
+        String connection = tableSql(steps, "skit_ad_provider_connection");
+        String route = tableSql(steps, "skit_ad_provider_callback_route");
+        String registry = tableSql(steps, "skit_ad_callback_route_registry");
+        String migrationState = tableSql(steps, "skit_ad_callback_route_registry_migration");
+        String inbox = tableSql(steps, "skit_provider_impression_inbox");
+        String attempt = tableSql(steps, "skit_provider_callback_attempt");
 
         for (String table : TABLES) {
             assertTrue(manifest.contains("CREATE TABLE IF NOT EXISTS `" + table + "`"),
@@ -71,12 +77,18 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "uk_provider_connection_shared_master",
                 "ck_provider_connection_owner",
                 "ck_provider_connection_state",
+                "fk_provider_connection_active_route",
                 "uk_provider_callback_route_slot",
+                "FOREIGN KEY (`provider_connection_id`,`supersedes_callback_route_id`) "
+                        + "REFERENCES `skit_ad_provider_callback_route` (`provider_connection_id`,`id`)",
                 "ck_provider_callback_route_state",
                 "ck_provider_callback_route_purpose",
-                "trg_provider_callback_route_purpose_immutable",
+                "fk_provider_callback_route_registry",
+                "trg_provider_callback_route_lifecycle_immutable",
                 "uk_callback_route_registry_key_hash",
-                "ck_callback_route_registry_owner_xor",
+                "ck_callback_route_registry_route_xor",
+                "trg_callback_route_registry_immutable",
+                "trg_callback_route_registry_no_delete",
                 "ck_callback_route_registry_migration_singleton",
                 "trg_callback_route_registry_migration_monotonic",
                 "uk_provider_impression_inbox_dedupe",
@@ -84,15 +96,51 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "fk_provider_impression_inbox_canonical_attempt",
                 "fk_provider_callback_attempt_connection",
                 "fk_provider_callback_attempt_inbox",
-                "payload_nonce` binary(12) NOT NULL",
+                "payload_nonce` binary(12) DEFAULT NULL",
+                "trg_provider_impression_inbox_monotonic",
+                "trg_provider_callback_attempt_immutable",
+                "trg_provider_callback_attempt_no_delete",
                 "trg_platform_provider_command_audit_immutable",
                 "trg_platform_provider_command_audit_no_delete");
         assertContains(manifest, "'GATE_TEST','PRODUCTION'", "original_login_tenant_id",
                 "actor_user_id", "reauthenticated_at", "trace_id", "result_status");
-        assertFalse(manifest.contains("command_body"));
-        assertFalse(manifest.contains("callback_url"));
-        assertFalse(manifest.contains("raw_query"));
-        assertFalse(manifest.contains("plaintext"));
+        assertContains(connection, "external_account_ref_hash", "active_callback_route_id",
+                "activated_at", "blocked_at", "retired_at", "ck_provider_connection_lifecycle");
+        assertFalse(route.contains("`key_hash`"),
+                "the route must never duplicate the registry's full irreversible hash");
+        assertContains(route, "callback_route_registry_id", "callback_key_fingerprint",
+                "canonical_origin", "callback_path_version", "callback_template_version",
+                "callback_origin_fingerprint", "callback_contract_fingerprint",
+                "supersedes_callback_route_id", "submission_ticket", "submission_reference",
+                "submission_recipient", "submitted_by_user_id", "ck_provider_callback_route_lifecycle");
+        assertContains(registry, "`key_hash` binary(32) NOT NULL", "`route_type`",
+                "`tombstoned_at`", "ck_callback_route_registry_route_type");
+        assertFalse(registry.contains("`owner_type`"));
+        assertContains(migrationState, "'DUAL_WRITE','BACKFILL','VERIFY','SHADOW_READ','HASH_FIRST','ENFORCED'",
+                "blocked_reason_hash", "blocked_at", "phase_revision", "expected_row_count",
+                "verified_row_count", "verification_mismatch_count", "verification_hash",
+                "verified_at", "ck_callback_route_registry_migration_blocked");
+        assertFalse(migrationState.contains("'PENDING','RUNNING','COMPLETED','BLOCKED'"));
+        assertFalse(migrationState.contains("'BLOCKED'"),
+                "blocking is recoverable metadata on the current exact cutover phase");
+        assertContains(inbox, "'OFFICIAL_V1','FALLBACK_WIRE_V1'",
+                "provider_request_id_lexical", "adsource_id_lexical", "material_integrity_hash",
+                "UNSIGNED_PROVIDER_OBSERVATION", "integrity_status", "integrity_revision",
+                "integrity_conflict_at", "processing_status", "lease_owner", "lease_until",
+                "processing_attempt_count", "next_attempt_at", "processed_at",
+                "dead_letter_alerted_at", "uk_provider_impression_inbox_connection_id");
+        assertFalse(inbox.contains("TAKU_REQ_ADSOURCE"));
+        assertFalse(inbox.contains("WIRE_HASH_FALLBACK"));
+        assertContains(attempt, "material_integrity_hash", "delivery_integrity_status",
+                "response_decision", "remote_address_hash", "user_agent_hash",
+                "request_header_fingerprint", "trace_id", "payload_purged_at",
+                "uk_provider_callback_attempt_connection_inbox_id",
+                "ck_provider_callback_attempt_payload_retention");
+        for (String prohibited : Arrays.asList("command_body", "callback_url", "raw_query",
+                "plaintext", "provider_key", "secret_value")) {
+            assertFalse(manifest.contains("`" + prohibited + "`"),
+                    "forbidden provider material column: " + prohibited);
+        }
     }
 
     @Test
@@ -107,6 +155,21 @@ class SkitProviderImpressionPhase1SchemaContractTest {
             assertTrue(standalone.contains("CREATE TABLE IF NOT EXISTS `" + table + "`"),
                     "canonical SQL is missing " + table);
         }
+        assertContains(standalone,
+                "`external_account_ref_hash` binary(32) NOT NULL",
+                "`callback_route_registry_id` bigint DEFAULT NULL",
+                "`callback_key_fingerprint` char(16)",
+                "`callback_path_version` smallint DEFAULT NULL",
+                "`callback_contract_fingerprint` binary(32) DEFAULT NULL",
+                "`route_type` varchar(32) NOT NULL",
+                "'DUAL_WRITE','BACKFILL','VERIFY','SHADOW_READ','HASH_FIRST','ENFORCED'",
+                "`dedupe_scheme` IN ('OFFICIAL_V1','FALLBACK_WIRE_V1')",
+                "`authentication_level`='UNSIGNED_PROVIDER_OBSERVATION'",
+                "`payload_purged_at` datetime DEFAULT NULL",
+                "fk_provider_impression_inbox_canonical_attempt",
+                "trg_callback_route_registry_immutable",
+                "trg_provider_callback_attempt_immutable");
+        assertFalse(standalone.contains("`owner_type` varchar(32) NOT NULL"));
         assertTrue(standalone.contains("-- Skit 阶段 1 全局 provider callback capture 表（7 张）"));
     }
 
@@ -136,6 +199,14 @@ class SkitProviderImpressionPhase1SchemaContractTest {
         int end = sql.indexOf(CANONICAL_END);
         assertTrue(begin >= 0 && end > begin, "missing canonical block in " + path);
         return sql.substring(begin, end + CANONICAL_END.length());
+    }
+
+    private static String tableSql(List<SkitProviderImpressionPhase1Schema.Step> steps,
+                                   String table) {
+        String marker = "CREATE TABLE IF NOT EXISTS `" + table + "`";
+        return steps.stream().map(SkitProviderImpressionPhase1Schema.Step::getSql)
+                .filter(sql -> sql != null && sql.startsWith(marker))
+                .findFirst().orElseThrow(() -> new AssertionError("missing table SQL " + table));
     }
 
     private static void assertContains(String value, String... fragments) {
