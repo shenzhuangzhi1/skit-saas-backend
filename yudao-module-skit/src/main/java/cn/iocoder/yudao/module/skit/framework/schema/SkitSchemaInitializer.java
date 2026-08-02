@@ -4717,6 +4717,10 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     "binary(32) DEFAULT NULL");
         }
         if (tableExists("skit_provider_impression_inbox")) {
+            if (columnExists("skit_provider_impression_inbox", "delivery_count")) {
+                throw new IllegalStateException("Provider callback Attempt rows are the delivery ledger; "
+                        + "Inbox.delivery_count must not exist");
+            }
             validateColumnDefinition("skit_provider_impression_inbox", "dedupe_key_hash",
                     "binary(32) NOT NULL");
             validateColumnDefinition("skit_provider_impression_inbox", "provider_request_id_lexical",
@@ -4733,6 +4737,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                     "datetime DEFAULT NULL");
         }
         if (tableExists("skit_provider_callback_attempt")) {
+            validateColumnDefinition("skit_provider_callback_attempt", "dedupe_scheme",
+                    "varchar(32) NOT NULL");
             validateColumnDefinition("skit_provider_callback_attempt", "wire_payload_hash",
                     "binary(32) NOT NULL");
             validateColumnDefinition("skit_provider_callback_attempt", "material_integrity_hash",
@@ -4791,7 +4797,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "tenant_callback_key_id", true, requireAll);
         validateTask5Index("skit_provider_impression_inbox",
                 "uk_provider_impression_inbox_connection_id",
-                "provider_connection_id,id", true, requireAll);
+                "provider_connection_id,id,dedupe_scheme", true, requireAll);
         validateTask5Index("skit_provider_impression_inbox", "uk_provider_impression_inbox_dedupe",
                 "provider_connection_id,dedupe_scheme,dedupe_key_hash", true, requireAll);
         validateTask5Index("skit_provider_impression_inbox",
@@ -4811,7 +4817,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         validateTask5Index("skit_provider_callback_attempt", "uk_provider_callback_attempt_trace",
                 "trace_id", true, requireAll);
         validateTask5Index("skit_provider_callback_attempt", "idx_provider_callback_attempt_inbox",
-                "provider_connection_id,inbox_id,received_at,id", false, requireAll);
+                "provider_connection_id,inbox_id,dedupe_scheme,received_at,id", false, requireAll);
         validateTask5Index("skit_provider_callback_attempt", "idx_provider_callback_attempt_expiry",
                 "payload_expires_at,id", false, requireAll);
         validateTask5Index("skit_platform_provider_command_audit",
@@ -4854,8 +4860,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                         "fk_provider_callback_attempt_connection", "provider_connection_id",
                         "skit_ad_provider_connection", "id"),
                 new Task2ForeignKeySpec("skit_provider_callback_attempt",
-                        "fk_provider_callback_attempt_inbox", "provider_connection_id,inbox_id",
-                        "skit_provider_impression_inbox", "provider_connection_id,id"),
+                        "fk_provider_callback_attempt_inbox",
+                        "provider_connection_id,inbox_id,dedupe_scheme",
+                        "skit_provider_impression_inbox", "provider_connection_id,id,dedupe_scheme"),
                 new Task2ForeignKeySpec("skit_platform_provider_command_audit",
                         "fk_platform_provider_command_audit_connection", "provider_connection_id",
                         "skit_ad_provider_connection", "id"),
@@ -5058,17 +5065,18 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                                 + "AND `processed_at` IS NOT NULL)"),
                 new Task2CheckSpec("skit_provider_impression_inbox",
                         "ck_provider_impression_inbox_counts",
-                        "`delivery_count`>0 AND `processing_attempt_count`>=0"),
+                        "`processing_attempt_count`>=0"),
                 new Task2CheckSpec("skit_provider_impression_inbox",
                         "ck_provider_impression_inbox_time",
                         "`last_received_at`>=`first_received_at` AND "
                                 + "(`dead_letter_alerted_at` IS NULL OR `processed_at` IS NOT NULL)"),
                 new Task2CheckSpec("skit_provider_callback_attempt",
                         "ck_provider_callback_attempt_delivery_integrity",
-                        "(`delivery_integrity_status` IN "
+                        "(`dedupe_scheme`='OFFICIAL_V1' AND `delivery_integrity_status` IN "
                                 + "('CANONICAL','EQUIVALENT_DUPLICATE','PAYLOAD_CONFLICT') "
                                 + "AND `material_integrity_hash` IS NOT NULL) OR "
-                                + "`delivery_integrity_status`='FALLBACK_QUARANTINED'"),
+                                + "(`dedupe_scheme`='FALLBACK_WIRE_V1' "
+                                + "AND `delivery_integrity_status`='FALLBACK_QUARANTINED')"),
                 new Task2CheckSpec("skit_provider_callback_attempt", "ck_provider_callback_attempt_response",
                         "`response_decision`='ACK_200'"),
                 new Task2CheckSpec("skit_provider_callback_attempt",

@@ -8,6 +8,7 @@ import org.springframework.jdbc.support.KeyHolder;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.util.Arrays;
 import java.util.List;
 
@@ -53,6 +54,9 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                 "skit_provider_impression_inbox", "material_integrity_hash"));
         assertEquals("binary(32):YES", columnDefinition(
                 "skit_provider_callback_attempt", "material_integrity_hash"));
+        assertEquals(0, columnCount("skit_provider_impression_inbox", "delivery_count"));
+        assertEquals("varchar(32):NO", columnDefinition(
+                "skit_provider_callback_attempt", "dedupe_scheme"));
         assertEquals("provider_connection_id,id,canonical_attempt_id->skit_provider_callback_attempt"
                         + "(provider_connection_id,inbox_id,id):RESTRICT:RESTRICT",
                 foreignKeyDefinition("skit_provider_impression_inbox",
@@ -60,8 +64,8 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
         assertEquals("provider_connection_id->skit_ad_provider_connection(id):RESTRICT:RESTRICT",
                 foreignKeyDefinition("skit_provider_callback_attempt",
                         "fk_provider_callback_attempt_connection"));
-        assertEquals("provider_connection_id,inbox_id->skit_provider_impression_inbox"
-                        + "(provider_connection_id,id):RESTRICT:RESTRICT",
+        assertEquals("provider_connection_id,inbox_id,dedupe_scheme->skit_provider_impression_inbox"
+                        + "(provider_connection_id,id,dedupe_scheme):RESTRICT:RESTRICT",
                 foreignKeyDefinition("skit_provider_callback_attempt",
                         "fk_provider_callback_attempt_inbox"));
         assertEquals("id,active_callback_route_id->skit_ad_provider_callback_route"
@@ -82,6 +86,7 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                 "ck_callback_route_registry_route_xor"));
         assertNotNull(checkDefinition("skit_provider_callback_attempt",
                 "ck_provider_callback_attempt_payload_retention"));
+        assertNotNull(triggerDefinition("trg_provider_connection_lifecycle_immutable"));
         assertNotNull(triggerDefinition("trg_provider_callback_route_lifecycle_immutable"));
         assertNotNull(triggerDefinition("trg_callback_route_registry_immutable"));
         assertNotNull(triggerDefinition("trg_callback_route_registry_no_delete"));
@@ -190,6 +195,34 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
     }
 
     @Test
+    void providerConnectionLifecycleRejectsReopenAndIdentityMutation() {
+        long blockedConnectionId = insertConnection("connection-blocked");
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_ad_provider_connection` SET `state`='BLOCKED',"
+                        + "`blocked_at`=CURRENT_TIMESTAMP WHERE `id`=?", blockedConnectionId));
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                "UPDATE `skit_ad_provider_connection` SET `state`='CONFIGURING',"
+                        + "`blocked_at`=NULL WHERE `id`=?", blockedConnectionId));
+
+        long retiredConnectionId = insertConnection("connection-retired");
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_ad_provider_connection` SET `state`='RETIRED',"
+                        + "`retired_at`=CURRENT_TIMESTAMP WHERE `id`=?", retiredConnectionId));
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                "UPDATE `skit_ad_provider_connection` SET `state`='CONFIGURING',"
+                        + "`retired_at`=NULL WHERE `id`=?", retiredConnectionId));
+
+        long identityConnectionId = insertConnection("connection-identity");
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                "UPDATE `skit_ad_provider_connection` SET `connection_code`="
+                        + "CONCAT(`connection_code`,'-rewritten') WHERE `id`=?", identityConnectionId));
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                "UPDATE `skit_ad_provider_connection` SET `external_account_ref_hash`="
+                        + "UNHEX(SHA2('rewritten-external-account',256)) WHERE `id`=?",
+                identityConnectionId));
+    }
+
+    @Test
     void inboxRejectsInvalidSchemeMaterialAndMakesFallbackQuarantinePermanent() {
         long connectionId = insertConnection("inbox-contract");
         assertThrows(DataAccessException.class, () -> jdbc().update(
@@ -210,7 +243,7 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
     }
 
     @Test
-    void inboxConflictIsMonotonicAndAttemptRequiresAuditableAckDecision() {
+    void inboxConflictIsMonotonicAndAttemptRowsAreTheDeliveryLedger() {
         long connectionId = insertConnection("integrity-contract");
         jdbc().update(inboxInsertSql(), connectionId, "OFFICIAL_V1", "req-1", "42",
                 "PENDING", null, null);
@@ -218,62 +251,114 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                 Long.class);
         assertThrows(DataAccessException.class, () -> jdbc().update(
                 "UPDATE `skit_provider_impression_inbox` SET `integrity_status`='PAYLOAD_CONFLICT',"
+                        + "`integrity_revision`=2,`integrity_conflict_at`=CURRENT_TIMESTAMP WHERE `id`=?",
+                inboxId));
+
+        assertEquals(1, jdbc().update(
+                attemptInsertSql("DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY)"),
+                connectionId, inboxId, "OFFICIAL_V1", "PAYLOAD_CONFLICT", "ACK_200"));
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_provider_impression_inbox` SET `integrity_status`='PAYLOAD_CONFLICT',"
                         + "`integrity_revision`=1,`integrity_conflict_at`=CURRENT_TIMESTAMP WHERE `id`=?",
                 inboxId));
         assertEquals(1, jdbc().update(
-                "UPDATE `skit_provider_impression_inbox` SET `integrity_status`='PAYLOAD_CONFLICT',"
-                        + "`integrity_revision`=1,`integrity_conflict_at`=CURRENT_TIMESTAMP,"
-                        + "`delivery_count`=`delivery_count`+1 WHERE `id`=?",
+                attemptInsertSql("DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY)"),
+                connectionId, inboxId, "OFFICIAL_V1", "PAYLOAD_CONFLICT", "ACK_200"));
+        assertEquals(1, jdbc().update(
+                "UPDATE `skit_provider_impression_inbox` SET `integrity_revision`=2 WHERE `id`=?",
                 inboxId));
-        assertEquals(1, jdbc().update(
-                "UPDATE `skit_provider_impression_inbox` SET `delivery_count`=`delivery_count`+1 "
-                        + "WHERE `id`=?", inboxId));
+        assertEquals(1, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM `skit_provider_impression_inbox` WHERE `id`=?",
+                Integer.class, inboxId));
+        assertEquals(2, jdbc().queryForObject(
+                "SELECT COUNT(*) FROM `skit_provider_callback_attempt` WHERE `inbox_id`=?",
+                Integer.class, inboxId));
         assertThrows(DataAccessException.class, () -> jdbc().update(
-                "UPDATE `skit_provider_impression_inbox` SET `integrity_revision`=2 "
-                        + "WHERE `id`=?", inboxId));
-        assertEquals(1, jdbc().update(
-                "UPDATE `skit_provider_impression_inbox` SET `integrity_revision`=2,"
-                        + "`delivery_count`=`delivery_count`+1 WHERE `id`=?", inboxId));
-        assertThrows(DataAccessException.class, () -> jdbc().update(
-                "UPDATE `skit_provider_impression_inbox` SET `integrity_revision`=4,"
-                        + "`delivery_count`=`delivery_count`+1 "
-                        + "WHERE `id`=?", inboxId));
+                "UPDATE `skit_provider_impression_inbox` SET `integrity_revision`=4 WHERE `id`=?",
+                inboxId));
         assertThrows(DataAccessException.class, () -> jdbc().update(
                 "UPDATE `skit_provider_impression_inbox` SET `integrity_status`='CANONICAL',"
                         + "`integrity_revision`=3,`integrity_conflict_at`=NULL WHERE `id`=?", inboxId));
 
         assertThrows(DataAccessException.class, () -> jdbc().update(
-                "INSERT INTO `skit_provider_callback_attempt` "
-                        + "(`correlation_id`,`provider_connection_id`,`inbox_id`,`wire_payload_hash`,"
-                        + "`material_integrity_hash`,`delivery_integrity_status`,`response_decision`,"
-                        + "`payload_ciphertext`,`payload_nonce`,`payload_key_id`,`payload_purpose`,"
-                        + "`payload_envelope_version`,`payload_expires_at`,`wire_size_bytes`,`parameter_count`,"
-                        + "`remote_address_hash`,`user_agent_hash`,`request_header_fingerprint`,`trace_id`,"
-                        + "`received_at`) VALUES (UUID_TO_BIN(UUID()),?,?,UNHEX(REPEAT('44',32)),"
-                        + "UNHEX(REPEAT('55',32)),'PAYLOAD_CONFLICT','REJECT_602',X'01',"
-                        + "UNHEX(REPEAT('66',12)),'provider-capture','TAKU_IMPRESSION_CAPTURE',1,"
-                        + "DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY),128,2,UNHEX(REPEAT('77',32)),"
-                        + "UNHEX(REPEAT('88',32)),UNHEX(REPEAT('99',32)),REPLACE(UUID(),'-',''),"
-                        + "CURRENT_TIMESTAMP)", connectionId, inboxId));
+                attemptInsertSql("DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY)"),
+                connectionId, inboxId, "OFFICIAL_V1", "PAYLOAD_CONFLICT", "REJECT_602"));
 
         long otherConnectionId = insertConnection("integrity-other");
         assertThrows(DataAccessException.class, () -> jdbc().update(
-                validAttemptInsertSql(), otherConnectionId, inboxId));
+                attemptInsertSql("DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY)"),
+                otherConnectionId, inboxId, "OFFICIAL_V1", "CANONICAL", "ACK_200"));
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                attemptInsertSql("DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY)"),
+                connectionId, inboxId, "FALLBACK_WIRE_V1", "FALLBACK_QUARANTINED", "ACK_200"));
 
-        assertEquals(1, jdbc().update(validAttemptInsertSql(), connectionId, inboxId));
-        Long attemptId = jdbc().queryForObject("SELECT MAX(`id`) FROM `skit_provider_callback_attempt`",
-                Long.class);
+        jdbc().update(inboxInsertSql(), connectionId, "FALLBACK_WIRE_V1", null, "42",
+                "QUARANTINED", "FALLBACK_WIRE_KEY", null);
+        Long fallbackInboxId = jdbc().queryForObject(
+                "SELECT `id` FROM `skit_provider_impression_inbox` WHERE `provider_connection_id`=? "
+                        + "AND `dedupe_scheme`='FALLBACK_WIRE_V1'", Long.class, connectionId);
+        assertThrows(DataAccessException.class, () -> jdbc().update(
+                attemptInsertSql("DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY)"),
+                connectionId, fallbackInboxId, "OFFICIAL_V1", "CANONICAL", "ACK_200"));
+
+        Long attemptId = jdbc().queryForObject(
+                "SELECT MIN(`id`) FROM `skit_provider_callback_attempt` WHERE `inbox_id`=?",
+                Long.class, inboxId);
         assertEquals(1, jdbc().update(
                 "UPDATE `skit_provider_impression_inbox` SET `canonical_attempt_id`=? WHERE `id`=?",
                 attemptId, inboxId));
-        assertEquals(1, jdbc().update(
-                "UPDATE `skit_provider_callback_attempt` SET `payload_ciphertext`=NULL,`payload_nonce`=NULL,"
-                        + "`payload_key_id`=NULL,`payload_purpose`=NULL,`payload_envelope_version`=NULL,"
-                        + "`payload_expires_at`=NULL,`payload_purged_at`=CURRENT_TIMESTAMP WHERE `id`=?",
-                attemptId));
         assertThrows(DataAccessException.class, () -> jdbc().update(
                 "UPDATE `skit_provider_callback_attempt` SET `wire_payload_hash`=UNHEX(REPEAT('01',32)) "
                         + "WHERE `id`=?", attemptId));
+    }
+
+    @Test
+    void payloadPurgeRequiresExpiryAndProcessedTerminalInboxEvidence() {
+        long pendingConnectionId = insertConnection("purge-pending");
+        jdbc().update(inboxInsertSql(), pendingConnectionId, "OFFICIAL_V1", "req-pending", "42",
+                "PENDING", null, null);
+        Long pendingInboxId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_impression_inbox`", Long.class);
+        assertEquals(1, jdbc().update(attemptInsertSql(
+                        "DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 1 DAY)"),
+                pendingConnectionId, pendingInboxId, "OFFICIAL_V1", "CANONICAL", "ACK_200"));
+        Long pendingAttemptId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_callback_attempt`", Long.class);
+        assertThrows(DataAccessException.class, () -> purgeAttempt(pendingAttemptId));
+
+        long fallbackConnectionId = insertConnection("purge-fallback");
+        jdbc().update(inboxInsertSql(), fallbackConnectionId, "FALLBACK_WIRE_V1", null, "42",
+                "QUARANTINED", "FALLBACK_WIRE_KEY", null);
+        Long fallbackInboxId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_impression_inbox`", Long.class);
+        assertEquals(1, jdbc().update(attemptInsertSql(
+                        "DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 1 DAY)",
+                        "DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 2 DAY)"),
+                fallbackConnectionId, fallbackInboxId, "FALLBACK_WIRE_V1",
+                "FALLBACK_QUARANTINED", "ACK_200"));
+        Long fallbackAttemptId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_callback_attempt`", Long.class);
+        assertThrows(DataAccessException.class, () -> purgeAttempt(fallbackAttemptId));
+
+        long succeededConnectionId = insertConnection("purge-succeeded");
+        jdbc().update(inboxInsertSql(), succeededConnectionId, "OFFICIAL_V1", "req-succeeded", "42",
+                "SUCCEEDED", null, new Timestamp(System.currentTimeMillis()));
+        Long succeededInboxId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_impression_inbox`", Long.class);
+        assertEquals(1, jdbc().update(attemptInsertSql(
+                        "DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 1 DAY)"),
+                succeededConnectionId, succeededInboxId, "OFFICIAL_V1", "CANONICAL", "ACK_200"));
+        Long futureAttemptId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_callback_attempt`", Long.class);
+        assertThrows(DataAccessException.class, () -> purgeAttempt(futureAttemptId));
+
+        assertEquals(1, jdbc().update(attemptInsertSql(
+                        "DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 1 DAY)",
+                        "DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 2 DAY)"),
+                succeededConnectionId, succeededInboxId, "OFFICIAL_V1", "CANONICAL", "ACK_200"));
+        Long expiredAttemptId = jdbc().queryForObject(
+                "SELECT MAX(`id`) FROM `skit_provider_callback_attempt`", Long.class);
+        assertEquals(1, purgeAttempt(expiredAttemptId));
     }
 
     private long insertConnection(String suffix) {
@@ -342,25 +427,37 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                 + "(`provider_connection_id`,`dedupe_scheme`,`dedupe_key_hash`,"
                 + "`provider_request_id_lexical`,`adsource_id_lexical`,`material_integrity_hash`,"
                 + "`authentication_level`,`integrity_status`,`integrity_revision`,`processing_status`,"
-                + "`quarantine_reason`,`delivery_count`,`processing_attempt_count`,`first_received_at`,"
+                + "`quarantine_reason`,`processing_attempt_count`,`first_received_at`,"
                 + "`last_received_at`,`processed_at`) VALUES (?, ?,UNHEX(REPEAT('aa',32)),?,?,"
-                + "UNHEX(REPEAT('bb',32)),'UNSIGNED_PROVIDER_OBSERVATION','CANONICAL',0,?,?,1,0,"
+                + "UNHEX(REPEAT('bb',32)),'UNSIGNED_PROVIDER_OBSERVATION','CANONICAL',0,?,?,0,"
                 + "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?)";
     }
 
-    private String validAttemptInsertSql() {
+    private String attemptInsertSql(String payloadExpiresAtExpression) {
+        return attemptInsertSql(payloadExpiresAtExpression, "CURRENT_TIMESTAMP");
+    }
+
+    private String attemptInsertSql(String payloadExpiresAtExpression, String receivedAtExpression) {
         return "INSERT INTO `skit_provider_callback_attempt` "
-                + "(`correlation_id`,`provider_connection_id`,`inbox_id`,`wire_payload_hash`,"
+                + "(`correlation_id`,`provider_connection_id`,`inbox_id`,`dedupe_scheme`,`wire_payload_hash`,"
                 + "`material_integrity_hash`,`delivery_integrity_status`,`response_decision`,"
                 + "`payload_ciphertext`,`payload_nonce`,`payload_key_id`,`payload_purpose`,"
                 + "`payload_envelope_version`,`payload_expires_at`,`wire_size_bytes`,`parameter_count`,"
                 + "`remote_address_hash`,`user_agent_hash`,`request_header_fingerprint`,`trace_id`,"
-                + "`received_at`) VALUES (UUID_TO_BIN(UUID()),?,?,UNHEX(REPEAT('44',32)),"
-                + "UNHEX(REPEAT('55',32)),'CANONICAL','ACK_200',X'01',UNHEX(REPEAT('66',12)),"
+                + "`received_at`) VALUES (UUID_TO_BIN(UUID()),?,?,?,UNHEX(REPEAT('44',32)),"
+                + "UNHEX(REPEAT('55',32)),?,?,X'01',UNHEX(REPEAT('66',12)),"
                 + "'provider-capture','TAKU_IMPRESSION_CAPTURE',1,"
-                + "DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 7 DAY),128,2,UNHEX(REPEAT('77',32)),"
+                + payloadExpiresAtExpression + ",128,2,UNHEX(REPEAT('77',32)),"
                 + "UNHEX(REPEAT('88',32)),UNHEX(REPEAT('99',32)),REPLACE(UUID(),'-',''),"
-                + "CURRENT_TIMESTAMP)";
+                + receivedAtExpression + ")";
+    }
+
+    private int purgeAttempt(long attemptId) {
+        return jdbc().update(
+                "UPDATE `skit_provider_callback_attempt` SET `payload_ciphertext`=NULL,"
+                        + "`payload_nonce`=NULL,`payload_key_id`=NULL,`payload_purpose`=NULL,"
+                        + "`payload_envelope_version`=NULL,`payload_expires_at`=NULL,"
+                        + "`payload_purged_at`=CURRENT_TIMESTAMP WHERE `id`=?", attemptId);
     }
 
     private String columnDefinition(String table, String column) {

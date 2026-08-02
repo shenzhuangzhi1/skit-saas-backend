@@ -78,6 +78,7 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "ck_provider_connection_owner",
                 "ck_provider_connection_state",
                 "fk_provider_connection_active_route",
+                "trg_provider_connection_lifecycle_immutable",
                 "uk_provider_callback_route_slot",
                 "FOREIGN KEY (`provider_connection_id`,`supersedes_callback_route_id`) "
                         + "REFERENCES `skit_ad_provider_callback_route` (`provider_connection_id`,`id`)",
@@ -129,13 +130,26 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "integrity_conflict_at", "processing_status", "lease_owner", "lease_until",
                 "processing_attempt_count", "next_attempt_at", "processed_at",
                 "dead_letter_alerted_at", "uk_provider_impression_inbox_connection_id");
+        assertFalse(inbox.contains("`delivery_count`"),
+                "Attempt rows are the only durable delivery ledger");
         assertFalse(inbox.contains("TAKU_REQ_ADSOURCE"));
         assertFalse(inbox.contains("WIRE_HASH_FALLBACK"));
-        assertContains(attempt, "material_integrity_hash", "delivery_integrity_status",
+        assertContains(attempt, "`dedupe_scheme` varchar(32) NOT NULL",
+                "material_integrity_hash", "delivery_integrity_status",
                 "response_decision", "remote_address_hash", "user_agent_hash",
                 "request_header_fingerprint", "trace_id", "payload_purged_at",
                 "uk_provider_callback_attempt_connection_inbox_id",
+                "FOREIGN KEY (`provider_connection_id`,`inbox_id`,`dedupe_scheme`) "
+                        + "REFERENCES `skit_provider_impression_inbox` "
+                        + "(`provider_connection_id`,`id`,`dedupe_scheme`)",
+                "`dedupe_scheme`='OFFICIAL_V1'",
+                "`dedupe_scheme`='FALLBACK_WIRE_V1'",
                 "ck_provider_callback_attempt_payload_retention");
+        assertContains(manifest,
+                "OLD.`payload_expires_at`<=NEW.`payload_purged_at`",
+                "NEW.`payload_purged_at`<=CURRENT_TIMESTAMP",
+                "`processing_status` IN ('SUCCEEDED','QUARANTINED')",
+                "`dead_letter_alerted_at` IS NOT NULL");
         for (String prohibited : Arrays.asList("command_body", "callback_url", "raw_query",
                 "plaintext", "provider_key", "secret_value")) {
             assertFalse(manifest.contains("`" + prohibited + "`"),
@@ -167,8 +181,10 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "`authentication_level`='UNSIGNED_PROVIDER_OBSERVATION'",
                 "`payload_purged_at` datetime DEFAULT NULL",
                 "fk_provider_impression_inbox_canonical_attempt",
+                "trg_provider_connection_lifecycle_immutable",
                 "trg_callback_route_registry_immutable",
                 "trg_provider_callback_attempt_immutable");
+        assertFalse(standalone.contains("`delivery_count`"));
         assertFalse(standalone.contains("`owner_type` varchar(32) NOT NULL"));
         assertTrue(standalone.contains("-- Skit 阶段 1 全局 provider callback capture 表（7 张）"));
     }
