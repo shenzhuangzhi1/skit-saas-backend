@@ -35,6 +35,12 @@ public interface SkitAdCallbackRouteRegistryMapper {
     SkitAdCallbackRouteRegistryDO selectByTenantCallbackKeyId(
             @Param("tenantCallbackKeyId") Long tenantCallbackKeyId);
 
+    @Select("SELECT * FROM skit_ad_callback_route_registry WHERE provider_callback_route_id=#{providerRouteId} LIMIT 1")
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    SkitAdCallbackRouteRegistryDO selectByProviderCallbackRouteId(
+            @Param("providerRouteId") Long providerRouteId);
+
     @Insert("INSERT INTO skit_ad_callback_route_registry "
             + "(key_hash,route_type,provider_callback_route_id,tenant_callback_key_id,registered_at,tombstoned_at) "
             + "VALUES (#{keyHash},#{routeType},#{providerCallbackRouteId},#{tenantCallbackKeyId},"
@@ -53,6 +59,14 @@ public interface SkitAdCallbackRouteRegistryMapper {
     @InterceptorIgnore(tenantLine = "true")
     int tombstoneRevokedTenantKeys(@Param("tenantId") Long tenantId,
                                    @Param("adAccountId") Long adAccountId);
+
+    @Update("UPDATE skit_ad_callback_route_registry SET tombstoned_at=#{at} "
+            + "WHERE provider_callback_route_id=#{providerRouteId} AND route_type='PROVIDER_CALLBACK_ROUTE' "
+            + "AND tombstoned_at IS NULL")
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    int tombstoneProviderRoute(@Param("providerRouteId") Long providerRouteId,
+                               @Param("at") LocalDateTime at);
 
     @Select("SELECT k.id tenant_callback_key_id,k.callback_key_hash key_hash,"
             + "k.tenant_id,k.ad_account_id,k.key_version,k.active,k.accept_until,k.revoked_at,k.create_time registered_at "

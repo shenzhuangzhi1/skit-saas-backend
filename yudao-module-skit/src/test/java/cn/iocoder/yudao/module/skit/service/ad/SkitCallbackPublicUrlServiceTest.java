@@ -6,6 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+
+import java.util.Arrays;
 
 class SkitCallbackPublicUrlServiceTest {
 
@@ -33,6 +36,63 @@ class SkitCallbackPublicUrlServiceTest {
                 new SkitCallbackPublicUrlService("http://124.221.50.30/app-api");
 
         assertFalse(service.isHttps());
+    }
+
+    @Test
+    void providerImpressionUrlRequiresTheAccountKeyNamespace() {
+        SkitCallbackPublicUrlService service =
+                new SkitCallbackPublicUrlService("https://ads.example.com/app-api");
+        char[] key = "acct_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL".toCharArray();
+        char[] url = service.providerImpressionCallbackUrl(key);
+        try {
+            assertTrue(new String(url).startsWith(
+                    "https://ads.example.com/app-api/skit/ad-callback/taku/acct_"));
+        } finally {
+            Arrays.fill(key, '\0');
+            Arrays.fill(url, '\0');
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> service.providerImpressionCallbackUrl(
+                        "abcdeabcdefghijklmnopqrstuvwxyzABCDEFGHIJKL".toCharArray()));
+    }
+
+    @Test
+    void providerContractFingerprintIsStableAndBindsOriginAndOrderedTemplate() {
+        byte[] keyHash = new byte[32];
+        Arrays.fill(keyHash, (byte) 7);
+        byte[] first = new SkitCallbackPublicUrlService("https://ads.example.com/app-api")
+                .providerImpressionContractFingerprint(keyHash);
+        byte[] second = new SkitCallbackPublicUrlService("https://ads.example.com/app-api")
+                .providerImpressionContractFingerprint(keyHash);
+        byte[] changedOrigin = new SkitCallbackPublicUrlService("https://other.example.com/app-api")
+                .providerImpressionContractFingerprint(keyHash);
+        char[] origin = "https://ads.example.com/app-api".toCharArray();
+        char[] template = SkitCallbackPublicUrlService.canonicalProviderImpressionTemplate();
+        char[] reorderedTemplate = "?req_id={req_id}&user_id={user_id}".toCharArray();
+        byte[] changedPathVersion = SkitCallbackPublicUrlService.providerContractFingerprint(keyHash,
+                origin, 2, 1, template);
+        byte[] changedTemplateVersion = SkitCallbackPublicUrlService.providerContractFingerprint(keyHash,
+                origin, 1, 2, template);
+        byte[] changedMacroOrder = SkitCallbackPublicUrlService.providerContractFingerprint(keyHash,
+                origin, 1, 1, reorderedTemplate);
+        try {
+            assertArrayEquals(first, second);
+            assertFalse(Arrays.equals(first, changedOrigin));
+            assertFalse(Arrays.equals(first, changedPathVersion));
+            assertFalse(Arrays.equals(first, changedTemplateVersion));
+            assertFalse(Arrays.equals(first, changedMacroOrder));
+        } finally {
+            Arrays.fill(keyHash, (byte) 0);
+            Arrays.fill(first, (byte) 0);
+            Arrays.fill(second, (byte) 0);
+            Arrays.fill(changedOrigin, (byte) 0);
+            Arrays.fill(changedPathVersion, (byte) 0);
+            Arrays.fill(changedTemplateVersion, (byte) 0);
+            Arrays.fill(changedMacroOrder, (byte) 0);
+            Arrays.fill(origin, '\0');
+            Arrays.fill(template, '\0');
+            Arrays.fill(reorderedTemplate, '\0');
+        }
     }
 
     @Test
