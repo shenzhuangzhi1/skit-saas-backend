@@ -8,6 +8,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -38,13 +39,21 @@ public final class SkitAesGcmCredentialCryptoService implements SkitAdCredential
     public EncryptedSecret encrypt(Context context, byte[] plaintext) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(plaintext, "plaintext");
-        if (plaintext.length == 0) {
+        if (plaintext.length == 0 && !context.isProviderCallbackPayload()) {
             throw new IllegalArgumentException("Reward secret must not be empty");
         }
         byte[] nonce = new byte[NONCE_BYTES];
         secureRandom.nextBytes(nonce);
-        byte[] ciphertext = crypt(Cipher.ENCRYPT_MODE, context, plaintext, nonce, currentKeyId);
-        return new EncryptedSecret(ciphertext, nonce, currentKeyId, context.getEnvelopeVersion());
+        byte[] ciphertext = null;
+        try {
+            ciphertext = crypt(Cipher.ENCRYPT_MODE, context, plaintext, nonce, currentKeyId);
+            return new EncryptedSecret(ciphertext, nonce, currentKeyId, context.getEnvelopeVersion());
+        } finally {
+            Arrays.fill(nonce, (byte) 0);
+            if (ciphertext != null) {
+                Arrays.fill(ciphertext, (byte) 0);
+            }
+        }
     }
 
     @Override
@@ -55,11 +64,17 @@ public final class SkitAesGcmCredentialCryptoService implements SkitAdCredential
             throw new IllegalStateException("Credential envelope version does not match its bound context");
         }
         byte[] nonce = encryptedSecret.getNonce();
-        if (nonce.length != NONCE_BYTES) {
-            throw new IllegalStateException("Credential nonce has an invalid length");
+        byte[] ciphertext = encryptedSecret.getCiphertext();
+        try {
+            if (nonce.length != NONCE_BYTES) {
+                throw new IllegalStateException("Credential nonce has an invalid length");
+            }
+            return crypt(Cipher.DECRYPT_MODE, context, ciphertext, nonce,
+                    encryptedSecret.getKeyId());
+        } finally {
+            Arrays.fill(nonce, (byte) 0);
+            Arrays.fill(ciphertext, (byte) 0);
         }
-        return crypt(Cipher.DECRYPT_MODE, context, encryptedSecret.getCiphertext(), nonce,
-                encryptedSecret.getKeyId());
     }
 
     private byte[] crypt(int mode, Context context, byte[] input, byte[] nonce, String keyId) {
@@ -70,8 +85,13 @@ public final class SkitAesGcmCredentialCryptoService implements SkitAdCredential
         try {
             Cipher cipher = Cipher.getInstance(CIPHER_ALGORITHM);
             cipher.init(mode, new SecretKeySpec(key, "AES"), new GCMParameterSpec(TAG_BITS, nonce));
-            cipher.updateAAD(aad(context, keyId));
-            return cipher.doFinal(input);
+            byte[] aad = aad(context, keyId);
+            try {
+                cipher.updateAAD(aad);
+                return cipher.doFinal(input);
+            } finally {
+                Arrays.fill(aad, (byte) 0);
+            }
         } catch (GeneralSecurityException exception) {
             throw new IllegalStateException("Credential authentication failed", exception);
         }
@@ -82,6 +102,24 @@ public final class SkitAesGcmCredentialCryptoService implements SkitAdCredential
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             DataOutputStream output = new DataOutputStream(buffer);
             output.writeUTF(context.getPurpose());
+            if (context.isProviderCallbackPayload()) {
+                output.writeLong(context.getProviderConnectionId());
+                byte[] correlationId = context.getCorrelationId();
+                byte[] wirePayloadHash = context.getWirePayloadHash();
+                try {
+                    output.writeInt(correlationId.length);
+                    output.write(correlationId);
+                    output.writeInt(wirePayloadHash.length);
+                    output.write(wirePayloadHash);
+                    output.writeInt(context.getEnvelopeVersion());
+                    output.writeUTF(keyId);
+                    output.flush();
+                    return buffer.toByteArray();
+                } finally {
+                    Arrays.fill(correlationId, (byte) 0);
+                    Arrays.fill(wirePayloadHash, (byte) 0);
+                }
+            }
             output.writeLong(context.getTenantId());
             output.writeLong(context.getAdAccountId());
             if (context.isCallbackPayload()) {

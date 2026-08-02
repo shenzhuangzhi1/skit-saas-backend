@@ -13,12 +13,13 @@ public interface SkitAdCredentialCryptoService {
 
     byte[] decrypt(Context context, EncryptedSecret encryptedSecret);
 
-    final class Context {
+    final class Context implements AutoCloseable {
 
         private static final String REWARD_SECRET_PURPOSE = "TAKU_REWARD_SECRET";
         private static final String PUBLISHER_KEY_PURPOSE = "TAKU_PUBLISHER_KEY";
         private static final String APP_BUILD_MATERIAL_PURPOSE = "APP_BUILD_MATERIAL";
         private static final String CALLBACK_PAYLOAD_PURPOSE = "CALLBACK_PAYLOAD";
+        private static final String PROVIDER_CALLBACK_PAYLOAD_PURPOSE = "PROVIDER_CALLBACK_PAYLOAD";
 
         private final String purpose;
         private final long tenantId;
@@ -28,6 +29,10 @@ public interface SkitAdCredentialCryptoService {
         private final String callbackType;
         private final String idempotencyKey;
         private final byte[] canonicalPayloadHash;
+        private final long providerConnectionId;
+        private final byte[] correlationId;
+        private final byte[] wirePayloadHash;
+        private boolean closed;
 
         private Context(String purpose, long tenantId, long adAccountId,
                         int credentialVersion, int envelopeVersion) {
@@ -43,6 +48,9 @@ public interface SkitAdCredentialCryptoService {
             this.callbackType = null;
             this.idempotencyKey = null;
             this.canonicalPayloadHash = null;
+            this.providerConnectionId = 0L;
+            this.correlationId = null;
+            this.wirePayloadHash = null;
         }
 
         private Context(long tenantId, long adAccountId, String callbackType,
@@ -64,6 +72,30 @@ public interface SkitAdCredentialCryptoService {
                 throw new IllegalArgumentException("Callback canonical payload hash must contain 32 bytes");
             }
             this.canonicalPayloadHash = copiedHash;
+            this.providerConnectionId = 0L;
+            this.correlationId = null;
+            this.wirePayloadHash = null;
+        }
+
+        private Context(long providerConnectionId, byte[] correlationId,
+                        byte[] wirePayloadHash, int envelopeVersion) {
+            if (providerConnectionId <= 0 || envelopeVersion <= 0
+                    || envelopeVersion > Short.MAX_VALUE) {
+                throw new IllegalArgumentException("Provider callback encryption identifiers are invalid");
+            }
+            this.purpose = PROVIDER_CALLBACK_PAYLOAD_PURPOSE;
+            this.tenantId = 0L;
+            this.adAccountId = 0L;
+            this.credentialVersion = 0;
+            this.envelopeVersion = envelopeVersion;
+            this.callbackType = null;
+            this.idempotencyKey = null;
+            this.canonicalPayloadHash = null;
+            this.providerConnectionId = providerConnectionId;
+            this.correlationId = requireFixedBytes(correlationId, 16,
+                    "Provider callback correlation id");
+            this.wirePayloadHash = requireFixedBytes(wirePayloadHash, 32,
+                    "Provider callback wire payload hash");
         }
 
         public static Context rewardSecret(long tenantId, long adAccountId,
@@ -89,6 +121,11 @@ public interface SkitAdCredentialCryptoService {
                                        int envelopeVersion) {
             return new Context(tenantId, adAccountId, callbackType, idempotencyKey,
                     canonicalPayloadHash, envelopeVersion);
+        }
+
+        static Context providerCallbackPayload(long providerConnectionId, byte[] correlationId,
+                                               byte[] wirePayloadHash, int envelopeVersion) {
+            return new Context(providerConnectionId, correlationId, wirePayloadHash, envelopeVersion);
         }
 
         public String getPurpose() {
@@ -120,19 +157,58 @@ public interface SkitAdCredentialCryptoService {
         }
 
         byte[] getCanonicalPayloadHash() {
+            requireOpen();
             return canonicalPayloadHash == null ? null : canonicalPayloadHash.clone();
+        }
+
+        long getProviderConnectionId() {
+            return providerConnectionId;
+        }
+
+        byte[] getCorrelationId() {
+            requireOpen();
+            return correlationId == null ? null : correlationId.clone();
+        }
+
+        byte[] getWirePayloadHash() {
+            requireOpen();
+            return wirePayloadHash == null ? null : wirePayloadHash.clone();
         }
 
         boolean isCallbackPayload() {
             return CALLBACK_PAYLOAD_PURPOSE.equals(purpose);
         }
 
+        boolean isProviderCallbackPayload() {
+            return PROVIDER_CALLBACK_PAYLOAD_PURPOSE.equals(purpose);
+        }
+
         boolean isAppBuildMaterial() {
             return APP_BUILD_MATERIAL_PURPOSE.equals(purpose);
         }
 
+        public boolean isClosed() {
+            return closed;
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            wipe(canonicalPayloadHash);
+            wipe(correlationId);
+            wipe(wirePayloadHash);
+            closed = true;
+        }
+
         @Override
         public String toString() {
+            if (isProviderCallbackPayload()) {
+                return "Context{purpose='" + purpose + "', providerConnectionId="
+                        + providerConnectionId + ", correlationId=<redacted>, wirePayloadHash=<redacted>"
+                        + ", envelopeVersion=" + envelopeVersion + '}';
+            }
             if (isCallbackPayload()) {
                 return "Context{purpose='" + purpose + "', tenantId=" + tenantId
                         + ", adAccountId=" + adAccountId + ", callbackType='" + callbackType
@@ -155,6 +231,27 @@ public interface SkitAdCredentialCryptoService {
                 throw new IllegalArgumentException("Callback " + fieldName + " is not canonical");
             }
             return required;
+        }
+
+        private static byte[] requireFixedBytes(byte[] value, int expectedLength, String fieldName) {
+            byte[] copied = Objects.requireNonNull(value, fieldName).clone();
+            if (copied.length != expectedLength) {
+                throw new IllegalArgumentException(fieldName + " must contain "
+                        + expectedLength + " bytes");
+            }
+            return copied;
+        }
+
+        private void requireOpen() {
+            if (closed) {
+                throw new IllegalStateException("Credential encryption context has been closed");
+            }
+        }
+
+        private static void wipe(byte[] value) {
+            if (value != null) {
+                Arrays.fill(value, (byte) 0);
+            }
         }
     }
 

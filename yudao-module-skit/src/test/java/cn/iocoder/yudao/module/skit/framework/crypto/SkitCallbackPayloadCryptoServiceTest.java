@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -143,6 +144,24 @@ class SkitCallbackPayloadCryptoServiceTest {
     }
 
     @Test
+    void preservesTheExistingTenantCallbackAadFixedVector() {
+        byte[] fixedNonce = sequence(12, 0);
+        SkitCallbackPayloadCryptoService fixedWriter = new SkitCallbackPayloadCryptoService(
+                new SkitAesGcmCredentialCryptoService("current",
+                        Collections.singletonMap("current", CURRENT_KEY),
+                        new FixedSecureRandom(fixedNonce)));
+
+        SkitCallbackPayloadCryptoService.PayloadEnvelope envelope = fixedWriter.encrypt(context(
+                        TENANT_ID, ACCOUNT_ID, CALLBACK_TYPE, IDEMPOTENCY_KEY, PAYLOAD_HASH, 1),
+                "canonical callback evidence".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals("ToTVE7dxsc3E/BLfHaOzZYVjI+JK1RDuTr/eDDzrg2Q9mbtP6sl4tQGdsg==",
+                Base64.getEncoder().encodeToString(envelope.getCiphertext()),
+                "provider AAD support must not rewrite persisted tenant callback envelopes");
+        assertArrayEquals(fixedNonce, envelope.getNonce());
+    }
+
+    @Test
     void decryptsRetainedOldKeyButRejectsTamperedKeyIdEvenWhenAliasHasSameKeyBytes() {
         SkitCallbackPayloadCryptoService.Context context = context(
                 TENANT_ID, ACCOUNT_ID, CALLBACK_TYPE, IDEMPOTENCY_KEY, PAYLOAD_HASH, 1);
@@ -217,5 +236,22 @@ class SkitCallbackPayloadCryptoServiceTest {
             result[index] = (byte) (seed + index);
         }
         return result;
+    }
+
+    private static final class FixedSecureRandom extends SecureRandom {
+
+        private final byte[] fixed;
+
+        private FixedSecureRandom(byte[] fixed) {
+            this.fixed = fixed.clone();
+        }
+
+        @Override
+        public void nextBytes(byte[] bytes) {
+            if (bytes.length != fixed.length) {
+                throw new IllegalArgumentException("Unexpected nonce length");
+            }
+            System.arraycopy(fixed, 0, bytes, 0, bytes.length);
+        }
     }
 }

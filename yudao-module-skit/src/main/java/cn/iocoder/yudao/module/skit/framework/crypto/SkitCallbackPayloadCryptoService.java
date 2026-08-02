@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.skit.framework.crypto;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.springframework.stereotype.Component;
 
+import java.util.Arrays;
 import java.util.Objects;
 
 /**
@@ -31,18 +32,34 @@ public final class SkitCallbackPayloadCryptoService {
         if (plaintext.length == 0) {
             throw new IllegalArgumentException("Callback payload must not be empty");
         }
-        SkitAdCredentialCryptoService.EncryptedSecret encrypted = credentialCryptoService.encrypt(
-                context.toCredentialContext(), plaintext);
-        return new PayloadEnvelope(encrypted.getCiphertext(), encrypted.getNonce(), encrypted.getKeyId(),
-                encrypted.getEnvelopeVersion());
+        try (SkitAdCredentialCryptoService.Context core = context.toCredentialContext()) {
+            SkitAdCredentialCryptoService.EncryptedSecret encrypted = credentialCryptoService.encrypt(
+                    core, plaintext);
+            byte[] ciphertext = encrypted.getCiphertext();
+            byte[] nonce = encrypted.getNonce();
+            try {
+                return new PayloadEnvelope(ciphertext, nonce, encrypted.getKeyId(),
+                        encrypted.getEnvelopeVersion());
+            } finally {
+                Arrays.fill(ciphertext, (byte) 0);
+                Arrays.fill(nonce, (byte) 0);
+            }
+        }
     }
 
     public byte[] decrypt(Context context, PayloadEnvelope envelope) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(envelope, "envelope");
-        return credentialCryptoService.decrypt(context.toCredentialContext(),
-                new SkitAdCredentialCryptoService.EncryptedSecret(envelope.getCiphertext(),
-                        envelope.getNonce(), envelope.getKeyId(), envelope.getEnvelopeVersion()));
+        byte[] ciphertext = envelope.getCiphertext();
+        byte[] nonce = envelope.getNonce();
+        try (SkitAdCredentialCryptoService.Context core = context.toCredentialContext()) {
+            return credentialCryptoService.decrypt(core,
+                    new SkitAdCredentialCryptoService.EncryptedSecret(ciphertext,
+                            nonce, envelope.getKeyId(), envelope.getEnvelopeVersion()));
+        } finally {
+            Arrays.fill(ciphertext, (byte) 0);
+            Arrays.fill(nonce, (byte) 0);
+        }
     }
 
     /** Callback dimensions that are authenticated but never stored in an encrypted envelope. */
