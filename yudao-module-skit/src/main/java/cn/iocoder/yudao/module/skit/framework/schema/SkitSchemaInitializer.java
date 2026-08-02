@@ -1052,6 +1052,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final int MEMBER_POINT_MIGRATION_VERSION = 2026072401;
     private static final int AD_ACCOUNT_APP_KEY_CAPACITY_MIGRATION_VERSION = 2026072501;
     private static final int PANGLE_REWARD_CALLBACK_MIGRATION_VERSION = 2026073001;
+    private static final int PROVIDER_IMPRESSION_PHASE_1_MIGRATION_VERSION = 2026080201;
     private static final String CREATE_PANGLE_REWARD_ATTESTATION_TABLE_SQL =
             "CREATE TABLE IF NOT EXISTS `skit_pangle_reward_attestation` ("
                     + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
@@ -1317,6 +1318,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         boolean task12Installed = appliedMigrations.containsKey(TASK_12_READINESS_MIGRATION_VERSION);
         boolean pangleRewardCallbackInstalled =
                 appliedMigrations.containsKey(PANGLE_REWARD_CALLBACK_MIGRATION_VERSION);
+        boolean providerImpressionPhase1Installed =
+                appliedMigrations.containsKey(PROVIDER_IMPRESSION_PHASE_1_MIGRATION_VERSION);
         if (task10Installed) {
             validateTask10ReconciliationSchema(true);
         } else {
@@ -1342,6 +1345,9 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             validatePangleRewardCallbackSchema(true);
         } else if (pangleRewardCallbackPhysicalStateStarted()) {
             validatePangleRewardCallbackMigrationPrefix();
+        }
+        if (providerImpressionPhase1Installed) {
+            validateProviderImpressionPhase1Schema(true);
         }
     }
 
@@ -1821,6 +1827,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "expand encrypted ad account app key capacity", adAccountAppKeyCapacitySteps()));
         result.add(migrationFromSteps(PANGLE_REWARD_CALLBACK_MIGRATION_VERSION,
                 "add tenant-bound Pangle reward attestations", pangleRewardCallbackSteps()));
+        result.add(migrationFromSteps(PROVIDER_IMPRESSION_PHASE_1_MIGRATION_VERSION,
+                "add account-level Taku impression capture", providerImpressionPhase1Steps()));
         return sortedMigrations(result);
     }
 
@@ -3481,6 +3489,36 @@ public class SkitSchemaInitializer implements ApplicationRunner {
         return steps;
     }
 
+    private List<SchemaStep> providerImpressionPhase1Steps() {
+        List<SchemaStep> steps = new ArrayList<>();
+        for (SkitProviderImpressionPhase1Schema.Step supplied
+                : SkitProviderImpressionPhase1Schema.steps()) {
+            switch (supplied.getKind()) {
+                case CREATE_TABLE:
+                case UPDATE:
+                    steps.add(schemaStep(supplied.getManifestEntry(),
+                            () -> jdbcTemplate.execute(supplied.getSql()), supplied.getSql()));
+                    break;
+                case FOREIGN_KEY:
+                    steps.add(addForeignKeyStep(supplied.getTable(), supplied.getName(),
+                            supplied.getColumns(), supplied.getReferencedTable(),
+                            supplied.getReferencedColumns()));
+                    break;
+                case TRIGGER:
+                    steps.add(task2TriggerStep(new Task2TriggerSpec(supplied.getTable(),
+                            supplied.getName(), supplied.getEvent(), supplied.getAction())));
+                    break;
+                default:
+                    throw new IllegalStateException("Unsupported provider impression schema step "
+                            + supplied.getKind());
+            }
+        }
+        steps.add(schemaStep("validate-provider-impression-phase1-schema",
+                () -> validateProviderImpressionPhase1Schema(true),
+                "provider-impression-phase1-physical-shape-v1"));
+        return steps;
+    }
+
     private List<SchemaStep> contentEntitlementLeaseActivationSteps() {
         return Arrays.asList(
                 addColumnStep("skit_content_entitlement", "lease_activated_at",
@@ -4557,6 +4595,217 @@ public class SkitSchemaInitializer implements ApplicationRunner {
             throw new IllegalStateException("Content entitlement lease activation backfill is incomplete: "
                     + nullRows + " rows remain NULL");
         }
+    }
+
+    void validateProviderImpressionPhase1Schema(boolean requireAll) {
+        List<String> tables = Arrays.asList(
+                "skit_ad_provider_connection",
+                "skit_ad_provider_callback_route",
+                "skit_ad_callback_route_registry",
+                "skit_ad_callback_route_registry_migration",
+                "skit_provider_impression_inbox",
+                "skit_provider_callback_attempt",
+                "skit_platform_provider_command_audit");
+        for (String table : tables) {
+            if (!tableExists(table)) {
+                if (requireAll) {
+                    throw new IllegalStateException("Provider impression phase 1 schema is missing table "
+                            + table);
+                }
+                continue;
+            }
+            if (columnExists(table, "tenant_id")) {
+                throw new IllegalStateException("Provider impression phase 1 global table has tenant ownership "
+                        + table + ".tenant_id");
+            }
+        }
+        if (!requireAll && !tableExists("skit_ad_provider_connection")) {
+            return;
+        }
+
+        validateColumnDefinition("skit_ad_provider_connection", "non_terminal_shared_master_slot",
+                "varchar(64) GENERATED ALWAYS AS (CASE WHEN `provider`='TAKU' "
+                        + "AND `account_mode`='SHARED_MASTER' AND `state`<>'RETIRED' "
+                        + "THEN 'TAKU:SHARED_MASTER' ELSE NULL END) STORED");
+        validateColumnDefinition("skit_ad_provider_callback_route", "occupied_route_slot",
+                "varchar(32) GENERATED ALWAYS AS (CASE WHEN `route_slot`<>'INACTIVE' "
+                        + "AND `state` NOT IN ('ABANDONED','RETIRED') THEN `route_slot` ELSE NULL END) STORED");
+        validateColumnDefinition("skit_provider_impression_inbox", "dedupe_key_hash",
+                "binary(32) NOT NULL");
+        validateColumnDefinition("skit_provider_callback_attempt", "payload_nonce",
+                "binary(12) NOT NULL");
+
+        validateTask5Index("skit_ad_provider_connection", "uk_provider_connection_code",
+                "connection_code", true, requireAll);
+        validateTask5Index("skit_ad_provider_connection", "uk_provider_connection_shared_master",
+                "non_terminal_shared_master_slot", true, requireAll);
+        validateTask5Index("skit_ad_provider_connection", "idx_provider_connection_state",
+                "provider,account_mode,state,id", false, requireAll);
+        validateTask5Index("skit_ad_provider_callback_route", "uk_provider_callback_route_version",
+                "provider_connection_id,route_version", true, requireAll);
+        validateTask5Index("skit_ad_provider_callback_route", "uk_provider_callback_route_key_hash",
+                "key_hash", true, requireAll);
+        validateTask5Index("skit_ad_provider_callback_route", "uk_provider_callback_route_slot",
+                "provider_connection_id,occupied_route_slot", true, requireAll);
+        validateTask5Index("skit_ad_provider_callback_route", "idx_provider_callback_route_state",
+                "provider_connection_id,state,id", false, requireAll);
+        validateTask5Index("skit_ad_callback_route_registry", "uk_callback_route_registry_key_hash",
+                "key_hash", true, requireAll);
+        validateTask5Index("skit_ad_callback_route_registry", "uk_callback_route_registry_provider_route",
+                "provider_callback_route_id", true, requireAll);
+        validateTask5Index("skit_ad_callback_route_registry", "uk_callback_route_registry_tenant_key",
+                "tenant_callback_key_id", true, requireAll);
+        validateTask5Index("skit_provider_impression_inbox", "uk_provider_impression_inbox_dedupe",
+                "provider_connection_id,dedupe_scheme,dedupe_key_hash", true, requireAll);
+        validateTask5Index("skit_provider_impression_inbox",
+                "uk_provider_impression_inbox_canonical_attempt",
+                "canonical_attempt_id", true, requireAll);
+        validateTask5Index("skit_provider_impression_inbox", "idx_provider_impression_inbox_status",
+                "provider_connection_id,capture_status,last_received_at,id", false, requireAll);
+        validateTask5Index("skit_provider_callback_attempt", "uk_provider_callback_attempt_correlation",
+                "correlation_id", true, requireAll);
+        validateTask5Index("skit_provider_callback_attempt", "idx_provider_callback_attempt_inbox",
+                "inbox_id,received_at,id", false, requireAll);
+        validateTask5Index("skit_provider_callback_attempt", "idx_provider_callback_attempt_expiry",
+                "payload_expires_at,id", false, requireAll);
+        validateTask5Index("skit_platform_provider_command_audit",
+                "uk_platform_provider_command_audit_trace", "trace_id", true, requireAll);
+        validateTask5Index("skit_platform_provider_command_audit",
+                "idx_platform_provider_command_audit_actor", "actor_user_id,occurred_at,id",
+                false, requireAll);
+        validateTask5Index("skit_platform_provider_command_audit",
+                "idx_platform_provider_command_audit_connection",
+                "provider_connection_id,occurred_at,id", false, requireAll);
+
+        for (Task2ForeignKeySpec spec : Arrays.asList(
+                new Task2ForeignKeySpec("skit_ad_provider_callback_route",
+                        "fk_provider_callback_route_connection", "provider_connection_id",
+                        "skit_ad_provider_connection", "id"),
+                new Task2ForeignKeySpec("skit_ad_callback_route_registry",
+                        "fk_callback_route_registry_provider_route", "provider_callback_route_id",
+                        "skit_ad_provider_callback_route", "id"),
+                new Task2ForeignKeySpec("skit_ad_callback_route_registry",
+                        "fk_callback_route_registry_tenant_key", "tenant_callback_key_id",
+                        "skit_ad_callback_key", "id"),
+                new Task2ForeignKeySpec("skit_provider_impression_inbox",
+                        "fk_provider_impression_inbox_connection", "provider_connection_id",
+                        "skit_ad_provider_connection", "id"),
+                new Task2ForeignKeySpec("skit_provider_impression_inbox",
+                        "fk_provider_impression_inbox_canonical_attempt", "canonical_attempt_id",
+                        "skit_provider_callback_attempt", "id"),
+                new Task2ForeignKeySpec("skit_provider_callback_attempt",
+                        "fk_provider_callback_attempt_connection", "provider_connection_id",
+                        "skit_ad_provider_connection", "id"),
+                new Task2ForeignKeySpec("skit_provider_callback_attempt",
+                        "fk_provider_callback_attempt_inbox", "inbox_id",
+                        "skit_provider_impression_inbox", "id"),
+                new Task2ForeignKeySpec("skit_platform_provider_command_audit",
+                        "fk_platform_provider_command_audit_connection", "provider_connection_id",
+                        "skit_ad_provider_connection", "id"),
+                new Task2ForeignKeySpec("skit_platform_provider_command_audit",
+                        "fk_platform_provider_command_audit_route", "provider_callback_route_id",
+                        "skit_ad_provider_callback_route", "id"),
+                new Task2ForeignKeySpec("skit_platform_provider_command_audit",
+                        "fk_platform_provider_command_audit_registry", "callback_route_registry_id",
+                        "skit_ad_callback_route_registry", "id"))) {
+            validateTask5ForeignKey(spec, requireAll);
+        }
+
+        for (Task2CheckSpec spec : providerImpressionPhase1CheckSpecs()) {
+            validateTask5Check(spec, requireAll);
+        }
+        for (SkitProviderImpressionPhase1Schema.Step step
+                : SkitProviderImpressionPhase1Schema.steps()) {
+            if (step.getKind() != SkitProviderImpressionPhase1Schema.Step.Kind.TRIGGER) {
+                continue;
+            }
+            Task2TriggerSpec spec = new Task2TriggerSpec(step.getTable(), step.getName(),
+                    step.getEvent(), step.getAction());
+            List<String> existing = jdbcTemplate.queryForList(
+                    TRIGGER_DEFINITION_QUERY, String.class, spec.trigger);
+            if (existing.isEmpty() && !requireAll) {
+                continue;
+            }
+            validateTask2TriggerDefinition(spec, existing);
+        }
+    }
+
+    private static List<Task2CheckSpec> providerImpressionPhase1CheckSpecs() {
+        return Arrays.asList(
+                new Task2CheckSpec("skit_ad_provider_connection", "ck_provider_connection_provider",
+                        "`provider`='TAKU'"),
+                new Task2CheckSpec("skit_ad_provider_connection", "ck_provider_connection_mode",
+                        "`account_mode` IN ('SHARED_MASTER','TENANT_OWNED')"),
+                new Task2CheckSpec("skit_ad_provider_connection", "ck_provider_connection_owner",
+                        "(`account_mode`='SHARED_MASTER' AND `owner_tenant_id` IS NULL "
+                                + "AND `owner_ad_account_id` IS NULL) OR (`account_mode`='TENANT_OWNED' "
+                                + "AND `owner_tenant_id` IS NOT NULL AND `owner_ad_account_id` IS NOT NULL)"),
+                new Task2CheckSpec("skit_ad_provider_connection", "ck_provider_connection_state",
+                        "`state` IN ('CONFIGURING','ACTIVE','MIGRATING','BLOCKED','RETIRED')"),
+                new Task2CheckSpec("skit_ad_provider_callback_route", "ck_provider_callback_route_version",
+                        "`route_version`>0"),
+                new Task2CheckSpec("skit_ad_provider_callback_route", "ck_provider_callback_route_purpose",
+                        "`purpose` IN ('GATE_TEST','PRODUCTION')"),
+                new Task2CheckSpec("skit_ad_provider_callback_route", "ck_provider_callback_route_state",
+                        "`state` IN ('DRAFT','ISSUED','SUBMITTED','ACTIVE','BLOCKED','ABANDONED','RETIRED')"),
+                new Task2CheckSpec("skit_ad_provider_callback_route", "ck_provider_callback_route_slot",
+                        "`route_slot` IN ('PRIMARY_ACCEPTING','MIGRATION_TARGET','INACTIVE')"),
+                new Task2CheckSpec("skit_ad_provider_callback_route", "ck_provider_callback_route_key_state",
+                        "(`state`='DRAFT' AND `key_hash` IS NULL AND `issued_at` IS NULL) OR "
+                                + "(`state`<>'DRAFT' AND `key_hash` IS NOT NULL AND `issued_at` IS NOT NULL)"),
+                new Task2CheckSpec("skit_ad_provider_callback_route", "ck_provider_callback_route_gate_state",
+                        "`purpose`<>'GATE_TEST' OR `state` NOT IN ('SUBMITTED','ACTIVE')"),
+                new Task2CheckSpec("skit_ad_callback_route_registry",
+                        "ck_callback_route_registry_owner_type",
+                        "`owner_type` IN ('PROVIDER_CALLBACK_ROUTE','TENANT_CALLBACK_KEY')"),
+                new Task2CheckSpec("skit_ad_callback_route_registry",
+                        "ck_callback_route_registry_owner_xor",
+                        "(`owner_type`='PROVIDER_CALLBACK_ROUTE' AND `provider_callback_route_id` IS NOT NULL "
+                                + "AND `tenant_callback_key_id` IS NULL) OR (`owner_type`='TENANT_CALLBACK_KEY' "
+                                + "AND `provider_callback_route_id` IS NULL "
+                                + "AND `tenant_callback_key_id` IS NOT NULL)"),
+                new Task2CheckSpec("skit_ad_callback_route_registry_migration",
+                        "ck_callback_route_registry_migration_singleton", "`singleton_id`=1"),
+                new Task2CheckSpec("skit_ad_callback_route_registry_migration",
+                        "ck_callback_route_registry_migration_state",
+                        "`migration_state` IN ('PENDING','RUNNING','COMPLETED','BLOCKED')"),
+                new Task2CheckSpec("skit_ad_callback_route_registry_migration",
+                        "ck_callback_route_registry_migration_cursor",
+                        "`last_callback_key_id`>=0 AND `last_batch_size`>=0"),
+                new Task2CheckSpec("skit_ad_callback_route_registry_migration",
+                        "ck_callback_route_registry_migration_time",
+                        "(`migration_state`='PENDING' AND `started_at` IS NULL AND `completed_at` IS NULL) OR "
+                                + "(`migration_state` IN ('RUNNING','BLOCKED') AND `started_at` IS NOT NULL "
+                                + "AND `completed_at` IS NULL) OR (`migration_state`='COMPLETED' "
+                                + "AND `started_at` IS NOT NULL AND `completed_at` IS NOT NULL)"),
+                new Task2CheckSpec("skit_provider_impression_inbox",
+                        "ck_provider_impression_inbox_dedupe_scheme",
+                        "`dedupe_scheme` IN ('TAKU_REQ_ADSOURCE','WIRE_HASH_FALLBACK')"),
+                new Task2CheckSpec("skit_provider_impression_inbox",
+                        "ck_provider_impression_inbox_status",
+                        "(`capture_status`='CAPTURED' AND `quarantine_reason` IS NULL) OR "
+                                + "(`capture_status`='QUARANTINED' AND `quarantine_reason` IS NOT NULL)"),
+                new Task2CheckSpec("skit_provider_impression_inbox",
+                        "ck_provider_impression_inbox_delivery_count", "`delivery_count`>0"),
+                new Task2CheckSpec("skit_provider_impression_inbox",
+                        "ck_provider_impression_inbox_time", "`last_received_at`>=`first_received_at`"),
+                new Task2CheckSpec("skit_provider_callback_attempt", "ck_provider_callback_attempt_envelope",
+                        "`payload_envelope_version`>0 AND CHAR_LENGTH(TRIM(`payload_key_id`))>0 "
+                                + "AND CHAR_LENGTH(TRIM(`payload_purpose`))>0"),
+                new Task2CheckSpec("skit_provider_callback_attempt", "ck_provider_callback_attempt_boundary",
+                        "`wire_size_bytes` BETWEEN 0 AND 32768 AND `parameter_count` BETWEEN 0 AND 64"),
+                new Task2CheckSpec("skit_provider_callback_attempt", "ck_provider_callback_attempt_expiry",
+                        "`payload_expires_at`>`received_at`"),
+                new Task2CheckSpec("skit_platform_provider_command_audit",
+                        "ck_platform_provider_command_audit_resource",
+                        "`provider_connection_id` IS NOT NULL OR `provider_callback_route_id` IS NOT NULL "
+                                + "OR `callback_route_registry_id` IS NOT NULL"),
+                new Task2CheckSpec("skit_platform_provider_command_audit",
+                        "ck_platform_provider_command_audit_reason",
+                        "CHAR_LENGTH(TRIM(`reason`)) BETWEEN 10 AND 500"),
+                new Task2CheckSpec("skit_platform_provider_command_audit",
+                        "ck_platform_provider_command_audit_result",
+                        "`result_status` IN ('SUCCEEDED','REJECTED','FAILED')"));
     }
 
     void validatePangleRewardCallbackSchema(boolean requireAll) {
