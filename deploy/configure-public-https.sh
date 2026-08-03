@@ -323,9 +323,7 @@ main() {
   # These are literal Compose placeholders; the shell must not expand them here.
   # shellcheck disable=SC2016
   if grep -Fq '      - "${FRONTEND_PORT:-80}:80"' "${compose_file}"; then
-    # shellcheck disable=SC2016
     sed -i 's|      - "${FRONTEND_PORT:-80}:80"|      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"|' "${compose_file}"
-  # shellcheck disable=SC2016
   elif ! grep -Fq '      - "127.0.0.1:${FRONTEND_PORT:-48081}:80"' "${compose_file}"; then
     echo "The deployed frontend port mapping is not recognized." >&2
     exit 1
