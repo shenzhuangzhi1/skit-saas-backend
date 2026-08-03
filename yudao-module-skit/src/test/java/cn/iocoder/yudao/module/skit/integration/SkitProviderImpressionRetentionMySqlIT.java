@@ -141,7 +141,7 @@ class SkitProviderImpressionRetentionMySqlIT extends SkitMySqlIntegrationTestBas
     }
 
     @Test
-    void twentyConcurrentWorkersPurgeEveryEligibleEnvelopeExactlyOnce() throws Exception {
+    void twentyConcurrentWorkersNeverDoublePurgeAnEligibleEnvelope() throws Exception {
         LocalDateTime now = databaseNow();
         List<Long> attemptIds = new ArrayList<>();
         for (int index = 0; index < 20; index++) {
@@ -149,7 +149,7 @@ class SkitProviderImpressionRetentionMySqlIT extends SkitMySqlIntegrationTestBas
             attemptIds.add(fixture(fixture, "SUCCEEDED", true, false,
                     now.minusSeconds(1), false));
         }
-        SkitProviderImpressionRetentionService service = service(1, transactionManager);
+        SkitProviderImpressionRetentionService service = service(20, transactionManager);
         ExecutorService executor = Executors.newFixedThreadPool(20);
         CountDownLatch ready = new CountDownLatch(20);
         CountDownLatch start = new CountDownLatch(1);

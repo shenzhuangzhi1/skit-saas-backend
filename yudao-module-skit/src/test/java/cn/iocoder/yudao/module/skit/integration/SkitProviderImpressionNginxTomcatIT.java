@@ -1071,7 +1071,6 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
         OutputStream output = socket.getOutputStream();
         output.write(rawRequest);
         output.flush();
-        socket.shutdownOutput();
         return RawHttpResponse.parse(readAll(socket.getInputStream()));
       }
     }

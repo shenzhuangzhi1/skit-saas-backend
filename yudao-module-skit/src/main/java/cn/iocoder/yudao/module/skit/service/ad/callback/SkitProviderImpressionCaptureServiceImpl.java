@@ -281,9 +281,11 @@ public class SkitProviderImpressionCaptureServiceImpl
         String deliveryStatus;
         if (FALLBACK_SCHEME.equals(proposed.getDedupeScheme())) {
             if (!first) {
-                byte[] canonicalWireHash = attemptMapper
+                SkitProviderCallbackAttemptDO canonicalAttempt = attemptMapper
                         .selectWirePayloadHashByConnectionAndId(
                                 connectionId, locked.getCanonicalAttemptId());
+                byte[] canonicalWireHash = canonicalAttempt == null
+                        ? null : canonicalAttempt.getWirePayloadHash();
                 try {
                     if (!constantTimeEquals(
                             canonicalWireHash, attempt.getWirePayloadHash())) {
@@ -291,6 +293,9 @@ public class SkitProviderImpressionCaptureServiceImpl
                     }
                 } finally {
                     wipe(canonicalWireHash);
+                    if (canonicalAttempt != null) {
+                        canonicalAttempt.setWirePayloadHash(null);
+                    }
                 }
             }
             deliveryStatus = "FALLBACK_QUARANTINED";

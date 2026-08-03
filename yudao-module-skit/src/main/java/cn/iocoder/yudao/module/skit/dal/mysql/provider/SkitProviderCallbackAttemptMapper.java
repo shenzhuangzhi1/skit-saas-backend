@@ -39,7 +39,7 @@ public interface SkitProviderCallbackAttemptMapper {
     @InterceptorIgnore(tenantLine = "true")
     @Select("SELECT wire_payload_hash FROM skit_provider_callback_attempt "
             + "WHERE provider_connection_id=#{providerConnectionId} AND id=#{id}")
-    byte[] selectWirePayloadHashByConnectionAndId(
+    SkitProviderCallbackAttemptDO selectWirePayloadHashByConnectionAndId(
             @Param("providerConnectionId") long providerConnectionId,
             @Param("id") long id);
 
