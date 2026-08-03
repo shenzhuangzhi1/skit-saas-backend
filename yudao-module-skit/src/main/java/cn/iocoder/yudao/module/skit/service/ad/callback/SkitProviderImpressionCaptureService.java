@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.skit.service.ad.callback;
 
 import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionService.ProviderRouteResolution;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonValue;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -49,26 +51,31 @@ public interface SkitProviderImpressionCaptureService {
                     userAgentHash, requestHeaderFingerprint);
         }
 
+        @JsonIgnore
         public byte[] getCorrelationId() {
             requireOpen();
             return correlationId.clone();
         }
 
+        @JsonIgnore
         public byte[] getRemoteAddressHash() {
             requireOpen();
             return remoteAddressHash.clone();
         }
 
+        @JsonIgnore
         public byte[] getUserAgentHash() {
             requireOpen();
             return userAgentHash == null ? null : userAgentHash.clone();
         }
 
+        @JsonIgnore
         public byte[] getRequestHeaderFingerprint() {
             requireOpen();
             return requestHeaderFingerprint.clone();
         }
 
+        @JsonIgnore
         public String getTraceId() {
             return traceId;
         }
@@ -96,6 +103,11 @@ public interface SkitProviderImpressionCaptureService {
             return "ProviderIngressEvidence{correlationId=<redacted>, remoteAddressHash=<redacted>, "
                     + "userAgentHash=" + (userAgentHash == null ? "<absent>" : "<redacted>")
                     + ", requestHeaderFingerprint=<redacted>, traceId='" + traceId + "'}";
+        }
+
+        @JsonValue
+        public String serializedForm() {
+            return "<redacted>";
         }
 
         private static byte[] fixed(byte[] value, int length, String field) {

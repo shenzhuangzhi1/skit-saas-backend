@@ -5,13 +5,21 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderImpressi
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderCallbackAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderImpressionInboxMapper;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitProviderCallbackPayloadCryptoService;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation.FormatBucket;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation.PersistenceFailure;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation.TransactionOutcome;
 import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionService.ProviderRouteResolution;
+import io.micrometer.core.instrument.Metrics;
+import org.springframework.dao.DataAccessException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionOperations;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Objects;
@@ -29,6 +37,33 @@ public class SkitProviderImpressionCaptureServiceImpl
     private final SkitProviderImpressionInboxMapper inboxMapper;
     private final SkitProviderCallbackAttemptMapper attemptMapper;
     private final TransactionOperations transactions;
+    private final SkitProviderImpressionRetentionProperties retention;
+    private final SkitProviderImpressionCaptureObservation observation;
+
+    @Autowired
+    public SkitProviderImpressionCaptureServiceImpl(
+            SkitProviderImpressionWireParser parser,
+            SkitProviderCallbackPayloadCryptoService crypto,
+            SkitProviderImpressionInboxMapper inboxMapper,
+            SkitProviderCallbackAttemptMapper attemptMapper,
+            PlatformTransactionManager transactionManager,
+            SkitProviderImpressionRetentionProperties retention,
+            SkitProviderImpressionCaptureObservation observation) {
+        this(parser, crypto, inboxMapper, attemptMapper,
+                shortTransaction(Objects.requireNonNull(transactionManager, "transactionManager")),
+                retention, observation);
+    }
+
+    public SkitProviderImpressionCaptureServiceImpl(
+            SkitProviderImpressionWireParser parser,
+            SkitProviderCallbackPayloadCryptoService crypto,
+            SkitProviderImpressionInboxMapper inboxMapper,
+            SkitProviderCallbackAttemptMapper attemptMapper,
+            PlatformTransactionManager transactionManager,
+            SkitProviderImpressionRetentionProperties retention) {
+        this(parser, crypto, inboxMapper, attemptMapper, transactionManager, retention,
+                defaultObservation());
+    }
 
     public SkitProviderImpressionCaptureServiceImpl(
             SkitProviderImpressionWireParser parser,
@@ -37,7 +72,8 @@ public class SkitProviderImpressionCaptureServiceImpl
             SkitProviderCallbackAttemptMapper attemptMapper,
             PlatformTransactionManager transactionManager) {
         this(parser, crypto, inboxMapper, attemptMapper,
-                shortTransaction(Objects.requireNonNull(transactionManager, "transactionManager")));
+                shortTransaction(Objects.requireNonNull(transactionManager, "transactionManager")),
+                new SkitProviderImpressionRetentionProperties(), defaultObservation());
     }
 
     SkitProviderImpressionCaptureServiceImpl(
@@ -46,11 +82,36 @@ public class SkitProviderImpressionCaptureServiceImpl
             SkitProviderImpressionInboxMapper inboxMapper,
             SkitProviderCallbackAttemptMapper attemptMapper,
             TransactionOperations transactions) {
+        this(parser, crypto, inboxMapper, attemptMapper, transactions,
+                new SkitProviderImpressionRetentionProperties(), defaultObservation());
+    }
+
+    SkitProviderImpressionCaptureServiceImpl(
+            SkitProviderImpressionWireParser parser,
+            SkitProviderCallbackPayloadCryptoService crypto,
+            SkitProviderImpressionInboxMapper inboxMapper,
+            SkitProviderCallbackAttemptMapper attemptMapper,
+            TransactionOperations transactions,
+            SkitProviderImpressionRetentionProperties retention) {
+        this(parser, crypto, inboxMapper, attemptMapper, transactions, retention,
+                defaultObservation());
+    }
+
+    SkitProviderImpressionCaptureServiceImpl(
+            SkitProviderImpressionWireParser parser,
+            SkitProviderCallbackPayloadCryptoService crypto,
+            SkitProviderImpressionInboxMapper inboxMapper,
+            SkitProviderCallbackAttemptMapper attemptMapper,
+            TransactionOperations transactions,
+            SkitProviderImpressionRetentionProperties retention,
+            SkitProviderImpressionCaptureObservation observation) {
         this.parser = Objects.requireNonNull(parser, "parser");
         this.crypto = Objects.requireNonNull(crypto, "crypto");
         this.inboxMapper = Objects.requireNonNull(inboxMapper, "inboxMapper");
         this.attemptMapper = Objects.requireNonNull(attemptMapper, "attemptMapper");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.retention = Objects.requireNonNull(retention, "retention");
+        this.observation = Objects.requireNonNull(observation, "observation");
     }
 
     @Override
@@ -66,9 +127,12 @@ public class SkitProviderImpressionCaptureServiceImpl
         if (wirePayload == null || evidence == null || receivedAt == null) {
             close(wirePayload);
             close(evidence);
+            observe(() -> observation.recordPersistenceFailure(
+                    PersistenceFailure.INTERNAL, FormatBucket.UNKNOWN));
             return CaptureDecision.PERSISTENCE_FAILURE_503;
         }
 
+        FormatBucket format = FormatBucket.UNKNOWN;
         byte[] wireBytes = null;
         byte[] wireHash = null;
         byte[] dedupeHash = null;
@@ -82,8 +146,12 @@ public class SkitProviderImpressionCaptureServiceImpl
         SkitProviderImpressionInboxDO inbox = null;
         SkitProviderCallbackAttemptDO attempt = null;
         try {
+            format = FormatBucket.fromWirePayload(wirePayload);
             long connectionId = route.getProviderConnectionId();
             if (connectionId <= 0) {
+                FormatBucket safeFormat = format;
+                observe(() -> observation.recordPersistenceFailure(
+                        PersistenceFailure.INTERNAL, safeFormat));
                 return CaptureDecision.PERSISTENCE_FAILURE_503;
             }
             wireBytes = wirePayload.getWireBytes();
@@ -93,6 +161,9 @@ public class SkitProviderImpressionCaptureServiceImpl
             if (OFFICIAL_SCHEME.equals(dedupeScheme)) {
                 materialHash = wirePayload.getMaterialIntegrityHash();
             } else if (!FALLBACK_SCHEME.equals(dedupeScheme)) {
+                FormatBucket safeFormat = format;
+                observe(() -> observation.recordPersistenceFailure(
+                        PersistenceFailure.INTERNAL, safeFormat));
                 return CaptureDecision.PERSISTENCE_FAILURE_503;
             }
             correlationId = evidence.getCorrelationId();
@@ -103,21 +174,53 @@ public class SkitProviderImpressionCaptureServiceImpl
             cryptoContext = SkitProviderCallbackPayloadCryptoService.Context
                     .providerCallbackPayload(connectionId, correlationId, wireHash,
                             SkitProviderCallbackPayloadCryptoService.CURRENT_ENVELOPE_VERSION);
-            envelope = crypto.encrypt(cryptoContext, wireBytes);
+            try {
+                envelope = crypto.encrypt(cryptoContext, wireBytes);
+            } catch (RuntimeException cryptoFailure) {
+                FormatBucket safeFormat = format;
+                observe(() -> observation.recordPersistenceFailure(
+                        PersistenceFailure.CRYPTO, safeFormat));
+                return CaptureDecision.PERSISTENCE_FAILURE_503;
+            }
             inbox = proposedInbox(connectionId, wirePayload, dedupeHash, materialHash, receivedAt);
             attempt = proposedAttempt(connectionId, wirePayload, evidence, envelope,
                     wireHash, materialHash, correlationId, remoteAddressHash,
                     userAgentHash, headerFingerprint, receivedAt);
             final SkitProviderImpressionInboxDO transactionInbox = inbox;
             final SkitProviderCallbackAttemptDO transactionAttempt = attempt;
-            Boolean committed = transactions.execute(status -> {
-                persistOneAttempt(transactionInbox, transactionAttempt,
-                        wirePayload.getQuarantineReason(), receivedAt);
-                return Boolean.TRUE;
-            });
-            return Boolean.TRUE.equals(committed)
-                    ? CaptureDecision.ACK_200 : CaptureDecision.PERSISTENCE_FAILURE_503;
+            long transactionStarted = System.nanoTime();
+            final CaptureOutcome outcome;
+            try {
+                outcome = transactions.execute(status -> persistOneAttempt(
+                        transactionInbox, transactionAttempt,
+                        wirePayload.getQuarantineReason(), receivedAt));
+            } catch (RuntimeException transactionFailure) {
+                Duration duration = elapsed(transactionStarted);
+                FormatBucket safeFormat = format;
+                observe(() -> observation.recordTransactionDuration(
+                        duration, TransactionOutcome.FAILED, safeFormat));
+                PersistenceFailure category = transactionFailure instanceof DataAccessException
+                        ? PersistenceFailure.DATABASE : PersistenceFailure.TRANSACTION;
+                observe(() -> observation.recordPersistenceFailure(category, safeFormat));
+                return CaptureDecision.PERSISTENCE_FAILURE_503;
+            }
+            Duration duration = elapsed(transactionStarted);
+            FormatBucket safeFormat = format;
+            if (outcome == null) {
+                observe(() -> observation.recordTransactionDuration(
+                        duration, TransactionOutcome.FAILED, safeFormat));
+                observe(() -> observation.recordPersistenceFailure(
+                        PersistenceFailure.TRANSACTION, safeFormat));
+                return CaptureDecision.PERSISTENCE_FAILURE_503;
+            }
+            observe(() -> observation.recordTransactionDuration(
+                    duration, TransactionOutcome.COMMITTED, safeFormat));
+            recordCommittedOutcome(outcome, safeFormat);
+            return CaptureDecision.ACK_200;
         } catch (RuntimeException exception) {
+            FormatBucket safeFormat = format;
+            observe(() -> observation.recordPersistenceFailure(
+                    PersistenceFailure.INTERNAL, safeFormat));
             return CaptureDecision.PERSISTENCE_FAILURE_503;
         } finally {
             close(envelope);
@@ -153,15 +256,17 @@ public class SkitProviderImpressionCaptureServiceImpl
             return CaptureDecision.REJECT_602;
         } catch (RuntimeException exception) {
             close(evidence);
+            observe(() -> observation.recordPersistenceFailure(
+                    PersistenceFailure.INTERNAL, FormatBucket.UNKNOWN));
             return CaptureDecision.PERSISTENCE_FAILURE_503;
         }
         return capture(route, wirePayload, evidence, receivedAt);
     }
 
-    private void persistOneAttempt(SkitProviderImpressionInboxDO proposed,
-                                   SkitProviderCallbackAttemptDO attempt,
-                                   String ingressQuarantineReason,
-                                   LocalDateTime receivedAt) {
+    private CaptureOutcome persistOneAttempt(SkitProviderImpressionInboxDO proposed,
+                                             SkitProviderCallbackAttemptDO attempt,
+                                             String ingressQuarantineReason,
+                                             LocalDateTime receivedAt) {
         int upsertCount = inboxMapper.insertOrGetCanonical(proposed);
         if (upsertCount < 0 || upsertCount > 2 || proposed.getId() == null) {
             throw new IllegalStateException("Provider impression Inbox upsert failed");
@@ -176,11 +281,16 @@ public class SkitProviderImpressionCaptureServiceImpl
         String deliveryStatus;
         if (FALLBACK_SCHEME.equals(proposed.getDedupeScheme())) {
             if (!first) {
-                SkitProviderCallbackAttemptDO canonical = attemptMapper.selectByConnectionAndId(
-                        connectionId, locked.getCanonicalAttemptId());
-                if (canonical == null || !constantTimeEquals(
-                        canonical.getWirePayloadHash(), attempt.getWirePayloadHash())) {
-                    throw new IllegalStateException("Fallback wire hash collision");
+                byte[] canonicalWireHash = attemptMapper
+                        .selectWirePayloadHashByConnectionAndId(
+                                connectionId, locked.getCanonicalAttemptId());
+                try {
+                    if (!constantTimeEquals(
+                            canonicalWireHash, attempt.getWirePayloadHash())) {
+                        throw new IllegalStateException("Fallback wire hash collision");
+                    }
+                } finally {
+                    wipe(canonicalWireHash);
                 }
             }
             deliveryStatus = "FALLBACK_QUARANTINED";
@@ -203,7 +313,6 @@ public class SkitProviderImpressionCaptureServiceImpl
             throw new IllegalStateException("Provider canonical Attempt CAS failed");
         }
         if ("PAYLOAD_CONFLICT".equals(deliveryStatus)
-                && "CANONICAL".equals(locked.getIntegrityStatus())
                 && inboxMapper.markPayloadConflictCas(connectionId, inboxId, receivedAt,
                 "PAYLOAD_CONFLICT") != 1) {
             throw new IllegalStateException("Provider integrity conflict CAS failed");
@@ -219,6 +328,25 @@ public class SkitProviderImpressionCaptureServiceImpl
                 connectionId, inboxId, receivedAt);
         if (lastReceivedCount < 0 || lastReceivedCount > 1) {
             throw new IllegalStateException("Provider last-received update failed");
+        }
+        return new CaptureOutcome(deliveryStatus,
+                ingressQuarantineReason != null
+                        || "FALLBACK_QUARANTINED".equals(deliveryStatus)
+                        || "PAYLOAD_CONFLICT".equals(deliveryStatus));
+    }
+
+    private void recordCommittedOutcome(CaptureOutcome outcome, FormatBucket format) {
+        if ("EQUIVALENT_DUPLICATE".equals(outcome.deliveryStatus)) {
+            observe(() -> observation.recordDuplicate(format));
+        }
+        if ("PAYLOAD_CONFLICT".equals(outcome.deliveryStatus)) {
+            observe(() -> observation.recordConflict(format));
+        }
+        if ("FALLBACK_QUARANTINED".equals(outcome.deliveryStatus)) {
+            observe(() -> observation.recordFallback(format));
+        }
+        if (outcome.quarantined) {
+            observe(() -> observation.recordQuarantined(format));
         }
     }
 
@@ -244,7 +372,7 @@ public class SkitProviderImpressionCaptureServiceImpl
         return row;
     }
 
-    private static SkitProviderCallbackAttemptDO proposedAttempt(
+    private SkitProviderCallbackAttemptDO proposedAttempt(
             long connectionId, SkitProviderImpressionWireParser.WirePayload wirePayload,
             ProviderIngressEvidence evidence,
             SkitProviderCallbackPayloadCryptoService.PayloadEnvelope envelope,
@@ -263,7 +391,7 @@ public class SkitProviderImpressionCaptureServiceImpl
         row.setPayloadKeyId(envelope.getKeyId());
         row.setPayloadPurpose(envelope.getPurpose());
         row.setPayloadEnvelopeVersion(envelope.getEnvelopeVersion());
-        row.setPayloadExpiresAt(receivedAt.plusDays(7));
+        row.setPayloadExpiresAt(retention.expiresAt(receivedAt));
         row.setWireSizeBytes(wirePayload.getWireSizeBytes());
         row.setParameterCount(wirePayload.getParameterCount());
         row.setRemoteAddressHash(copy(remoteAddressHash));
@@ -290,6 +418,32 @@ public class SkitProviderImpressionCaptureServiceImpl
         template.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         template.setTimeout(1);
         return template;
+    }
+
+    private static Duration elapsed(long startedAtNanos) {
+        return Duration.ofNanos(Math.max(0L, System.nanoTime() - startedAtNanos));
+    }
+
+    private static SkitProviderImpressionCaptureObservation defaultObservation() {
+        return new SkitProviderImpressionCaptureObservation(Metrics.globalRegistry);
+    }
+
+    private static void observe(Runnable signal) {
+        try {
+            signal.run();
+        } catch (RuntimeException ignored) {
+            // Telemetry failure must not change a committed capture decision.
+        }
+    }
+
+    private static final class CaptureOutcome {
+        private final String deliveryStatus;
+        private final boolean quarantined;
+
+        private CaptureOutcome(String deliveryStatus, boolean quarantined) {
+            this.deliveryStatus = deliveryStatus;
+            this.quarantined = quarantined;
+        }
     }
 
     private static boolean constantTimeEquals(byte[] first, byte[] second) {

@@ -20,6 +20,7 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdProviderCallbackRouteDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitAdProviderConnectionDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitPlatformProviderCommandAuditDO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderConnectionHealthProjection;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderConnectionReadProjection;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdProviderCallbackRouteMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdProviderConnectionMapper;
@@ -57,6 +58,7 @@ class SkitPlatformProviderCommandExecutorTest {
   @Mock private SkitAdProviderCallbackRouteMapper routeMapper;
   @Mock private SkitPlatformProviderCommandAuditMapper auditMapper;
   @Mock private SkitProviderConnectionReadMapper readMapper;
+  @Mock private SkitProviderConnectionHealthService healthService;
 
   private SkitPlatformProviderCommandExecutor executor;
 
@@ -71,6 +73,7 @@ class SkitPlatformProviderCommandExecutorTest {
             routeMapper,
             auditMapper,
             readMapper,
+            healthService,
             FIXED_CLOCK,
             () -> "trace_task6_0001");
   }
@@ -187,12 +190,26 @@ class SkitPlatformProviderCommandExecutorTest {
             .setAccountMode("SHARED_MASTER")
             .setConnectionState("CONFIGURING");
     when(readMapper.selectSafeByConnectionId(11L)).thenReturn(projection);
+    SkitProviderConnectionHealthView health =
+        SkitProviderConnectionHealthView.from(
+            new SkitProviderConnectionHealthProjection()
+                .setFirstReceivedAt(LocalDateTime.of(2026, 8, 3, 7, 0, 0))
+                .setLastReceivedAt(LocalDateTime.of(2026, 8, 3, 7, 5, 0))
+                .setAcceptedAttempts(8L)
+                .setDuplicates(2L)
+                .setConflicts(1L)
+                .setFallback(3L)
+                .setQuarantined(4L)
+                .setDbFailures(null));
+    when(healthService.getSafeHealth(11L)).thenReturn(health);
 
     SkitPlatformProviderCommandExecutor.ResourceView view = executor.getConnection(11L);
 
     assertEquals(11L, view.getConnectionId());
     assertEquals("TAKU", view.getProvider());
+    assertEquals(health, view.getHealth());
     verify(readMapper).selectSafeByConnectionId(11L);
+    verify(healthService).getSafeHealth(11L);
     verifyNoInteractions(connectionMapper, routeMapper);
   }
 
@@ -226,6 +243,22 @@ class SkitPlatformProviderCommandExecutorTest {
             "r.callback_key_fingerprint")) {
       assertTrue(sql.contains(required), required);
     }
+  }
+
+  @Test
+  void readProjectionSqlFallsBackToTheLatestPreActiveRoute() throws Exception {
+    Method method =
+        SkitProviderConnectionReadMapper.class.getDeclaredMethod(
+            "selectSafeByConnectionId", long.class);
+    Select select = method.getAnnotation(Select.class);
+    assertNotNull(select);
+    String sql = String.join(" ", select.value()).toLowerCase();
+
+    assertTrue(sql.contains("r.id=coalesce(c.active_callback_route_id,"));
+    assertTrue(sql.contains("candidate.provider_connection_id=c.id"));
+    assertTrue(sql.contains("candidate.state in ('draft','issued','submitted')"));
+    assertTrue(
+        sql.contains("order by candidate.route_version desc,candidate.id desc limit 1"));
   }
 
   @Test

@@ -185,7 +185,8 @@ final class SkitProviderImpressionPhase1Schema {
                 + "(OLD.`processing_status`='PENDING' AND NEW.`processing_status` IN ('PROCESSING','QUARANTINED')) OR "
                 + "(OLD.`processing_status`='PROCESSING' AND NEW.`processing_status` "
                 + "IN ('RETRY_WAIT','SUCCEEDED','QUARANTINED','DEAD_LETTER')) OR "
-                + "(OLD.`processing_status`='RETRY_WAIT' AND NEW.`processing_status`='PROCESSING')) "
+                + "(OLD.`processing_status`='RETRY_WAIT' AND NEW.`processing_status` "
+                + "IN ('PROCESSING','QUARANTINED'))) "
                 + "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provider impression inbox is monotonic'; "
                 + "END IF; END";
     }
@@ -227,7 +228,7 @@ final class SkitProviderImpressionPhase1Schema {
                 + "AND NEW.`payload_envelope_version` IS NULL "
                 + "AND NEW.`payload_expires_at` IS NULL AND NEW.`payload_purged_at` IS NOT NULL "
                 + "AND OLD.`payload_expires_at`<=NEW.`payload_purged_at` "
-                + "AND NEW.`payload_purged_at`<=CURRENT_TIMESTAMP) THEN "
+                + "AND NEW.`payload_purged_at`<=UTC_TIMESTAMP()) THEN "
                 + "SIGNAL SQLSTATE '45000' "
                 + "SET MESSAGE_TEXT = 'provider callback attempt is not purge eligible'; END IF; "
                 + "SELECT COUNT(*) INTO eligible_inbox_count "

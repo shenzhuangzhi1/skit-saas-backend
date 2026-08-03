@@ -21,7 +21,12 @@ public interface SkitProviderConnectionReadMapper {
           + "r.canonical_origin,r.callback_path_version,r.callback_template_version,"
           + "r.callback_key_fingerprint,r.issued_at,r.submitted_at,r.abandoned_at,"
           + "r.updated_at AS route_updated_at FROM skit_ad_provider_connection c "
-          + "LEFT JOIN skit_ad_provider_callback_route r ON r.id=c.active_callback_route_id "
+          + "LEFT JOIN skit_ad_provider_callback_route r ON r.id=COALESCE("
+          + "c.active_callback_route_id,(SELECT candidate.id "
+          + "FROM skit_ad_provider_callback_route candidate "
+          + "WHERE candidate.provider_connection_id=c.id "
+          + "AND candidate.state IN ('DRAFT','ISSUED','SUBMITTED') "
+          + "ORDER BY candidate.route_version DESC,candidate.id DESC LIMIT 1)) "
           + "WHERE c.id=#{connectionId}")
   @TenantIgnore
   @InterceptorIgnore(tenantLine = "true")

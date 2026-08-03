@@ -159,14 +159,17 @@ for gate_environment in \
     SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY \
     SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64 \
     SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE; do
-  grep -Fq "${gate_environment}: \${{ secrets.${gate_environment} }}" "${workflow}" \
-    || fail "backend deployment does not accept ephemeral ${gate_environment} evidence"
-  grep -Fq "printf '${gate_environment}=%q\\n'" "${workflow}" \
-    || fail "backend deployment does not stage ${gate_environment} in protected server.env"
+  if grep -Fq "${gate_environment}: \${{ secrets.${gate_environment} }}" "${workflow}" \
+      || grep -Fq "printf '${gate_environment}=%q\\n'" "${workflow}"; then
+    fail "single-host backend deployment stages forbidden ${gate_environment} evidence"
+  fi
   if grep -Fq "upsert_env ${gate_environment}" "${activation}"; then
     fail "backend activation persists ephemeral ${gate_environment} in .env"
   fi
 done
+grep -Fq 'Single-host activation refuses provider impression production gate evidence.' \
+  "${activation}" \
+  || fail "single-host activation can still load production issuance evidence"
 grep -Fq 'runtime_secrets_dir="runtime-secrets"' "${activation}" \
   && grep -Fq 'provider-impression-production-gate.properties' "${activation}" \
   || fail "backend activation does not create an ephemeral provider impression gate file"
@@ -179,8 +182,11 @@ if grep -Rq --exclude-dir=.git --exclude-dir=target \
 fi
 grep -Fq 'id: activate_backend' "${workflow}" \
   || fail "backend activation does not expose an auditable step outcome"
-grep -Fq 'status=SKIPPED_NO_CONFIG' "${workflow}" \
-  || fail "backend CI does not record an explicit no-config deployment outcome"
+grep -Fq 'status=FAILED_NO_CONFIG' "${workflow}" \
+  || fail "backend CI does not fail an unconfigured master deployment"
+if grep -Fq 'status=SKIPPED_NO_CONFIG' "${workflow}"; then
+  fail "backend master deployment can still finish as a no-config skip"
+fi
 grep -Fq 'Deployment was configured but immutable activation proof did not complete.' "${workflow}" \
   || fail "configured deployments may still finish green after activation is skipped"
 for immutable_proof in \

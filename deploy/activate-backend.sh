@@ -612,6 +612,15 @@ decode_canonical_gate_base64() {
   [ "${canonical_value}" = "${encoded}" ]
 }
 
+is_single_host_provider_impression_topology() {
+  [ -f docker-compose.prod.yml ] \
+    && grep -Fxq '  backend:' docker-compose.prod.yml \
+    && grep -Fxq '  mysql:' docker-compose.prod.yml \
+    && grep -Fxq '  redis:' docker-compose.prod.yml \
+    && grep -Fq 'container_name: skit-saas-backend' docker-compose.prod.yml \
+    && ! grep -Eq '^[[:space:]]+replicas:[[:space:]]*[2-9]' docker-compose.prod.yml
+}
+
 prepare_provider_impression_gate_runtime_config() {
   runtime_secrets_dir="runtime-secrets"
   production_gate_file="${runtime_secrets_dir}/provider-impression-production-gate.properties"
@@ -638,6 +647,10 @@ prepare_provider_impression_gate_runtime_config() {
   done
   if [ "${configured_gate_values}" -eq 0 ]; then
     return
+  fi
+  if is_single_host_provider_impression_topology; then
+    echo "Single-host activation refuses provider impression production gate evidence."
+    return 1
   fi
   if [ "${configured_gate_values}" -ne "${#gate_values[@]}" ]; then
     echo "Provider impression production gate evidence must be supplied as one complete set."

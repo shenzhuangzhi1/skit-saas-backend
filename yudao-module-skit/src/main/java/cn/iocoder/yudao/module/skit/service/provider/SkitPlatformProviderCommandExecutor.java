@@ -53,6 +53,7 @@ public class SkitPlatformProviderCommandExecutor {
   private final SkitAdProviderCallbackRouteMapper routeMapper;
   private final SkitPlatformProviderCommandAuditMapper auditMapper;
   private final SkitProviderConnectionReadMapper readMapper;
+  private final SkitProviderConnectionHealthService healthService;
   private final Clock clock;
   private final Supplier<String> traceIdSupplier;
 
@@ -63,7 +64,8 @@ public class SkitPlatformProviderCommandExecutor {
       SkitAdProviderConnectionMapper connectionMapper,
       SkitAdProviderCallbackRouteMapper routeMapper,
       SkitPlatformProviderCommandAuditMapper auditMapper,
-      SkitProviderConnectionReadMapper readMapper) {
+      SkitProviderConnectionReadMapper readMapper,
+      SkitProviderConnectionHealthService healthService) {
     this(
         connectionService,
         reauthService,
@@ -71,6 +73,7 @@ public class SkitPlatformProviderCommandExecutor {
         routeMapper,
         auditMapper,
         readMapper,
+        healthService,
         Clock.systemUTC(),
         () -> UUID.randomUUID().toString());
   }
@@ -83,6 +86,7 @@ public class SkitPlatformProviderCommandExecutor {
       SkitAdProviderCallbackRouteMapper routeMapper,
       SkitPlatformProviderCommandAuditMapper auditMapper,
       SkitProviderConnectionReadMapper readMapper,
+      SkitProviderConnectionHealthService healthService,
       Clock clock,
       Supplier<String> traceIdSupplier) {
     this.connectionService = Objects.requireNonNull(connectionService, "connectionService");
@@ -91,6 +95,7 @@ public class SkitPlatformProviderCommandExecutor {
     this.routeMapper = Objects.requireNonNull(routeMapper, "routeMapper");
     this.auditMapper = Objects.requireNonNull(auditMapper, "auditMapper");
     this.readMapper = Objects.requireNonNull(readMapper, "readMapper");
+    this.healthService = Objects.requireNonNull(healthService, "healthService");
     this.clock = Objects.requireNonNull(clock, "clock");
     this.traceIdSupplier = Objects.requireNonNull(traceIdSupplier, "traceIdSupplier");
   }
@@ -103,7 +108,7 @@ public class SkitPlatformProviderCommandExecutor {
     if (projection == null) {
       throw exception(PROVIDER_RESOURCE_NOT_FOUND);
     }
-    return ResourceView.from(projection);
+    return ResourceView.from(projection, healthService.getSafeHealth(connectionId));
   }
 
   @Transactional(rollbackFor = Exception.class)
@@ -534,6 +539,7 @@ public class SkitPlatformProviderCommandExecutor {
     private final LocalDateTime submittedAt;
     private final LocalDateTime abandonedAt;
     private final LocalDateTime routeUpdatedAt;
+    private final SkitProviderConnectionHealthView health;
 
     private ResourceView(
         SkitAdProviderConnectionDO connection, SkitAdProviderCallbackRouteDO route) {
@@ -558,9 +564,12 @@ public class SkitPlatformProviderCommandExecutor {
       this.submittedAt = route == null ? null : route.getSubmittedAt();
       this.abandonedAt = route == null ? null : route.getAbandonedAt();
       this.routeUpdatedAt = route == null ? null : route.getUpdatedAt();
+      this.health = null;
     }
 
-    private ResourceView(SkitProviderConnectionReadProjection projection) {
+    private ResourceView(
+        SkitProviderConnectionReadProjection projection,
+        SkitProviderConnectionHealthView health) {
       this.connectionId = projection.getConnectionId();
       this.provider = projection.getProvider();
       this.accountMode = projection.getAccountMode();
@@ -582,6 +591,7 @@ public class SkitPlatformProviderCommandExecutor {
       this.submittedAt = projection.getSubmittedAt();
       this.abandonedAt = projection.getAbandonedAt();
       this.routeUpdatedAt = projection.getRouteUpdatedAt();
+      this.health = Objects.requireNonNull(health, "health");
     }
 
     private static ResourceView from(
@@ -589,8 +599,10 @@ public class SkitPlatformProviderCommandExecutor {
       return new ResourceView(connection, route);
     }
 
-    private static ResourceView from(SkitProviderConnectionReadProjection projection) {
-      return new ResourceView(projection);
+    private static ResourceView from(
+        SkitProviderConnectionReadProjection projection,
+        SkitProviderConnectionHealthView health) {
+      return new ResourceView(projection, health);
     }
 
     public long getConnectionId() {
@@ -675,6 +687,10 @@ public class SkitPlatformProviderCommandExecutor {
 
     public LocalDateTime getRouteUpdatedAt() {
       return routeUpdatedAt;
+    }
+
+    public SkitProviderConnectionHealthView getHealth() {
+      return health;
     }
   }
 }

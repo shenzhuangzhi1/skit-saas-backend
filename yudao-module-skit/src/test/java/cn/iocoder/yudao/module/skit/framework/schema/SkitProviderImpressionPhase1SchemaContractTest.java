@@ -152,7 +152,7 @@ class SkitProviderImpressionPhase1SchemaContractTest {
                 "ck_provider_callback_attempt_payload_retention");
         assertContains(manifest,
                 "OLD.`payload_expires_at`<=NEW.`payload_purged_at`",
-                "NEW.`payload_purged_at`<=CURRENT_TIMESTAMP",
+                "NEW.`payload_purged_at`<=UTC_TIMESTAMP()",
                 "`processing_status` IN ('SUCCEEDED','QUARANTINED')",
                 "`dead_letter_alerted_at` IS NOT NULL");
         for (String prohibited : Arrays.asList("command_body", "callback_url", "raw_query",

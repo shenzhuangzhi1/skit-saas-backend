@@ -77,6 +77,41 @@ class SkitCallbackRouteRegistryServiceTest {
     }
 
     @Test
+    void oneLookupUsesProviderUtcAndTenantDatabaseLocalBoundaries() {
+        byte[] keyHash = new byte[32];
+        Arrays.fill(keyHash, (byte) 21);
+        LocalDateTime providerUtc = LocalDateTime.of(2026, 8, 3, 1, 2, 3);
+        LocalDateTime tenantDatabaseLocal = LocalDateTime.of(2026, 8, 3, 9, 2, 3);
+        LocalDateTime boundary = LocalDateTime.of(2026, 8, 3, 5, 0, 0);
+        SkitAdCallbackRouteRegistryMapper registryMapper =
+                mock(SkitAdCallbackRouteRegistryMapper.class);
+        SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+        SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
+        when(migrationMapper.selectSingleton()).thenReturn(migration("ENFORCED"));
+        SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                registryMapper, migrationMapper, legacyMapper, new SimpleMeterRegistry(),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+
+        when(registryMapper.selectLookupByKeyHash(keyHash)).thenReturn(
+                new SkitAdCallbackRouteRegistryDO().setId(12L)
+                        .setRouteType("PROVIDER_CALLBACK_ROUTE")
+                        .setProviderCallbackRouteId(20L)
+                        .setTombstonedAt(boundary));
+        assertEquals(SkitCallbackRouteRegistryService.RouteType.PROVIDER_CALLBACK_ROUTE,
+                service.lookup(keyHash, providerUtc, tenantDatabaseLocal).getRouteType());
+
+        when(registryMapper.selectLookupByKeyHash(keyHash)).thenReturn(
+                new SkitAdCallbackRouteRegistryDO().setId(13L)
+                        .setRouteType("TENANT_CALLBACK_KEY")
+                        .setTenantCallbackKeyId(81L).setTenantId(41L).setAdAccountId(51L)
+                        .setKeyVersion(1).setActive(false).setAcceptUntil(boundary)
+                        .setRevokedAt(boundary).setTombstonedAt(boundary));
+        assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
+                () -> service.lookup(keyHash, providerUtc, tenantDatabaseLocal));
+    }
+
+    @Test
     void preCutoverProviderOwnerRejectsWithoutLegacyFallback() {
         for (String phase : Arrays.asList("DUAL_WRITE", "BACKFILL", "VERIFY")) {
             byte[] keyHash = new byte[32];
@@ -103,6 +138,94 @@ class SkitCallbackRouteRegistryServiceTest {
 
             assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
                     () -> service.lookupTenantReward(keyHash, receivedAt), phase);
+            verify(registryMapper).selectLookupByKeyHash(keyHash);
+            verify(legacyMapper, never()).selectByHash(any(byte[].class));
+        }
+    }
+
+    @Test
+    void earlyPhasePublicLookupUsesLegacyOnlyAfterOneRegistryMiss() {
+        for (String phase : Arrays.asList("DUAL_WRITE", "BACKFILL", "VERIFY")) {
+            byte[] keyHash = new byte[32];
+            Arrays.fill(keyHash, (byte) 29);
+            LocalDateTime receivedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+            SkitAdCallbackRouteRegistryMapper registryMapper =
+                    mock(SkitAdCallbackRouteRegistryMapper.class);
+            SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                    mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+            SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
+            when(migrationMapper.selectSingleton()).thenReturn(migration(phase));
+            when(registryMapper.selectLookupByKeyHash(any(byte[].class))).thenReturn(null);
+            cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO legacy =
+                    new cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitAdCallbackKeyDO()
+                            .setId(73L).setAdAccountId(53L).setKeyVersion(2).setActive(true);
+            legacy.setTenantId(43L);
+            when(legacyMapper.selectByHash(any(byte[].class))).thenReturn(legacy);
+            SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                    registryMapper, migrationMapper, legacyMapper, new SimpleMeterRegistry(),
+                    Clock.fixed(NOW, ZoneOffset.UTC));
+
+            SkitCallbackRouteRegistryService.RouteLookup result =
+                    service.lookup(keyHash, receivedAt);
+
+            assertEquals(SkitCallbackRouteRegistryService.RouteType.TENANT_CALLBACK_KEY,
+                    result.getRouteType(), phase);
+            assertEquals(43L, result.getTenantId(), phase);
+            verify(registryMapper).selectLookupByKeyHash(keyHash);
+            verify(legacyMapper).selectByHash(keyHash);
+        }
+    }
+
+    @Test
+    void publicLookupReturnsProviderWithoutLegacyLookupInEveryPhase() {
+        for (String phase : Arrays.asList(
+                "DUAL_WRITE", "BACKFILL", "VERIFY", "SHADOW_READ", "HASH_FIRST", "ENFORCED")) {
+            byte[] keyHash = new byte[32];
+            Arrays.fill(keyHash, (byte) 31);
+            LocalDateTime receivedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+            SkitAdCallbackRouteRegistryMapper registryMapper =
+                    mock(SkitAdCallbackRouteRegistryMapper.class);
+            SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                    mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+            SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
+            when(migrationMapper.selectSingleton()).thenReturn(migration(phase));
+            when(registryMapper.selectLookupByKeyHash(any(byte[].class))).thenReturn(
+                    new SkitAdCallbackRouteRegistryDO().setId(11L)
+                            .setRouteType("PROVIDER_CALLBACK_ROUTE")
+                            .setProviderCallbackRouteId(19L).setRegisteredAt(receivedAt));
+            SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                    registryMapper, migrationMapper, legacyMapper, new SimpleMeterRegistry(),
+                    Clock.fixed(NOW, ZoneOffset.UTC));
+
+            SkitCallbackRouteRegistryService.RouteLookup result =
+                    service.lookup(keyHash, receivedAt);
+
+            assertEquals(SkitCallbackRouteRegistryService.RouteType.PROVIDER_CALLBACK_ROUTE,
+                    result.getRouteType(), phase);
+            assertEquals(Long.valueOf(19L), result.getProviderCallbackRouteId(), phase);
+            verify(registryMapper).selectLookupByKeyHash(keyHash);
+            verify(legacyMapper, never()).selectByHash(any(byte[].class));
+        }
+    }
+
+    @Test
+    void hashFirstAndEnforcedMissFailClosedWithoutLegacyLookup() {
+        for (String phase : Arrays.asList("HASH_FIRST", "ENFORCED")) {
+            byte[] keyHash = new byte[32];
+            Arrays.fill(keyHash, (byte) 37);
+            LocalDateTime receivedAt = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC);
+            SkitAdCallbackRouteRegistryMapper registryMapper =
+                    mock(SkitAdCallbackRouteRegistryMapper.class);
+            SkitAdCallbackRouteRegistryMigrationMapper migrationMapper =
+                    mock(SkitAdCallbackRouteRegistryMigrationMapper.class);
+            SkitAdCallbackKeyMapper legacyMapper = mock(SkitAdCallbackKeyMapper.class);
+            when(migrationMapper.selectSingleton()).thenReturn(migration(phase));
+            SkitCallbackRouteRegistryService service = new SkitCallbackRouteRegistryService(
+                    registryMapper, migrationMapper, legacyMapper, new SimpleMeterRegistry(),
+                    Clock.fixed(NOW, ZoneOffset.UTC));
+
+            assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
+                    () -> service.lookup(keyHash, receivedAt), phase);
             verify(registryMapper).selectLookupByKeyHash(keyHash);
             verify(legacyMapper, never()).selectByHash(any(byte[].class));
         }
@@ -174,7 +297,7 @@ class SkitCallbackRouteRegistryServiceTest {
                 Clock.fixed(NOW, ZoneOffset.UTC));
 
         assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
-                () -> service.lookupTenantReward(keyHash, receivedAt));
+                () -> service.lookup(keyHash, receivedAt));
         org.mockito.ArgumentCaptor<byte[]> registryHash =
                 org.mockito.ArgumentCaptor.forClass(byte[].class);
         org.mockito.ArgumentCaptor<byte[]> legacyHash =

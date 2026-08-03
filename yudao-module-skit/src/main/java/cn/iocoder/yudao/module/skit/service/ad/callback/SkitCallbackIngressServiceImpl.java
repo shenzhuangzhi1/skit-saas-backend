@@ -115,25 +115,35 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
         if (route == null) {
             return IngressResponse.REJECTED;
         }
+        try (TenantIngressEvidence evidence = tenantEvidence(callbackKey, clientIp)) {
+            return receiveReward(route, rawQuery, evidence, receivedAt);
+        }
+    }
 
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, timeout = 2, rollbackFor = Exception.class)
+    public IngressResponse receiveReward(SkitCallbackRoutingService.CallbackRoute route,
+                                         String rawQuery, TenantIngressEvidence evidence,
+                                         LocalDateTime authoritativeReceivedAt) {
+        requirePreResolved(route, evidence, authoritativeReceivedAt);
         TakuRewardCallback callback;
         try {
             callback = canonicalizer.canonicalizeReward(rawQuery);
         } catch (TakuCallbackCanonicalizer.CallbackParseException invalid) {
             String result = invalid.getErrorCode() == TakuCallbackCanonicalizer.ErrorCode.INVALID_SIGNATURE
                     ? "INVALID_SIGNATURE" : "INVALID_QUERY";
-            recordEdge(route, callbackKey, clientIp, REWARD, result, receivedAt);
+            recordEdge(route, evidence, REWARD, result, authoritativeReceivedAt);
             return "INVALID_SIGNATURE".equals(result)
                     ? IngressResponse.INVALID_SIGNATURE : IngressResponse.REJECTED;
         }
         if (callback.isHealthTestProbe()) {
-            recordEdge(route, callbackKey, clientIp, REWARD, "HEALTH_PROBE", receivedAt);
+            recordEdge(route, evidence, REWARD, "HEALTH_PROBE", authoritativeReceivedAt);
             return IngressResponse.OK;
         }
 
         AtomicReference<IngressResponse> result = new AtomicReference<>();
         TenantUtils.execute(route.getTenantId(), () -> result.set(receiveRewardInsideTenant(
-                route, callbackKey, clientIp, rawQuery, callback, receivedAt)));
+                route, evidence, rawQuery, callback, authoritativeReceivedAt)));
         return Objects.requireNonNull(result.get(), "reward ingress result");
     }
 
@@ -147,28 +157,38 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
         if (route == null) {
             return IngressResponse.REJECTED;
         }
+        try (TenantIngressEvidence evidence = tenantEvidence(callbackKey, clientIp)) {
+            return receiveImpression(route, rawQuery, evidence, receivedAt);
+        }
+    }
 
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, timeout = 2, rollbackFor = Exception.class)
+    public IngressResponse receiveImpression(SkitCallbackRoutingService.CallbackRoute route,
+                                             String rawQuery, TenantIngressEvidence evidence,
+                                             LocalDateTime authoritativeReceivedAt) {
+        requirePreResolved(route, evidence, authoritativeReceivedAt);
         TakuImpressionCallback callback;
         try {
             callback = canonicalizer.canonicalizeImpression(rawQuery);
         } catch (TakuCallbackCanonicalizer.CallbackParseException invalid) {
-            recordEdge(route, callbackKey, clientIp, IMPRESSION, "INVALID_QUERY", receivedAt);
+            recordEdge(route, evidence, IMPRESSION, "INVALID_QUERY", authoritativeReceivedAt);
             return IngressResponse.REJECTED;
         }
         AtomicReference<IngressResponse> result = new AtomicReference<>();
         TenantUtils.execute(route.getTenantId(), () -> result.set(receiveImpressionInsideTenant(
-                route, rawQuery, callback, receivedAt)));
+                route, rawQuery, callback, authoritativeReceivedAt)));
         return Objects.requireNonNull(result.get(), "impression ingress result");
     }
 
     private IngressResponse receiveRewardInsideTenant(
-            SkitCallbackRoutingService.CallbackRoute route, String callbackKey, String clientIp,
+            SkitCallbackRoutingService.CallbackRoute route, TenantIngressEvidence evidence,
             String rawQuery, TakuRewardCallback callback, LocalDateTime receivedAt) {
         byte[] tokenHash;
         try {
             tokenHash = tokenService.hashCustomData(callback.getExtraData());
         } catch (IllegalArgumentException invalidToken) {
-            recordEdge(route, callbackKey, clientIp, REWARD, "SESSION_TOKEN_INVALID", receivedAt);
+            recordEdge(route, evidence, REWARD, "SESSION_TOKEN_INVALID", receivedAt);
             return IngressResponse.REJECTED;
         }
         SkitAdSessionDO session;
@@ -183,7 +203,7 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             Arrays.fill(tokenHash, (byte) 0);
         }
         if (!rewardSessionMatches(route, session, callback, receivedAt)) {
-            recordEdge(route, callbackKey, clientIp, REWARD, "SESSION_MISMATCH", receivedAt);
+            recordEdge(route, evidence, REWARD, "SESSION_MISMATCH", receivedAt);
             return IngressResponse.REJECTED;
         }
 
@@ -198,15 +218,15 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
                              session.getRewardSecretVersion(), session.getRewardAcceptUntil(), receivedAt)) {
             verification = secret.withSecret(value -> signatureVerifier.verify(callback, value));
         } catch (SkitAdCredentialVersionService.CredentialUnavailableException unavailable) {
-            recordEdge(route, callbackKey, clientIp, REWARD, "SECRET_VERSION_REJECTED", receivedAt);
+            recordEdge(route, evidence, REWARD, "SECRET_VERSION_REJECTED", receivedAt);
             return IngressResponse.REJECTED;
         }
         if (!verification.isCoreDigestValid()) {
-            recordEdge(route, callbackKey, clientIp, REWARD, "INVALID_SIGNATURE", receivedAt);
+            recordEdge(route, evidence, REWARD, "INVALID_SIGNATURE", receivedAt);
             return IngressResponse.INVALID_SIGNATURE;
         }
         if (!verification.hasSignedRewardAuthority()) {
-            recordEdge(route, callbackKey, clientIp, REWARD, verification.getStatus().name(), receivedAt);
+            recordEdge(route, evidence, REWARD, verification.getStatus().name(), receivedAt);
             return IngressResponse.REJECTED;
         }
 
@@ -215,7 +235,7 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
                 SkitRewardAuthorityPolicy.Context.ingress(route.getTenantId(), route.getAdAccountId(),
                         session, authority, callback.getObservedNetworkFirmId(), receivedAt));
         if (!authorityDecision.isAuthorized()) {
-            recordEdge(route, callbackKey, clientIp, REWARD,
+            recordEdge(route, evidence, REWARD,
                     authorityDecision.getErrorCode(), receivedAt);
             return IngressResponse.REJECTED;
         }
@@ -449,8 +469,16 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
     private void recordEdge(
             SkitCallbackRoutingService.CallbackRoute route, String callbackKey, String clientIp,
             String callbackType, String resultCode, LocalDateTime receivedAt) {
-        byte[] callbackKeyHash = sha256("callback-key\0", bounded(callbackKey));
-        byte[] clientIpHash = hmacSha256(bounded(callbackKey), "client-ip\0", bounded(clientIp));
+        try (TenantIngressEvidence evidence = tenantEvidence(callbackKey, clientIp)) {
+            recordEdge(route, evidence, callbackType, resultCode, receivedAt);
+        }
+    }
+
+    private void recordEdge(
+            SkitCallbackRoutingService.CallbackRoute route, TenantIngressEvidence evidence,
+            String callbackType, String resultCode, LocalDateTime receivedAt) {
+        byte[] callbackKeyHash = evidence.getCallbackKeyHash();
+        byte[] clientIpHash = evidence.getClientIpHash();
         try {
             SkitAdCallbackEdgeAttemptDO row = new SkitAdCallbackEdgeAttemptDO()
                     .setTenantId(route == null ? null : route.getTenantId())
@@ -466,6 +494,27 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
         } finally {
             Arrays.fill(callbackKeyHash, (byte) 0);
             Arrays.fill(clientIpHash, (byte) 0);
+        }
+    }
+
+    private static TenantIngressEvidence tenantEvidence(String callbackKey, String clientIp) {
+        byte[] callbackKeyHash = sha256("callback-key\0", bounded(callbackKey));
+        byte[] clientIpHash = hmacSha256(bounded(callbackKey), "client-ip\0", bounded(clientIp));
+        try {
+            return TenantIngressEvidence.of(callbackKeyHash, clientIpHash);
+        } finally {
+            Arrays.fill(callbackKeyHash, (byte) 0);
+            Arrays.fill(clientIpHash, (byte) 0);
+        }
+    }
+
+    private static void requirePreResolved(
+            SkitCallbackRoutingService.CallbackRoute route, TenantIngressEvidence evidence,
+            LocalDateTime receivedAt) {
+        if (route == null || evidence == null || receivedAt == null
+                || route.getTenantId() <= 0 || route.getAdAccountId() <= 0
+                || route.getCallbackKeyVersion() <= 0) {
+            throw new IllegalArgumentException("Pre-resolved tenant callback ingress is invalid");
         }
     }
 

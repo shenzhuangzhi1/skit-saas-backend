@@ -9,12 +9,12 @@ package cn.iocoder.yudao.framework.common.enums;
  */
 public interface WebFilterOrderEnum {
 
-    int CORS_FILTER = Integer.MIN_VALUE;
+    // Callback secrets and deterministic method rejection must run before CORS can short-circuit.
+    int SENSITIVE_REQUEST_SANITIZER_FILTER = Integer.MIN_VALUE;
+
+    int CORS_FILTER = SENSITIVE_REQUEST_SANITIZER_FILTER + 1;
 
     int TRACE_FILTER = CORS_FILTER + 1;
-
-    // Must run before request-body caching, encryption error logging, and API access logging.
-    int SENSITIVE_REQUEST_SANITIZER_FILTER = TRACE_FILTER + 1;
 
     int REQUEST_BODY_CACHE_FILTER = Integer.MIN_VALUE + 500;
 

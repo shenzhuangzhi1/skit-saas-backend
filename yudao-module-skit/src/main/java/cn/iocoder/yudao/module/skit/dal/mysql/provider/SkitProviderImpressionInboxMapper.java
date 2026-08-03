@@ -60,19 +60,25 @@ public interface SkitProviderImpressionInboxMapper {
     @TenantIgnore
     @InterceptorIgnore(tenantLine = "true")
     @Update("UPDATE skit_provider_impression_inbox SET integrity_status='PAYLOAD_CONFLICT',"
-            + "integrity_revision=integrity_revision+1,integrity_conflict_at=#{conflictAt},"
-            + "quarantine_reason=CASE WHEN processing_status IN ('PENDING','PROCESSING') "
+            + "integrity_revision=integrity_revision+1,"
+            + "integrity_conflict_at=COALESCE(integrity_conflict_at,#{conflictAt}),"
+            + "quarantine_reason=CASE WHEN processing_status IN "
+            + "('PENDING','PROCESSING','RETRY_WAIT') "
             + "THEN #{reason} ELSE quarantine_reason END,"
-            + "lease_owner=CASE WHEN processing_status IN ('PENDING','PROCESSING') "
+            + "lease_owner=CASE WHEN processing_status IN "
+            + "('PENDING','PROCESSING','RETRY_WAIT') "
             + "THEN NULL ELSE lease_owner END,"
-            + "lease_until=CASE WHEN processing_status IN ('PENDING','PROCESSING') "
+            + "lease_until=CASE WHEN processing_status IN "
+            + "('PENDING','PROCESSING','RETRY_WAIT') "
             + "THEN NULL ELSE lease_until END,"
-            + "next_attempt_at=CASE WHEN processing_status IN ('PENDING','PROCESSING') "
+            + "next_attempt_at=CASE WHEN processing_status IN "
+            + "('PENDING','PROCESSING','RETRY_WAIT') "
             + "THEN NULL ELSE next_attempt_at END,"
-            + "processing_status=CASE WHEN processing_status IN ('PENDING','PROCESSING') "
+            + "processing_status=CASE WHEN processing_status IN "
+            + "('PENDING','PROCESSING','RETRY_WAIT') "
             + "THEN 'QUARANTINED' ELSE processing_status END "
             + "WHERE provider_connection_id=#{providerConnectionId} AND id=#{id} "
-            + "AND integrity_status='CANONICAL' AND integrity_conflict_at IS NULL")
+            + "AND integrity_status IN ('CANONICAL','PAYLOAD_CONFLICT')")
     int markPayloadConflictCas(@Param("providerConnectionId") long providerConnectionId,
                                @Param("id") long id,
                                @Param("conflictAt") LocalDateTime conflictAt,

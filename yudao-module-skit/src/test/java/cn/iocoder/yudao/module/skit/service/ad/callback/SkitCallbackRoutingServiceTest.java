@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class SkitCallbackRoutingServiceTest {
@@ -54,6 +55,28 @@ class SkitCallbackRoutingServiceTest {
 
         assertThrows(IllegalStateException.class,
                 () -> routingService.resolve(rawKey, receivedAt));
+    }
+
+    @Test
+    void preResolvedTenantRouteUsesAuthoritativeTimeWithoutAnotherRegistryCall() {
+        LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 14, 23, 10);
+        SkitCallbackRouteRegistryService.RouteLookup graceRoute =
+                SkitCallbackRouteRegistryService.RouteLookup.tenant(
+                        17L, 29L, 4, false, receivedAt.plusSeconds(1));
+
+        SkitCallbackRoutingService.CallbackRoute route =
+                routingService.resolveTenantReward(graceRoute, receivedAt);
+
+        assertEquals(17L, route.getTenantId());
+        assertEquals(29L, route.getAdAccountId());
+        assertEquals(4, route.getCallbackKeyVersion());
+        verifyNoInteractions(registryService);
+        assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
+                () -> routingService.resolveTenantReward(graceRoute, receivedAt.plusSeconds(2)));
+        assertThrows(SkitCallbackRouteRegistryService.CallbackRouteRejectedException.class,
+                () -> routingService.resolveTenantReward(
+                        SkitCallbackRouteRegistryService.RouteLookup.provider(31L), receivedAt));
+        verifyNoInteractions(registryService);
     }
 
     private static String repeat(char value, int count) {

@@ -13,11 +13,14 @@ import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdProviderCallbackRouteMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitAdProviderConnectionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitPlatformProviderCommandAuditMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderConnectionHealthMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderConnectionReadMapper;
 import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRouteRegistryService;
 import cn.iocoder.yudao.module.skit.service.provider.SkitCurrentAdminPasswordReauthService;
 import cn.iocoder.yudao.module.skit.service.provider.SkitPlatformProviderCommandExecutor;
 import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionService;
+import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionHealthService;
+import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionHealthServiceImpl;
 import java.lang.reflect.Field;
 import java.nio.CharBuffer;
 import java.time.Clock;
@@ -134,7 +137,7 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
                 "SELECT state FROM skit_ad_provider_callback_route WHERE id=?",
                 String.class,
                 routeId));
-    assertNotNull(executor.getConnection(connection.getConnectionId()));
+    assertCurrentPreActiveRoute(connection.getConnectionId(), routeId, "DRAFT");
 
     insertAuditWithTrace(connection.getConnectionId(), routeId, "task6_duplicate_trace");
     int auditRowsBeforeFailure = count("skit_platform_provider_command_audit");
@@ -191,6 +194,7 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
             "create route for real outer commit proof");
     assertCleared(committedDraftPassword);
     long committedRouteId = committedDraft.getRouteId();
+    assertCurrentPreActiveRoute(connection.getConnectionId(), committedRouteId, "DRAFT");
     traceId.set("task6_commit_issue");
     char[] committedIssuePassword = "current-password".toCharArray();
 
@@ -223,6 +227,7 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
                     + "WHERE provider_callback_route_id=? AND tombstoned_at IS NULL",
                 Integer.class,
                 committedRouteId));
+    assertCurrentPreActiveRoute(connection.getConnectionId(), committedRouteId, "ISSUED");
     assertEquals(
         1,
         jdbc()
@@ -231,6 +236,41 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
                     + "WHERE trace_id='task6_commit_issue' AND provider_callback_route_id=?",
                 Integer.class,
                 committedRouteId));
+
+    traceId.set("task6_abandon_gate_route");
+    char[] abandonPassword = "current-password".toCharArray();
+    executor.abandonNeverShared(
+        committedRouteId,
+        abandonPassword,
+        SkitPlatformProviderCommandExecutor.NEVER_SHARED_DECLARATION);
+    assertCleared(abandonPassword);
+
+    traceId.set("task6_production_draft");
+    char[] productionDraftPassword = "current-password".toCharArray();
+    SkitPlatformProviderCommandExecutor.ResourceView productionDraft =
+        executor.createDraftRoute(
+            connection.getConnectionId(),
+            SkitProviderConnectionService.RoutePurpose.PRODUCTION,
+            productionDraftPassword,
+            "create production route for deterministic read proof");
+    assertCleared(productionDraftPassword);
+    long productionRouteId = productionDraft.getRouteId();
+    assertCurrentPreActiveRoute(connection.getConnectionId(), productionRouteId, "DRAFT");
+
+    SkitProviderConnectionService allowingService =
+        context.getBean(
+            "allowingProviderConnectionService", SkitProviderConnectionService.class);
+    SkitProviderConnectionService.IssuedRoute productionIssued =
+        allowingService.issueOnce(
+            new SkitProviderConnectionService.IssueRouteCommand(productionRouteId, 7L));
+    char[] productionUrl = productionIssued.consumeCallbackUrl();
+    Arrays.fill(productionUrl, '\0');
+    assertCurrentPreActiveRoute(connection.getConnectionId(), productionRouteId, "ISSUED");
+
+    allowingService.markSubmitted(
+        new SkitProviderConnectionService.MarkSubmittedCommand(
+            productionRouteId, 7L, "ticket-safe", "reference-safe", "recipient-safe"));
+    assertCurrentPreActiveRoute(connection.getConnectionId(), productionRouteId, "SUBMITTED");
 
     long immutableAuditId =
         jdbc()
@@ -264,6 +304,13 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
 
   private int count(String table) {
     return jdbc().queryForObject("SELECT COUNT(*) FROM " + table, Integer.class);
+  }
+
+  private void assertCurrentPreActiveRoute(long connectionId, long routeId, String routeState) {
+    SkitPlatformProviderCommandExecutor.ResourceView view = executor.getConnection(connectionId);
+    assertNull(view.getActiveCallbackRouteId());
+    assertEquals(routeId, view.getRouteId());
+    assertEquals(routeState, view.getRouteState());
   }
 
   private void insertAuditWithTrace(long connectionId, long routeId, String trace) {
@@ -349,6 +396,12 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
     }
 
     @Bean
+    SkitProviderConnectionHealthService providerConnectionHealthService(
+        SkitProviderConnectionHealthMapper mapper) {
+      return new SkitProviderConnectionHealthServiceImpl(mapper);
+    }
+
+    @Bean
     SkitPlatformProviderCommandExecutor skitPlatformProviderCommandExecutor(
         CapturingProviderConnectionService lifecycle,
         SkitCurrentAdminPasswordReauthService reauthService,
@@ -356,6 +409,7 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
         SkitAdProviderCallbackRouteMapper routeMapper,
         SkitPlatformProviderCommandAuditMapper auditMapper,
         SkitProviderConnectionReadMapper readMapper,
+        SkitProviderConnectionHealthService healthService,
         @Qualifier("commandTraceId") AtomicReference<String> traceId) {
       Clock fixed = Clock.fixed(Instant.parse("2026-08-03T04:05:06Z"), ZoneOffset.UTC);
       return new SkitPlatformProviderCommandExecutor(
@@ -365,6 +419,7 @@ class SkitPlatformProviderCommandSpringMySqlIT extends SkitMySqlIntegrationTestB
           routeMapper,
           auditMapper,
           readMapper,
+          healthService,
           fixed,
           traceId::get);
     }

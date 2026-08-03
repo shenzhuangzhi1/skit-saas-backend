@@ -3,9 +3,11 @@ package cn.iocoder.yudao.module.skit.controller.app.ad;
 import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import cn.iocoder.yudao.module.skit.framework.security.SkitTrustedProxyClientIpResolver;
 import cn.iocoder.yudao.module.skit.framework.security.SkitTrustedProxyProperties;
-import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackIngressService;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitCallbackRequestMetadata;
+import cn.iocoder.yudao.module.skit.service.ad.callback.SkitTakuCallbackIngressDispatcher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,22 +20,23 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SkitTakuCallbackControllerTest {
 
-    private SkitCallbackIngressService ingressService;
+    private SkitTakuCallbackIngressDispatcher dispatcher;
     private SkitTakuCallbackController controller;
 
     @BeforeEach
     void setUp() {
-        ingressService = mock(SkitCallbackIngressService.class);
+        dispatcher = mock(SkitTakuCallbackIngressDispatcher.class);
         SkitTrustedProxyProperties properties = new SkitTrustedProxyProperties();
         properties.setTrustedProxyCidrs(Arrays.asList("127.0.0.1/32", "172.16.0.0/12"));
-        controller = new SkitTakuCallbackController(ingressService,
+        controller = new SkitTakuCallbackController(dispatcher,
                 new SkitTrustedProxyClientIpResolver(properties));
     }
 
@@ -44,14 +47,16 @@ class SkitTakuCallbackControllerTest {
                 + "0123456789abcdef0123456789abcdef";
         MockHttpServletRequest request = request(rawQuery);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        when(ingressService.receiveReward(key, rawQuery, "127.0.0.1"))
-                .thenReturn(SkitCallbackIngressService.IngressResponse.INVALID_SIGNATURE);
+        when(dispatcher.dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.REWARD),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class)))
+                .thenReturn(SkitTakuCallbackIngressDispatcher.DispatchResponse.INVALID_SIGNATURE_601);
 
         controller.reward(key, request, response);
 
         assertEquals(601, response.getStatus());
         assertEquals("no-store", response.getHeader("Cache-Control"));
-        verify(ingressService).receiveReward(key, rawQuery, "127.0.0.1");
+        verify(dispatcher).dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.REWARD),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class));
     }
 
     @Test
@@ -60,13 +65,15 @@ class SkitTakuCallbackControllerTest {
         String rawQuery = "req_id=r1&show_custom_ext=session%2B1";
         MockHttpServletRequest request = request(rawQuery);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        when(ingressService.receiveImpression(key, rawQuery, "127.0.0.1"))
-                .thenReturn(SkitCallbackIngressService.IngressResponse.OK);
+        when(dispatcher.dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class)))
+                .thenReturn(SkitTakuCallbackIngressDispatcher.DispatchResponse.ACK_200);
 
         controller.impression(key, request, response);
 
         assertEquals(200, response.getStatus());
-        verify(ingressService).receiveImpression(key, rawQuery, "127.0.0.1");
+        verify(dispatcher).dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class));
     }
 
     @Test
@@ -78,13 +85,14 @@ class SkitTakuCallbackControllerTest {
         request.addHeader("X-Real-IP", "203.0.113.8");
         request.addHeader("X-Forwarded-For", "198.51.100.200, 203.0.113.8");
         MockHttpServletResponse response = new MockHttpServletResponse();
-        when(ingressService.receiveImpression(key, rawQuery, "203.0.113.8"))
-                .thenReturn(SkitCallbackIngressService.IngressResponse.OK);
+        when(dispatcher.dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class)))
+                .thenReturn(SkitTakuCallbackIngressDispatcher.DispatchResponse.ACK_200);
 
         controller.impression(key, request, response);
 
         assertEquals(200, response.getStatus());
-        verify(ingressService).receiveImpression(key, rawQuery, "203.0.113.8");
+        assertPackedClientAddress("203.0.113.8");
     }
 
     @Test
@@ -95,13 +103,14 @@ class SkitTakuCallbackControllerTest {
         request.setRemoteAddr("198.51.100.23");
         request.addHeader("X-Real-IP", "203.0.113.99");
         MockHttpServletResponse response = new MockHttpServletResponse();
-        when(ingressService.receiveImpression(key, rawQuery, "198.51.100.23"))
-                .thenReturn(SkitCallbackIngressService.IngressResponse.OK);
+        when(dispatcher.dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class)))
+                .thenReturn(SkitTakuCallbackIngressDispatcher.DispatchResponse.ACK_200);
 
         controller.impression(key, request, response);
 
         assertEquals(200, response.getStatus());
-        verify(ingressService).receiveImpression(key, rawQuery, "198.51.100.23");
+        assertPackedClientAddress("198.51.100.23");
     }
 
     @Test
@@ -114,28 +123,37 @@ class SkitTakuCallbackControllerTest {
         MockHttpServletRequest second = request(rawQuery);
         second.setRemoteAddr("172.20.0.5");
         second.addHeader("X-Real-IP", "203.0.113.9");
-        when(ingressService.receiveImpression(key, rawQuery, "203.0.113.8"))
-                .thenReturn(SkitCallbackIngressService.IngressResponse.OK);
-        when(ingressService.receiveImpression(key, rawQuery, "203.0.113.9"))
-                .thenReturn(SkitCallbackIngressService.IngressResponse.OK);
+        when(dispatcher.dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq(rawQuery), any(SkitCallbackRequestMetadata.class)))
+                .thenReturn(SkitTakuCallbackIngressDispatcher.DispatchResponse.ACK_200);
 
         controller.impression(key, first, new MockHttpServletResponse());
         controller.impression(key, second, new MockHttpServletResponse());
 
-        verify(ingressService).receiveImpression(key, rawQuery, "203.0.113.8");
-        verify(ingressService).receiveImpression(key, rawQuery, "203.0.113.9");
+        ArgumentCaptor<SkitCallbackRequestMetadata> metadata =
+                ArgumentCaptor.forClass(SkitCallbackRequestMetadata.class);
+        verify(dispatcher, org.mockito.Mockito.times(2)).dispatch(
+                eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq(rawQuery), metadata.capture());
+        assertArrayEquals(address("203.0.113.8"), metadata.getAllValues().get(0)
+                .getPackedClientAddress());
+        assertArrayEquals(address("203.0.113.9"), metadata.getAllValues().get(1)
+                .getPackedClientAddress());
+        metadata.getAllValues().forEach(SkitCallbackRequestMetadata::close);
     }
 
     @Test
-    void transientFailurePropagatesAsServerFailureInsteadOfFalseAcknowledgement() {
+    void transientFailureMapsToFixedServerFailureInsteadOfFalseAcknowledgement() {
         String key = repeat('C', 43);
         MockHttpServletRequest request = request("req_id=r1");
         MockHttpServletResponse response = new MockHttpServletResponse();
-        when(ingressService.receiveImpression(key, "req_id=r1", "127.0.0.1"))
-                .thenThrow(new IllegalStateException("database unavailable"));
+        when(dispatcher.dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                eq(key), eq("req_id=r1"), any(SkitCallbackRequestMetadata.class)))
+                .thenReturn(SkitTakuCallbackIngressDispatcher.DispatchResponse.FAILURE_503);
 
-        assertThrows(IllegalStateException.class,
-                () -> controller.impression(key, request, response));
+        controller.impression(key, request, response);
+
+        assertEquals(503, response.getStatus());
     }
 
     @Test
@@ -158,6 +176,23 @@ class SkitTakuCallbackControllerTest {
         request.setQueryString(rawQuery);
         request.setRemoteAddr("127.0.0.1");
         return request;
+    }
+
+    private void assertPackedClientAddress(String expected) {
+        ArgumentCaptor<SkitCallbackRequestMetadata> metadata =
+                ArgumentCaptor.forClass(SkitCallbackRequestMetadata.class);
+        verify(dispatcher).dispatch(eq(SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION),
+                any(String.class), any(String.class), metadata.capture());
+        assertArrayEquals(address(expected), metadata.getValue().getPackedClientAddress());
+        metadata.getValue().close();
+    }
+
+    private static byte[] address(String value) {
+        try {
+            return java.net.InetAddress.getByName(value).getAddress();
+        } catch (java.net.UnknownHostException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private static String repeat(char value, int count) {

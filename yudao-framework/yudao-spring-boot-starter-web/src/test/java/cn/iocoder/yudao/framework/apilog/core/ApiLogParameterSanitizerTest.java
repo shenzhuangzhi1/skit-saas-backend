@@ -19,20 +19,24 @@ class ApiLogParameterSanitizerTest {
         query.put("takuAppSecret", "taku-SENTINEL");
         query.put("api-token", "token-SENTINEL");
         query.put("ticket", "websocket-ticket-SENTINEL");
+        query.put("externalAccountReference", "provider-account-SENTINEL");
         query.put("reason", "safe reason");
 
         String sanitizedQuery = ApiLogParameterSanitizer.sanitizeMap(query, null);
         String sanitizedBody = ApiLogParameterSanitizer.sanitizeJson("{"
                 + "\"Reward-Secret\":\"reward-SENTINEL\","
                 + "\"nested\":{\"PUBLISHER_KEY\":\"publisher-SENTINEL\","
-                + "\"client-secret\":\"client-SENTINEL\"},"
+                + "\"client-secret\":\"client-SENTINEL\","
+                + "\"external_account_reference\":\"provider-account-SENTINEL\"},"
                 + "\"reason\":\"safe reason\"}", null);
 
         assertThat(sanitizedQuery).contains("safe reason")
                 .doesNotContain("reward-SENTINEL", "publisher-SENTINEL", "pangle-SENTINEL",
-                        "taku-SENTINEL", "token-SENTINEL", "websocket-ticket-SENTINEL");
+                        "taku-SENTINEL", "token-SENTINEL", "websocket-ticket-SENTINEL",
+                        "provider-account-SENTINEL");
         assertThat(sanitizedBody).contains("safe reason")
-                .doesNotContain("reward-SENTINEL", "publisher-SENTINEL", "client-SENTINEL");
+                .doesNotContain("reward-SENTINEL", "publisher-SENTINEL", "client-SENTINEL",
+                        "provider-account-SENTINEL");
     }
 
     @Test

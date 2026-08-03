@@ -94,41 +94,46 @@ public class SkitCallbackRouteRegistryService {
   }
 
   /**
-   * One deterministic global lookup. It never tries a second owner table on a miss or type
-   * mismatch.
+   * One migration-aware ingress lookup. Every call reads the global registry exactly once.
+   * Provider ownership is authoritative in every phase and can never fall back to a tenant row.
    */
   public RouteLookup lookup(byte[] keyHash, LocalDateTime authoritativeReceivedAt) {
-    requireLookupArguments(keyHash, authoritativeReceivedAt);
-    SkitAdCallbackRouteRegistryDO row =
-        ignoreTenant(() -> registryMapper.selectLookupByKeyHash(keyHash));
-    return routeLookup(row, authoritativeReceivedAt);
+    return lookup(keyHash, authoritativeReceivedAt, authoritativeReceivedAt);
   }
 
   /**
-   * Migration-aware tenant reward resolution. The caller supplies the one hash it computed.
-   * SHADOW_READ compares the same hash against both paths but fails closed on every difference.
+   * Performs the same single registry row read while comparing each route type against the time
+   * convention used by its existing DATETIME data: provider UTC and legacy tenant database-local.
    */
-  RouteLookup lookupTenantReward(byte[] keyHash, LocalDateTime authoritativeReceivedAt) {
-    requireLookupArguments(keyHash, authoritativeReceivedAt);
+  public RouteLookup lookup(
+      byte[] keyHash,
+      LocalDateTime providerReceivedAt,
+      LocalDateTime tenantReceivedAt) {
+    requireLookupArguments(keyHash, providerReceivedAt, tenantReceivedAt);
     MigrationPhase phase = currentPhase();
-    SkitAdCallbackRouteRegistryDO registryRow =
+    SkitAdCallbackRouteRegistryDO row =
         ignoreTenant(() -> registryMapper.selectLookupByKeyHash(keyHash));
+
+    if (row != null
+        && RouteType.PROVIDER_CALLBACK_ROUTE.name().equals(row.getRouteType())) {
+      return routeLookup(row, providerReceivedAt);
+    }
+    if (row != null && !RouteType.TENANT_CALLBACK_KEY.name().equals(row.getRouteType())) {
+      return routeLookup(row, tenantReceivedAt);
+    }
+
     if (phase == MigrationPhase.DUAL_WRITE
         || phase == MigrationPhase.BACKFILL
         || phase == MigrationPhase.VERIFY) {
-      if (registryRow == null) {
-        return legacyTenantLookup(keyHash, authoritativeReceivedAt);
-      }
-      RouteLookup resolved = routeLookup(registryRow, authoritativeReceivedAt);
-      if (resolved.getRouteType() != RouteType.TENANT_CALLBACK_KEY) {
-        throw rejected();
-      }
-      return resolved;
+      return row == null
+          ? legacyTenantLookup(keyHash, tenantReceivedAt)
+          : routeLookup(row, tenantReceivedAt);
     }
+
     RouteLookup registry = null;
     CallbackRouteRejectedException registryFailure = null;
     try {
-      registry = routeLookup(registryRow, authoritativeReceivedAt);
+      registry = routeLookup(row, tenantReceivedAt);
     } catch (CallbackRouteRejectedException rejected) {
       registryFailure = rejected;
     }
@@ -136,7 +141,7 @@ public class SkitCallbackRouteRegistryService {
       RouteLookup legacy = null;
       CallbackRouteRejectedException legacyFailure = null;
       try {
-        legacy = legacyTenantLookup(keyHash, authoritativeReceivedAt);
+        legacy = legacyTenantLookup(keyHash, tenantReceivedAt);
       } catch (CallbackRouteRejectedException rejected) {
         legacyFailure = rejected;
       }
@@ -157,6 +162,17 @@ public class SkitCallbackRouteRegistryService {
       throw registryFailure;
     }
     return Objects.requireNonNull(registry, "registry lookup");
+  }
+
+  /**
+   * Tenant-only compatibility facade over the one migration-aware ingress lookup.
+   */
+  RouteLookup lookupTenantReward(byte[] keyHash, LocalDateTime authoritativeReceivedAt) {
+    RouteLookup resolved = lookup(keyHash, authoritativeReceivedAt);
+    if (resolved.getRouteType() != RouteType.TENANT_CALLBACK_KEY) {
+      throw rejected();
+    }
+    return resolved;
   }
 
   /** Standalone registry registration: owns its transaction, gate epoch, and opaque capability. */
@@ -866,8 +882,12 @@ public class SkitCallbackRouteRegistryService {
     return false;
   }
 
-  private static void requireLookupArguments(byte[] keyHash, LocalDateTime receivedAt) {
-    if (keyHash == null || keyHash.length != 32 || receivedAt == null) {
+  private static void requireLookupArguments(
+      byte[] keyHash, LocalDateTime providerReceivedAt, LocalDateTime tenantReceivedAt) {
+    if (keyHash == null
+        || keyHash.length != 32
+        || providerReceivedAt == null
+        || tenantReceivedAt == null) {
       throw rejected();
     }
   }

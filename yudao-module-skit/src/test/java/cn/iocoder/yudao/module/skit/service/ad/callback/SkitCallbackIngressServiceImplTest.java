@@ -49,6 +49,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class SkitCallbackIngressServiceImplTest {
@@ -170,6 +171,62 @@ class SkitCallbackIngressServiceImplTest {
         verify(attemptMapper).insert(any(SkitAdCallbackAttemptDO.class));
         assertArrayEquals(rawQuery.getBytes(StandardCharsets.US_ASCII), encryptedPlaintext.get());
         verify(edgeAttemptMapper, never()).insert(any());
+    }
+
+    @Test
+    void preResolvedRewardSkipsRateLimitAndRouteLookup() {
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(
+                        TENANT_ID, ACCOUNT_ID, 4, true, null);
+        try (SkitCallbackIngressService.TenantIngressEvidence evidence = tenantEvidence()) {
+            SkitCallbackIngressService.IngressResponse result = service.receiveReward(
+                    route, signedRewardQuery(customData, REWARD_SECRET), evidence, RECEIVED_AT);
+
+            assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
+        }
+        verifyNoInteractions(routingService, rateLimiter);
+        assertEquals(RECEIVED_AT, insertedInbox.get().getReceivedAt());
+    }
+
+    @Test
+    void preResolvedImpressionSkipsRateLimitAndRouteLookup() {
+        String rawQuery = "user_id=u1&req_id=req-1&package_name=com.example.app&adformat=1"
+                + "&placement_id=" + PLACEMENT_ID + "&adsource_id=0007"
+                + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400"
+                + "&show_custom_ext=zyxwvutsrqponmlkjihgfQ";
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(
+                        TENANT_ID, ACCOUNT_ID, 4, true, null);
+        try (SkitCallbackIngressService.TenantIngressEvidence evidence = tenantEvidence()) {
+            SkitCallbackIngressService.IngressResponse result = service.receiveImpression(
+                    route, rawQuery, evidence, RECEIVED_AT);
+
+            assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
+        }
+        verifyNoInteractions(routingService, rateLimiter);
+        assertEquals(RECEIVED_AT, insertedInbox.get().getReceivedAt());
+    }
+
+    @Test
+    void tenantIngressEvidenceIsDefensiveRedactedAndIdempotentlyClearable() {
+        byte[] keyHash = new byte[32];
+        byte[] ipHash = new byte[32];
+        Arrays.fill(keyHash, (byte) 21);
+        Arrays.fill(ipHash, (byte) 22);
+        SkitCallbackIngressService.TenantIngressEvidence evidence =
+                SkitCallbackIngressService.TenantIngressEvidence.of(keyHash, ipHash);
+        keyHash[0] = 0;
+        ipHash[0] = 0;
+
+        assertEquals(21, evidence.getCallbackKeyHash()[0]);
+        assertEquals(22, evidence.getClientIpHash()[0]);
+        assertFalse(evidence.toString().contains("21"));
+        assertFalse(evidence.toString().contains("22"));
+
+        evidence.close();
+        evidence.close();
+        assertThrows(IllegalStateException.class, evidence::getCallbackKeyHash);
+        assertThrows(IllegalStateException.class, evidence::getClientIpHash);
     }
 
     @Test
@@ -691,6 +748,14 @@ class SkitCallbackIngressServiceImplTest {
                 .setRewardAcceptUntil(RECEIVED_AT.plusMinutes(5)).setVersion(0);
         row.setTenantId(TENANT_ID);
         return row;
+    }
+
+    private static SkitCallbackIngressService.TenantIngressEvidence tenantEvidence() {
+        byte[] keyHash = new byte[32];
+        byte[] ipHash = new byte[32];
+        Arrays.fill(keyHash, (byte) 11);
+        Arrays.fill(ipHash, (byte) 12);
+        return SkitCallbackIngressService.TenantIngressEvidence.of(keyHash, ipHash);
     }
 
     private SkitAdNetworkCapabilityDO validCapability() {

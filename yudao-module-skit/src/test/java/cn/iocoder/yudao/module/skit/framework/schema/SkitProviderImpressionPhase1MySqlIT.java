@@ -532,7 +532,7 @@ class SkitProviderImpressionPhase1MySqlIT extends SkitPartialMigrationMySqlITBas
                 "UPDATE `skit_provider_callback_attempt` SET `payload_ciphertext`=NULL,"
                         + "`payload_nonce`=NULL,`payload_key_id`=NULL,`payload_purpose`=NULL,"
                         + "`payload_envelope_version`=NULL,`payload_expires_at`=NULL,"
-                        + "`payload_purged_at`=CURRENT_TIMESTAMP WHERE `id`=?", attemptId);
+                        + "`payload_purged_at`=UTC_TIMESTAMP() WHERE `id`=?", attemptId);
     }
 
     private String columnDefinition(String table, String column) {

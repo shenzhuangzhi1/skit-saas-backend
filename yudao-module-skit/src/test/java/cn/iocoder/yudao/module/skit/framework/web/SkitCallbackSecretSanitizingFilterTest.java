@@ -3,12 +3,14 @@ package cn.iocoder.yudao.module.skit.framework.web;
 import cn.iocoder.yudao.framework.apilog.core.ApiRequestUrlResolver;
 import cn.iocoder.yudao.framework.common.enums.WebFilterOrderEnum;
 import cn.iocoder.yudao.framework.web.config.WebProperties;
+import cn.iocoder.yudao.framework.web.config.YudaoWebAutoConfiguration;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.Filter;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -182,8 +184,30 @@ class SkitCallbackSecretSanitizingFilterTest {
                 new SkitCallbackLogSafetyConfiguration().skitCallbackSecretSanitizingFilter(new WebProperties());
 
         assertThat(registration.getOrder()).isEqualTo(WebFilterOrderEnum.SENSITIVE_REQUEST_SANITIZER_FILTER);
+        assertThat(registration.getOrder()).isLessThan(WebFilterOrderEnum.CORS_FILTER);
         assertThat(registration.getOrder()).isLessThan(WebFilterOrderEnum.REQUEST_BODY_CACHE_FILTER);
         assertThat(registration.getOrder()).isLessThan(WebFilterOrderEnum.API_ACCESS_LOG_FILTER);
+    }
+
+    @Test
+    void callbackCorsPreflightIsRejectedBeforeCorsCanShortCircuit() throws Exception {
+        SkitCallbackSecretSanitizingFilter sanitizer =
+                new SkitCallbackSecretSanitizingFilter(new WebProperties());
+        Filter cors = new YudaoWebAutoConfiguration().corsFilterBean().getFilter();
+        MockHttpServletRequest request = new MockHttpServletRequest("OPTIONS", RAW_URI);
+        request.addHeader("Origin", "https://untrusted.example");
+        request.addHeader("Access-Control-Request-Method", "GET");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean downstreamInvoked = new AtomicBoolean();
+
+        sanitizer.doFilter(request, response, (sanitizedRequest, sanitizedResponse) ->
+                cors.doFilter(sanitizedRequest, sanitizedResponse,
+                        (ignoredRequest, ignoredResponse) -> downstreamInvoked.set(true)));
+
+        assertThat(response.getStatus()).isEqualTo(602);
+        assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(response.getHeader("Access-Control-Allow-Origin")).isNull();
+        assertThat(downstreamInvoked).isFalse();
     }
 
 }

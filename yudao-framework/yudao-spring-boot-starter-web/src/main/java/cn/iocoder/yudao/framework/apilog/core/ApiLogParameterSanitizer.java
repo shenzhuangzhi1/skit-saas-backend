@@ -25,7 +25,7 @@ public final class ApiLogParameterSanitizer {
             "token", "accessToken", "refreshToken", "idToken", "authorization", "ticket",
             "secret", "clientSecret", "appSecret", "rewardSecret", "pangleAppSecret", "takuAppSecret",
             "publisherKey", "callbackKey", "apiKey", "accessKey", "privateKey", "encryptionKey", "signingKey",
-            "credential"
+            "credential", "externalAccountReference"
     };
     private static final String[] DEFAULT_SENSITIVE_KEY_SUFFIXES = new String[]{
             "password", "passwd", "pwd", "token", "secret", "credential",

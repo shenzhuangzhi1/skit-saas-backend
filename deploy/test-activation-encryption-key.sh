@@ -417,8 +417,8 @@ if grep -Fq "${secret_arg_sentinel}" "${staged_log}"; then
   exit 1
 fi
 
-# Signed production-gate evidence is deployment-scoped. It may reach Spring only through the
-# temporary mode-0600 runtime properties file and must never survive activation in .env or on disk.
+# The checked-in deployment is single-host. Even complete signed production-gate evidence must be
+# rejected rather than reaching Spring and contradicting the immutable deployment proof.
 gate_path="$(mktemp -d "${temp_root}/ephemeral-gate.XXXXXX")"
 cp "${compose_file}" "${gate_path}/docker-compose.prod.yml"
 gate_private_key="${temp_root}/gate-private.pem"
@@ -437,21 +437,30 @@ gate_public_key_base64="$(base64 < "${gate_public_der}" | tr -d '\r\n')"
 gate_manifest_base64="$(base64 < "${gate_manifest}" | tr -d '\r\n')"
 gate_signature_base64="$(base64 < "${gate_signature}" | tr -d '\r\n')"
 runtime_gate_file="${gate_path}/runtime-secrets/provider-impression-production-gate.properties"
-STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
-  EXPECTED_RUNTIME_GATE_FILE="${runtime_gate_file}" \
-  EXPECTED_GATE_ENVIRONMENT_FINGERPRINT="${gate_environment_fingerprint}" \
+gate_rejection_output="${temp_root}/single-host-gate-rejection.log"
+if STUB_LOG="${stub_log}" PATH="${stub_bin}:${PATH}" \
   DEPLOY_PATH="${gate_path}" IMAGE_NAME="example/backend" IMAGE_TAG="ephemeral-gate" \
   MYSQL_ROOT_PASSWORD="test-root-password" MYSQL_DATABASE="skit_saas" \
   SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT="${gate_environment_fingerprint}" \
   SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY="${gate_public_key_base64}" \
   SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64="${gate_manifest_base64}" \
   SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE="${gate_signature_base64}" \
-  "${activation_script}" >/dev/null
+  "${activation_script}" >"${gate_rejection_output}" 2>&1; then
+  echo "FAIL: single-host activation accepted provider impression production gate evidence" >&2
+  exit 1
+fi
+if ! grep -Fxq \
+    'Single-host activation refuses provider impression production gate evidence.' \
+    "${gate_rejection_output}"; then
+  echo "FAIL: single-host gate rejection reason is not stable" >&2
+  exit 1
+fi
 if [[ -e "${runtime_gate_file}" || -L "${runtime_gate_file}" ]]; then
   echo "FAIL: activation retained ephemeral provider impression gate evidence" >&2
   exit 1
 fi
-if grep -Eq '^SKIT_PROVIDER_IMPRESSION_GATE_' "${gate_path}/.env"; then
+if [[ -f "${gate_path}/.env" ]] \
+    && grep -Eq '^SKIT_PROVIDER_IMPRESSION_GATE_' "${gate_path}/.env"; then
   echo "FAIL: activation persisted provider impression gate evidence in .env" >&2
   exit 1
 fi

@@ -111,7 +111,8 @@ class SkitProviderImpressionCaptureMySqlIT extends SkitMySqlIntegrationTestBase 
         long inboxId = ((Number) inbox.get("id")).longValue();
         assertNotNull(inbox.get("canonical_attempt_id"));
         assertEquals("PAYLOAD_CONFLICT", inbox.get("integrity_status"));
-        assertEquals(1L, ((Number) inbox.get("integrity_revision")).longValue());
+        assertEquals(10L, ((Number) inbox.get("integrity_revision")).longValue(),
+                "every conflicting delivery must advance the immutable conflict revision");
         assertNotNull(inbox.get("integrity_conflict_at"));
         assertEquals("QUARANTINED", inbox.get("processing_status"));
         assertEquals(1, count("skit_provider_impression_inbox",

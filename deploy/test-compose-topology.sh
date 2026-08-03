@@ -330,13 +330,16 @@ if grep -Eq '^[[:space:]]+keys:[[:space:]]*' "${prod_config}"; then
   echo "FAIL: prod overlay must not reset externally supplied retained advertising key maps" >&2
   exit 1
 fi
-if ! grep -Fq 'SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties,optional:file:/run/secrets/skit-runtime/provider-impression-production-gate.properties"' \
+if ! grep -Fq 'SPRING_CONFIG_IMPORT: "optional:file:/run/secrets/skit-ad-keyring.properties"' \
     <<<"${backend_service}" ||
    ! grep -Fq './ad-keyring.properties:/run/secrets/skit-ad-keyring.properties:ro' \
-    <<<"${backend_service}" ||
-   ! grep -Fq './runtime-secrets:/run/secrets/skit-runtime:ro' \
     <<<"${backend_service}"; then
-  echo "FAIL: retained keys and ephemeral gate evidence need optional read-only imports" >&2
+  echo "FAIL: retained keys need an optional read-only import" >&2
+  exit 1
+fi
+if grep -Fq 'provider-impression-production-gate.properties' <<<"${backend_service}" ||
+   grep -Fq '/run/secrets/skit-runtime' <<<"${backend_service}"; then
+  echo "FAIL: the checked-in single-host backend must not import production gate evidence" >&2
   exit 1
 fi
 

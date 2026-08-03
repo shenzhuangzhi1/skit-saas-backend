@@ -43,11 +43,22 @@ public class SkitCallbackRoutingService {
         } finally {
             Arrays.fill(keyHash, (byte) 0);
         }
+        return resolveTenantReward(resolved, authoritativeReceivedAt);
+    }
+
+    /** Validates an already resolved registry owner without hashing or another database lookup. */
+    public CallbackRoute resolveTenantReward(
+            SkitCallbackRouteRegistryService.RouteLookup resolved,
+            LocalDateTime authoritativeReceivedAt) {
         if (resolved == null
+                || authoritativeReceivedAt == null
                 || resolved.getRouteType()
                 != SkitCallbackRouteRegistryService.RouteType.TENANT_CALLBACK_KEY
                 || resolved.getTenantId() <= 0 || resolved.getAdAccountId() <= 0
-                || resolved.getKeyVersion() <= 0) {
+                || resolved.getKeyVersion() <= 0
+                || (!resolved.isActive()
+                && (resolved.getAcceptUntil() == null
+                || authoritativeReceivedAt.isAfter(resolved.getAcceptUntil())))) {
             throw new SkitCallbackRouteRegistryService.CallbackRouteRejectedException();
         }
         return new CallbackRoute(resolved.getTenantId(), resolved.getAdAccountId(),

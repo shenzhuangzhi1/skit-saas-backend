@@ -161,7 +161,7 @@ proxy_pass http://${callback_upstream};
 proxy_http_version 1.1;
 proxy_connect_timeout 250ms;
 proxy_send_timeout 250ms;
-proxy_read_timeout 1s;
+proxy_read_timeout 1500ms;
 proxy_next_upstream off;
 proxy_request_buffering off;
 proxy_buffering off;

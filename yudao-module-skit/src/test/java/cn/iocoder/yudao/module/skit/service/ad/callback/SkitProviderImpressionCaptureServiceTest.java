@@ -5,10 +5,15 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderImpressi
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderCallbackAttemptMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderImpressionInboxMapper;
 import cn.iocoder.yudao.module.skit.framework.crypto.SkitProviderCallbackPayloadCryptoService;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation.FormatBucket;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation.PersistenceFailure;
+import cn.iocoder.yudao.module.skit.framework.observability.SkitProviderImpressionCaptureObservation.TransactionOutcome;
 import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionService.ProviderRouteResolution;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.AbstractPlatformTransactionManager;
@@ -17,6 +22,7 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionOperations;
 
 import java.lang.reflect.Constructor;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,10 +42,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -56,6 +64,7 @@ class SkitProviderImpressionCaptureServiceTest {
     private SkitProviderImpressionInboxMapper inboxMapper;
     private SkitProviderCallbackAttemptMapper attemptMapper;
     private TransactionOperations transactions;
+    private SkitProviderImpressionCaptureObservation observation;
     private SkitProviderImpressionCaptureServiceImpl capture;
 
     @BeforeEach
@@ -66,12 +75,14 @@ class SkitProviderImpressionCaptureServiceTest {
         inboxMapper = mock(SkitProviderImpressionInboxMapper.class);
         attemptMapper = mock(SkitProviderCallbackAttemptMapper.class);
         transactions = mock(TransactionOperations.class);
+        observation = mock(SkitProviderImpressionCaptureObservation.class);
         doAnswer(invocation -> {
             TransactionCallback<Object> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         }).when(transactions).execute(any());
         capture = new SkitProviderImpressionCaptureServiceImpl(
-                parser, crypto, inboxMapper, attemptMapper, transactions);
+                parser, crypto, inboxMapper, attemptMapper, transactions,
+                new SkitProviderImpressionRetentionProperties(), observation);
     }
 
     @Test
@@ -198,6 +209,11 @@ class SkitProviderImpressionCaptureServiceTest {
         assertTrue(order.indexOf("encrypt") < order.indexOf("transaction-begin"));
         assertTrue(order.indexOf("attempt-insert") < order.indexOf("transaction-commit"));
         assertTrue(order.indexOf("transaction-commit") < order.indexOf("returned"));
+        org.mockito.InOrder metricOrder = org.mockito.Mockito.inOrder(transactions, observation);
+        metricOrder.verify(transactions).execute(any());
+        metricOrder.verify(observation).recordTransactionDuration(
+                any(Duration.class), eq(TransactionOutcome.COMMITTED), eq(FormatBucket.ONE));
+        verify(observation, never()).recordAccepted200AfterCommit(any(), any());
 
         ArgumentCaptor<SkitProviderImpressionInboxDO> inbox =
                 ArgumentCaptor.forClass(SkitProviderImpressionInboxDO.class);
@@ -219,6 +235,40 @@ class SkitProviderImpressionCaptureServiceTest {
         assertArrayEquals(sequence(32, 32), persistedRemoteHash.get());
         assertArrayEquals(sequence(32, 64), persistedUserAgentHash.get());
         assertArrayEquals(sequence(32, 96), persistedHeaderFingerprint.get());
+    }
+
+    @Test
+    void sharedRetentionPolicyControlsTheCapturedEnvelopeExpiry() {
+        SkitProviderImpressionRetentionProperties retention =
+                new SkitProviderImpressionRetentionProperties();
+        retention.setDays(30);
+        capture = new SkitProviderImpressionCaptureServiceImpl(
+                parser, crypto, inboxMapper, attemptMapper, transactions, retention);
+        SkitProviderImpressionWireParser.WirePayload wire = parse(GOOD);
+        AtomicReference<SkitProviderImpressionInboxDO> canonical = new AtomicReference<>();
+        when(crypto.encrypt(any(), any())).thenReturn(envelope());
+        doAnswer(invocation -> {
+            SkitProviderImpressionInboxDO row = invocation.getArgument(0);
+            row.setId(109L);
+            canonical.set(row);
+            return 1;
+        }).when(inboxMapper).insertOrGetCanonical(any());
+        when(inboxMapper.selectByConnectionAndIdForUpdate(8811L, 109L))
+                .thenAnswer(invocation -> canonical.get());
+        doAnswer(invocation -> {
+            SkitProviderCallbackAttemptDO row = invocation.getArgument(0);
+            row.setId(509L);
+            return 1;
+        }).when(attemptMapper).insert(any());
+        when(inboxMapper.bindCanonicalAttemptCas(8811L, 109L, 509L)).thenReturn(1);
+        when(inboxMapper.updateLastReceivedAt(8811L, 109L, NOW)).thenReturn(1);
+
+        assertEquals(ACK_200, capture.capture(route(true), wire, validEvidence(), NOW));
+
+        ArgumentCaptor<SkitProviderCallbackAttemptDO> attempt =
+                ArgumentCaptor.forClass(SkitProviderCallbackAttemptDO.class);
+        verify(attemptMapper).insert(attempt.capture());
+        assertEquals(NOW.plusDays(30), attempt.getValue().getPayloadExpiresAt());
     }
 
     @Test
@@ -305,6 +355,8 @@ class SkitProviderImpressionCaptureServiceTest {
         assertEquals("FALLBACK_QUARANTINED", attempt.getValue().getDeliveryIntegrityStatus());
         assertEquals(0, attempt.getValue().getWireSizeBytes());
         assertEquals(0, attempt.getValue().getParameterCount());
+        verify(observation).recordFallback(FormatBucket.MISSING);
+        verify(observation).recordQuarantined(FormatBucket.MISSING);
     }
 
     @Test
@@ -347,6 +399,11 @@ class SkitProviderImpressionCaptureServiceTest {
         verify(inboxMapper).markPayloadConflictCas(
                 8811L, 104L, NOW.plusSeconds(2), "PAYLOAD_CONFLICT");
         verify(inboxMapper, never()).bindCanonicalAttemptCas(anyLong(), anyLong(), anyLong());
+        verify(observation).recordDuplicate(FormatBucket.ONE);
+        verify(observation).recordConflict(FormatBucket.ONE);
+        verify(observation).recordQuarantined(FormatBucket.ONE);
+        verify(observation, times(2)).recordTransactionDuration(
+                any(Duration.class), eq(TransactionOutcome.COMMITTED), eq(FormatBucket.ONE));
     }
 
     @Test
@@ -358,6 +415,8 @@ class SkitProviderImpressionCaptureServiceTest {
                 route(true), cryptoFailure, validEvidence(), NOW));
         assertTrue(cryptoFailure.isClosed());
         verifyNoInteractions(transactions, inboxMapper, attemptMapper);
+        verify(observation).recordPersistenceFailure(
+                PersistenceFailure.CRYPTO, FormatBucket.ONE);
 
         setUp();
         SkitProviderImpressionWireParser.WirePayload transactionFailure = parse(GOOD);
@@ -369,6 +428,21 @@ class SkitProviderImpressionCaptureServiceTest {
                 route(true), transactionFailure, validEvidence(), NOW));
         assertTrue(transactionFailure.isClosed());
         verifyNoInteractions(inboxMapper, attemptMapper);
+        verify(observation).recordTransactionDuration(
+                any(Duration.class), eq(TransactionOutcome.FAILED), eq(FormatBucket.ONE));
+        verify(observation).recordPersistenceFailure(
+                PersistenceFailure.TRANSACTION, FormatBucket.ONE);
+
+        setUp();
+        SkitProviderImpressionWireParser.WirePayload databaseFailure = parse(GOOD);
+        when(crypto.encrypt(any(), any())).thenReturn(envelope());
+        doThrow(new DataAccessResourceFailureException("sentinel database message"))
+                .when(transactions).execute(any());
+
+        assertEquals(PERSISTENCE_FAILURE_503, capture.capture(
+                route(true), databaseFailure, validEvidence(), NOW));
+        verify(observation).recordPersistenceFailure(
+                PersistenceFailure.DATABASE, FormatBucket.ONE);
     }
 
     @Test

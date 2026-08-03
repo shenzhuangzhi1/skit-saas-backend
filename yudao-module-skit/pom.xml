@@ -81,6 +81,7 @@
                     <excludes>
                         <exclude>**/SkitMySqlIntegrationSmokeTest.java</exclude>
                         <exclude>**/*MySqlIT.java</exclude>
+                        <exclude>**/*NginxTomcatIT.java</exclude>
                     </excludes>
                 </configuration>
             </plugin>
@@ -96,6 +97,7 @@
                     <includes>
                         <include>**/SkitMySqlIntegrationSmokeTest.java</include>
                         <include>**/*MySqlIT.java</include>
+                        <include>**/*NginxTomcatIT.java</include>
                     </includes>
                 </configuration>
                 <executions>

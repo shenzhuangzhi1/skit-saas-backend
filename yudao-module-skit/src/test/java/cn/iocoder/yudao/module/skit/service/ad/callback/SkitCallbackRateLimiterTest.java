@@ -9,6 +9,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -125,6 +127,81 @@ class SkitCallbackRateLimiterTest {
                 () -> limiter.check("TAKU", "key", "127.0.0.1", "REWARD"));
     }
 
+    @Test
+    void hashedDispatchIdentityUsesTheExistingDigestWithoutRetainingRawKeyOrAddress() throws Exception {
+        String rawKey = "acct_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL";
+        byte[] callbackKeyHash = domainHash("callback-key\0", rawKey);
+        byte[] originalHash = callbackKeyHash.clone();
+        byte[] packedAddress = java.net.InetAddress.getByName("203.0.113.31").getAddress();
+        byte[] originalAddress = packedAddress.clone();
+        when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+
+        limiter.checkHashed("TAKU", callbackKeyHash, packedAddress, "IMPRESSION");
+
+        assertTrue(java.util.Arrays.equals(originalHash, callbackKeyHash));
+        assertTrue(java.util.Arrays.equals(originalAddress, packedAddress));
+        ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+        verify(redis, times(2)).tryAcquire(keys.capture(), anyInt(),
+                eq(60), eq(TimeUnit.SECONDS));
+        String expectedHash = lowerHex(originalHash);
+        assertTrue(keys.getAllValues().stream().anyMatch(
+                key -> key.endsWith(":" + expectedHash)));
+        assertFalse(keys.getAllValues().stream().anyMatch(
+                key -> key.contains(rawKey) || key.contains("203.0.113.31")));
+        java.util.Arrays.fill(callbackKeyHash, (byte) 0);
+        java.util.Arrays.fill(originalHash, (byte) 0);
+        java.util.Arrays.fill(packedAddress, (byte) 0);
+        java.util.Arrays.fill(originalAddress, (byte) 0);
+    }
+
+    @Test
+    void splitHashedGatesAllowProviderDispatchToSkipTheLegacyBusinessBucket() throws Exception {
+        byte[] callbackKeyHash = domainHash("callback-key\0", "provider-key");
+        byte[] packedAddress = java.net.InetAddress.getByName("203.0.113.32").getAddress();
+        when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+
+        limiter.checkGlobalAddressHashed(packedAddress);
+        limiter.checkBusinessKeyHashed("TAKU", callbackKeyHash, "REWARD");
+
+        ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Integer> limits = ArgumentCaptor.forClass(Integer.class);
+        verify(redis, times(2)).tryAcquire(keys.capture(), limits.capture(),
+                eq(60), eq(TimeUnit.SECONDS));
+        assertTrue(keys.getAllValues().get(0).contains(":ddos:ip:"));
+        assertEquals(12000, limits.getAllValues().get(0));
+        assertTrue(keys.getAllValues().get(1).contains(":taku:reward:key:"));
+        assertEquals(120, limits.getAllValues().get(1));
+        assertFalse(keys.getAllValues().stream().anyMatch(
+                key -> key.contains("provider-key") || key.contains("203.0.113.32")));
+    }
+
+    @Test
+    void splitTenantGatesReuseLegacyRedisBucketsForIpv4AndIpv6() throws Exception {
+        String rawKey = "acct_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL";
+        for (String clientIp : new String[]{"203.0.113.33", "2001:db8::1"}) {
+            org.mockito.Mockito.reset(redis);
+            when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
+                    .thenReturn(true);
+            byte[] callbackKeyHash = domainHash("callback-key\0", rawKey);
+            byte[] packedAddress = com.google.common.net.InetAddresses
+                    .forString(clientIp).getAddress();
+
+            limiter.check("TAKU", rawKey, clientIp, "REWARD");
+            limiter.checkGlobalAddressHashed(packedAddress);
+            limiter.checkBusinessKeyHashed("TAKU", callbackKeyHash, "REWARD");
+
+            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            verify(redis, times(4)).tryAcquire(keys.capture(), anyInt(),
+                    eq(60), eq(TimeUnit.SECONDS));
+            assertEquals(keys.getAllValues().get(0), keys.getAllValues().get(2));
+            assertEquals(keys.getAllValues().get(1), keys.getAllValues().get(3));
+            java.util.Arrays.fill(callbackKeyHash, (byte) 0);
+            java.util.Arrays.fill(packedAddress, (byte) 0);
+        }
+    }
+
     private void installInMemoryQuotaAnswer() {
         Map<String, Integer> used = new HashMap<>();
         when(redis.tryAcquire(anyString(), anyInt(), eq(60), eq(TimeUnit.SECONDS)))
@@ -134,6 +211,20 @@ class SkitCallbackRateLimiterTest {
                     int current = used.merge(key, 1, Integer::sum);
                     return current <= limit;
                 });
+    }
+
+    private static String lowerHex(byte[] value) {
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte item : value) {
+            result.append(String.format("%02x", item & 0xff));
+        }
+        return result.toString();
+    }
+
+    private static byte[] domainHash(String domain, String value) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        digest.update(domain.getBytes(StandardCharsets.US_ASCII));
+        return digest.digest(value.getBytes(StandardCharsets.US_ASCII));
     }
 
 }

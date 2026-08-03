@@ -27,15 +27,24 @@ import cn.iocoder.yudao.module.skit.controller.admin.provider.vo.SkitProviderCal
 import cn.iocoder.yudao.module.skit.controller.admin.provider.vo.SkitProviderCallbackRouteSubmittedReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.provider.vo.SkitProviderConnectionBlockReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.provider.vo.SkitProviderConnectionCreateReqVO;
+import cn.iocoder.yudao.module.skit.controller.admin.provider.vo.SkitProviderConnectionRespVO;
+import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderConnectionHealthProjection;
+import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderConnectionReadProjection;
 import cn.iocoder.yudao.module.skit.framework.security.SkitPlatformAdminGuard;
 import cn.iocoder.yudao.module.skit.service.provider.SkitPlatformProviderCommandExecutor;
+import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionHealthView;
 import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.beans.Introspector;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -118,6 +127,82 @@ class SkitProviderConnectionControllerTest {
     assertEquals(CALLBACK_URL, first.path("callbackUrl").asText());
     assertCleared(retained, "serializer must wipe the private URL in finally");
     assertThrows(Exception.class, () -> mapper.writeValueAsString(response));
+  }
+
+  @Test
+  void getResponseAddsOnlyTheNineFieldSafeAggregateHealthObject() throws Exception {
+    SkitProviderConnectionReadProjection connection =
+        new SkitProviderConnectionReadProjection()
+            .setConnectionId(11L)
+            .setProvider("TAKU")
+            .setAccountMode("SHARED_MASTER")
+            .setConnectionState("CONFIGURING");
+    SkitProviderConnectionHealthView health =
+        SkitProviderConnectionHealthView.from(
+            new SkitProviderConnectionHealthProjection()
+                .setFirstReceivedAt(LocalDateTime.of(2026, 8, 3, 7, 0, 0))
+                .setLastReceivedAt(LocalDateTime.of(2026, 8, 3, 7, 5, 0))
+                .setAcceptedAttempts(8L)
+                .setDuplicates(2L)
+                .setConflicts(1L)
+                .setFallback(3L)
+                .setQuarantined(4L)
+                .setDbFailures(null));
+    Constructor<SkitPlatformProviderCommandExecutor.ResourceView> constructor =
+        SkitPlatformProviderCommandExecutor.ResourceView.class.getDeclaredConstructor(
+            SkitProviderConnectionReadProjection.class, SkitProviderConnectionHealthView.class);
+    constructor.setAccessible(true);
+    SkitProviderConnectionRespVO response =
+        SkitProviderConnectionRespVO.from(constructor.newInstance(connection, health));
+
+    ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
+    String json = mapper.writeValueAsString(response);
+    JsonNode healthJson = mapper.readTree(json).path("health");
+    Set<String> healthFields = new HashSet<>();
+    healthJson.fieldNames().forEachRemaining(healthFields::add);
+
+    assertEquals(
+        new HashSet<>(Arrays.asList(
+            "firstReceivedAt",
+            "lastReceivedAt",
+            "acceptedAttempts",
+            "duplicates",
+            "conflicts",
+            "fallback",
+            "quarantined",
+            "dbFailures",
+            "dbFailureAt")),
+        healthFields);
+    assertEquals(8L, healthJson.path("acceptedAttempts").asLong());
+    for (String forbidden :
+        Arrays.asList(
+            "acct_sentinel_callback_key",
+            "sentinel-query",
+            "203.0.113.77",
+            "sentinel.package",
+            "sentinel-placement",
+            "sentinel-request",
+            "sentinel-device",
+            "payloadCiphertext",
+            "inboxId",
+            "attemptId",
+            "providerConnectionId")) {
+      assertFalse(json.contains(forbidden), forbidden);
+    }
+    assertEquals(
+        new HashSet<>(Arrays.asList(
+            "firstReceivedAt",
+            "lastReceivedAt",
+            "acceptedAttempts",
+            "duplicates",
+            "conflicts",
+            "fallback",
+            "quarantined",
+            "dbFailures",
+            "dbFailureAt")),
+        Arrays.stream(SkitProviderConnectionRespVO.ProviderHealthRespVO.class.getDeclaredFields())
+            .map(Field::getName)
+            .collect(java.util.stream.Collectors.toSet()));
   }
 
   @Test

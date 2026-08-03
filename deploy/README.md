@@ -24,7 +24,7 @@ Every Taku reward/impression callback URL contains a write-only routing key and 
 a secret. Do not paste the URL into tickets or logs. The dedicated Nginx callback location disables
 access logging while forwarding the original path and query unchanged for server-side verification.
 One shared callback include applies a 64 KiB request-line and header ceiling, 250 ms connect/send
-timeouts, a 1 s read timeout, no upstream retry, no request body forwarding, and fixed proxy-IP
+timeouts, a 1.5 s read timeout, no upstream retry, no request body forwarding, and fixed proxy-IP
 overwrite to both Taku and Pangle routes. Callback error logs are suppressed so a request target or
 query cannot enter proxy output.
 
@@ -163,20 +163,21 @@ fail-closed; no boolean or profile bypass exists.
 
 When a future HA environment has all 13 required evidence checks, its short-lived canonical
 manifest is signed offline with RSA-SHA256. The operations private key must never reach this
-repository, GitHub Actions, an image, the server, a database, a log, or an API. The deployment run
-accepts only these four protected values:
+repository, GitHub Actions, an image, the server, a database, a log, or an API. A future HA
+deployment run may accept only these four protected values; the checked-in single-host workflow
+never stages them and its activation script rejects them even when supplied as a complete set:
 
 - `SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT`
 - `SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY` (canonical Base64 X.509 DER)
 - `SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64`
 - `SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE`
 
-They are staged in the run-scoped mode-`0600` `server.env`, consumed and unlinked before any child
-process, then written to a mode-`0600` Spring properties file under the mode-`0700`
-`runtime-secrets` directory. Compose mounts that directory read-only. Activation removes the file
-after the backend is healthy (and on every failure), and explicitly removes any legacy gate entries
-from the persistent `.env`. A later container restart therefore remains capture-startup-safe while
-production issue/submit returns the stable fail-closed denial until fresh evidence is injected.
+An independently reviewed HA pipeline may stage them in a run-scoped mode-`0600` secret file and
+mount that file only in its separate HA topology. The checked-in single-host Compose file does not
+mount or import production gate evidence at all. Current activation also removes any stale runtime
+file and explicitly removes any legacy gate entries from the persistent `.env`. A later container
+restart therefore remains capture-startup-safe while production issue/submit returns the stable
+fail-closed denial until fresh evidence is injected.
 Every issue and submit invocation rechecks the signature, TTL, route, HTTPS origin, path/template
 versions, environment fingerprint, and deployment contract fingerprint.
 

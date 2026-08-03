@@ -1,11 +1,15 @@
 package cn.iocoder.yudao.module.skit.service.ad.callback;
 
 import cn.iocoder.yudao.framework.ratelimiter.core.redis.RateLimiterRedisDAO;
+import com.google.common.net.InetAddresses;
 import org.springframework.stereotype.Component;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -31,10 +35,68 @@ public class RedisSkitCallbackRateLimiter implements SkitCallbackRateLimiter {
                 + sha256Hex("client-ip\0" + requireValue(clientIp));
         String businessKey = "skit:ad-callback:" + providerNamespace + ":" + type + ":key:"
                 + sha256Hex("callback-key\0" + requireValue(callbackKey));
+        acquire(ipGateKey, businessKey);
+    }
+
+    @Override
+    public void checkHashed(String provider, byte[] callbackKeyHash,
+                            byte[] packedClientAddress, String callbackType) {
+        String providerNamespace = requireProvider(provider);
+        String type = requireType(callbackType);
+        byte[] keyHash = requireFixed(callbackKeyHash, 32, "callback key hash");
+        byte[] clientAddress = requireAddress(packedClientAddress);
+        try {
+            String ipGateKey = "skit:ad-callback:ddos:ip:"
+                    + legacyAddressHash(clientAddress);
+            String businessKey = "skit:ad-callback:" + providerNamespace + ":" + type + ":key:"
+                    + lowerHex(keyHash);
+            acquire(ipGateKey, businessKey);
+        } finally {
+            Arrays.fill(keyHash, (byte) 0);
+            Arrays.fill(clientAddress, (byte) 0);
+        }
+    }
+
+    @Override
+    public void checkGlobalAddressHashed(byte[] packedClientAddress) {
+        byte[] clientAddress = requireAddress(packedClientAddress);
+        try {
+            String ipGateKey = "skit:ad-callback:ddos:ip:"
+                    + legacyAddressHash(clientAddress);
+            acquireGlobal(ipGateKey);
+        } finally {
+            Arrays.fill(clientAddress, (byte) 0);
+        }
+    }
+
+    @Override
+    public void checkBusinessKeyHashed(String provider, byte[] callbackKeyHash,
+                                       String callbackType) {
+        String providerNamespace = requireProvider(provider);
+        String type = requireType(callbackType);
+        byte[] keyHash = requireFixed(callbackKeyHash, 32, "callback key hash");
+        try {
+            String businessKey = "skit:ad-callback:" + providerNamespace + ":" + type + ":key:"
+                    + lowerHex(keyHash);
+            acquireBusiness(businessKey);
+        } finally {
+            Arrays.fill(keyHash, (byte) 0);
+        }
+    }
+
+    private void acquire(String ipGateKey, String businessKey) {
+        acquireGlobal(ipGateKey);
+        acquireBusiness(businessKey);
+    }
+
+    private void acquireGlobal(String ipGateKey) {
         if (!Boolean.TRUE.equals(redis.tryAcquire(ipGateKey, GLOBAL_IP_REQUESTS_PER_MINUTE,
                 60, TimeUnit.SECONDS))) {
             throw new RateLimitExceededException();
         }
+    }
+
+    private void acquireBusiness(String businessKey) {
         if (!Boolean.TRUE.equals(redis.tryAcquire(businessKey, CALLBACK_KEY_REQUESTS_PER_MINUTE,
                 60, TimeUnit.SECONDS))) {
             throw new RateLimitExceededException();
@@ -76,6 +138,56 @@ public class RedisSkitCallbackRateLimiter implements SkitCallbackRateLimiter {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
         }
+    }
+
+    private static String sha256Hex(byte[] domain, byte[] value) {
+        byte[] hashed = null;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(domain);
+            hashed = digest.digest(value);
+            return lowerHex(hashed);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        } finally {
+            if (hashed != null) {
+                Arrays.fill(hashed, (byte) 0);
+            }
+        }
+    }
+
+    private static String legacyAddressHash(byte[] packedClientAddress) {
+        try {
+            InetAddress address = InetAddress.getByAddress(packedClientAddress);
+            return sha256Hex("client-ip\0" + InetAddresses.toAddrString(address));
+        } catch (UnknownHostException invalidAddress) {
+            throw new IllegalArgumentException("Callback client address is invalid", invalidAddress);
+        }
+    }
+
+    private static byte[] requireFixed(byte[] value, int length, String field) {
+        if (value == null || value.length != length) {
+            throw new IllegalArgumentException("Callback " + field + " is invalid");
+        }
+        return value.clone();
+    }
+
+    private static byte[] requireAddress(byte[] value) {
+        if (value == null || (value.length != 4 && value.length != 16)) {
+            throw new IllegalArgumentException("Callback client address is invalid");
+        }
+        return value.clone();
+    }
+
+    private static String lowerHex(byte[] value) {
+        char[] result = new char[value.length * 2];
+        char[] alphabet = "0123456789abcdef".toCharArray();
+        for (int index = 0; index < value.length; index++) {
+            int current = value[index] & 0xff;
+            result[index * 2] = alphabet[current >>> 4];
+            result[index * 2 + 1] = alphabet[current & 0x0f];
+        }
+        return new String(result);
     }
 
 }

@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.controller.admin.provider.vo;
 
 import cn.iocoder.yudao.module.skit.service.provider.SkitPlatformProviderCommandExecutor;
+import cn.iocoder.yudao.module.skit.service.provider.SkitProviderConnectionHealthView;
 import java.time.LocalDateTime;
 
 /** Explicit HTTP allowlist for provider connection and route state. */
@@ -27,6 +28,7 @@ public final class SkitProviderConnectionRespVO {
   private final LocalDateTime submittedAt;
   private final LocalDateTime abandonedAt;
   private final LocalDateTime routeUpdatedAt;
+  private final ProviderHealthRespVO health;
 
   private SkitProviderConnectionRespVO(SkitPlatformProviderCommandExecutor.ResourceView view) {
     this.connectionId = view.getConnectionId();
@@ -50,6 +52,7 @@ public final class SkitProviderConnectionRespVO {
     this.submittedAt = view.getSubmittedAt();
     this.abandonedAt = view.getAbandonedAt();
     this.routeUpdatedAt = view.getRouteUpdatedAt();
+    this.health = view.getHealth() == null ? null : new ProviderHealthRespVO(view.getHealth());
   }
 
   public static SkitProviderConnectionRespVO from(
@@ -139,5 +142,71 @@ public final class SkitProviderConnectionRespVO {
 
   public LocalDateTime getRouteUpdatedAt() {
     return routeUpdatedAt;
+  }
+
+  public ProviderHealthRespVO getHealth() {
+    return health;
+  }
+
+  /** Nested HTTP allowlist for the aggregate-only provider capture health projection. */
+  public static final class ProviderHealthRespVO {
+
+    private final LocalDateTime firstReceivedAt;
+    private final LocalDateTime lastReceivedAt;
+    private final long acceptedAttempts;
+    private final long duplicates;
+    private final long conflicts;
+    private final long fallback;
+    private final long quarantined;
+    private final Long dbFailures;
+    private final LocalDateTime dbFailureAt;
+
+    private ProviderHealthRespVO(SkitProviderConnectionHealthView health) {
+      this.firstReceivedAt = health.getFirstReceivedAt();
+      this.lastReceivedAt = health.getLastReceivedAt();
+      this.acceptedAttempts = health.getAcceptedAttempts();
+      this.duplicates = health.getDuplicates();
+      this.conflicts = health.getConflicts();
+      this.fallback = health.getFallback();
+      this.quarantined = health.getQuarantined();
+      this.dbFailures = health.getDbFailures();
+      this.dbFailureAt = health.getDbFailureAt();
+    }
+
+    public LocalDateTime getFirstReceivedAt() {
+      return firstReceivedAt;
+    }
+
+    public LocalDateTime getLastReceivedAt() {
+      return lastReceivedAt;
+    }
+
+    public long getAcceptedAttempts() {
+      return acceptedAttempts;
+    }
+
+    public long getDuplicates() {
+      return duplicates;
+    }
+
+    public long getConflicts() {
+      return conflicts;
+    }
+
+    public long getFallback() {
+      return fallback;
+    }
+
+    public long getQuarantined() {
+      return quarantined;
+    }
+
+    public Long getDbFailures() {
+      return dbFailures;
+    }
+
+    public LocalDateTime getDbFailureAt() {
+      return dbFailureAt;
+    }
   }
 }

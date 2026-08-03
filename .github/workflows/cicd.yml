@@ -33,7 +33,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "8"
           cache: maven
           cache-dependency-path: '**/pom.xml'
 
@@ -100,7 +100,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "8"
           cache: maven
           cache-dependency-path: '**/pom.xml'
 
@@ -169,7 +169,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "8"
           cache: maven
           cache-dependency-path: '**/pom.xml'
 
@@ -232,8 +232,8 @@ jobs:
           if [ -n "${SERVER_HOST}" ] && [ -n "${SERVER_USER}" ] && { [ -n "${SERVER_SSH_KEY}" ] || [ -n "${SERVER_PASSWORD}" ]; }; then
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
           else
-            echo "::notice::Deployment skipped because SERVER_HOST, SERVER_USER, and one of SERVER_SSH_KEY or SERVER_PASSWORD are not configured."
-            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::error::Master deployment requires SERVER_HOST, SERVER_USER, and one of SERVER_SSH_KEY or SERVER_PASSWORD."
+            exit 1
           fi
 
       - name: Prepare SSH
@@ -364,10 +364,6 @@ jobs:
           FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
           SKIT_AD_CALLBACK_PUBLIC_BASE_URL: ${{ vars.SKIT_AD_CALLBACK_PUBLIC_BASE_URL }}
           SKIT_PUBLIC_HTTPS_DOMAIN: ${{ vars.SKIT_PUBLIC_HTTPS_DOMAIN }}
-          SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT }}
-          SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY }}
-          SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64 }}
-          SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE: ${{ secrets.SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SERVER_SUDO_PASSWORD: ${{ secrets.SERVER_SUDO_PASSWORD }}
@@ -404,14 +400,6 @@ jobs:
               fi
             fi
             printf 'SKIT_AD_CALLBACK_PUBLIC_BASE_URL=%q\n' "${SKIT_AD_CALLBACK_PUBLIC_BASE_URL%/}"
-            printf 'SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT=%q\n' \
-              "${SKIT_PROVIDER_IMPRESSION_GATE_ENVIRONMENT_FINGERPRINT}"
-            printf 'SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY=%q\n' \
-              "${SKIT_PROVIDER_IMPRESSION_GATE_OPERATIONS_PUBLIC_KEY}"
-            printf 'SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64=%q\n' \
-              "${SKIT_PROVIDER_IMPRESSION_GATE_MANIFEST_BASE64}"
-            printf 'SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE=%q\n' \
-              "${SKIT_PROVIDER_IMPRESSION_GATE_SIGNATURE}"
             printf 'GHCR_USERNAME=%q\n' "${GHCR_USERNAME}"
             printf 'GHCR_TOKEN=%q\n' "${GHCR_TOKEN}"
             printf 'SUDO_PASSWORD=%q\n' "${SUDO_PASSWORD}"
@@ -504,9 +492,11 @@ jobs:
               > deployment-evidence/backend-deployment-outcome.env
           else
             printf '%s\n' \
-              'status=SKIPPED_NO_CONFIG' \
+              'status=FAILED_NO_CONFIG' \
               "revision=${GITHUB_SHA}" \
               > deployment-evidence/backend-deployment-outcome.env
+            echo "::error::Master deployment configuration was unavailable."
+            exit 1
           fi
 
       - name: Upload backend deployment outcome

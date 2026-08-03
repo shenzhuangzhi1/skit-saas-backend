@@ -17,7 +17,7 @@ grep -Fq 'client_header_buffer_size 64k;' "${script}"
 grep -Fq 'large_client_header_buffers 4 64k;' "${script}"
 grep -Fq 'proxy_connect_timeout 250ms;' "${script}"
 grep -Fq 'proxy_send_timeout 250ms;' "${script}"
-grep -Fq 'proxy_read_timeout 1s;' "${script}"
+grep -Fq 'proxy_read_timeout 1500ms;' "${script}"
 grep -Fq 'proxy_next_upstream off;' "${script}"
 grep -Fq 'proxy_request_buffering off;' "${script}"
 grep -Fq 'proxy_buffering off;' "${script}"
@@ -110,7 +110,7 @@ for directive in \
   'error_log /dev/null crit;' \
   'proxy_connect_timeout 250ms;' \
   'proxy_send_timeout 250ms;' \
-  'proxy_read_timeout 1s;' \
+  'proxy_read_timeout 1500ms;' \
   'proxy_next_upstream off;' \
   'proxy_request_buffering off;' \
   'proxy_buffering off;' \
