@@ -15,6 +15,8 @@ server_env_file="${SERVER_ENV_FILE:-}"
 cleanup_server_env=0
 production_gate_file=""
 
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2317
 cleanup() {
   exit_code=$?
   trap - EXIT
@@ -134,7 +136,8 @@ if [ -e "${server_env_file}" ] || [ -L "${server_env_file}" ]; then
   fi
   chmod 600 "${server_env_file}"
   cleanup_server_env=1
-  # shellcheck disable=SC1091
+  # The release environment path is validated as a regular file immediately above.
+  # shellcheck disable=SC1090,SC1091
   . "${server_env_file}"
   rm -f -- "${server_env_file}"
   cleanup_server_env=0
@@ -382,7 +385,7 @@ fi
 SKIT_AD_SESSION_TOKEN_KEY_VERSION="${SKIT_AD_SESSION_TOKEN_KEY_VERSION:-1}"
 if [[ ! "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}" =~ ^[1-9][0-9]{0,9}$ ]] ||
    { [ "${#SKIT_AD_SESSION_TOKEN_KEY_VERSION}" -eq 10 ] &&
-     [[ "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}" > "2147483647" ]]; }; then
+     [ "${SKIT_AD_SESSION_TOKEN_KEY_VERSION}" -gt 2147483647 ]; }; then
   echo "SKIT_AD_SESSION_TOKEN_KEY_VERSION must be a positive 32-bit integer."
   exit 1
 fi
@@ -535,7 +538,7 @@ validate_retained_keyring() {
       skit.ad.session-token.keys.*)
         retained_version="${property_name#skit.ad.session-token.keys.}"
         if [[ ! "${retained_version}" =~ ^[1-9][0-9]{0,9}$ ]] ||
-           { [ "${#retained_version}" -eq 10 ] && [[ "${retained_version}" > "2147483647" ]]; } ||
+           { [ "${#retained_version}" -eq 10 ] && [ "${retained_version}" -gt 2147483647 ]; } ||
            [ "${#property_value}" -lt 32 ] ||
            [[ ! "${property_value}" =~ ^[A-Za-z0-9._+/=-]+$ ]]; then
           valid=0
@@ -786,6 +789,8 @@ compose -f docker-compose.prod.yml --env-file .env up -d mysql redis
 
 mysql_ready=0
 for _ in $(seq 1 60); do
+  # The quoted variables are intentionally expanded by sh inside the MySQL container.
+  # shellcheck disable=SC2016
   if compose -f docker-compose.prod.yml --env-file .env exec -T \
       mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqladmin -uroot --silent ping' \
       >/dev/null 2>&1; then
@@ -800,6 +805,8 @@ if [ "${mysql_ready}" != "1" ]; then
 fi
 
 mysql_in_container() {
+  # The quoted variables and positional arguments are intentionally expanded in the container.
+  # shellcheck disable=SC2016
   compose -f docker-compose.prod.yml --env-file .env exec -T mysql sh -c \
     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot "$MYSQL_DATABASE" "$@"' \
     mysql-in-container "$@"
