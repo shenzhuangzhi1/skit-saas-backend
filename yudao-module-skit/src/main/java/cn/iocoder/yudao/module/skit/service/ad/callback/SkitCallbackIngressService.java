@@ -21,6 +21,11 @@ public interface SkitCallbackIngressService {
                                       String rawQuery, TenantIngressEvidence evidence,
                                       LocalDateTime authoritativeReceivedAt);
 
+    /** Internal bridge for an account-level observation after server-owned tenant attribution. */
+    IngressResponse receiveAttributedImpression(SkitCallbackRoutingService.CallbackRoute route,
+                                                String rawQuery,
+                                                LocalDateTime authoritativeReceivedAt);
+
     enum IngressResponse {
         OK(200),
         INVALID_SIGNATURE(601),

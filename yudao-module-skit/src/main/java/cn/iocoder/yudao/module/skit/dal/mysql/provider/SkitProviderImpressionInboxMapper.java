@@ -11,6 +11,7 @@ import org.apache.ibatis.annotations.SelectKey;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Mapper
 @TenantIgnore
@@ -103,4 +104,105 @@ public interface SkitProviderImpressionInboxMapper {
     int updateLastReceivedAt(@Param("providerConnectionId") long providerConnectionId,
                              @Param("id") long id,
                              @Param("receivedAt") LocalDateTime receivedAt);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("SELECT provider_connection_id,id,canonical_attempt_id,processing_attempt_count "
+            + "FROM skit_provider_impression_inbox WHERE dedupe_scheme='OFFICIAL_V1' "
+            + "AND integrity_status='CANONICAL' AND integrity_revision=0 "
+            + "AND canonical_attempt_id IS NOT NULL AND (processing_status='PENDING' OR "
+            + "(processing_status='RETRY_WAIT' AND next_attempt_at<=UTC_TIMESTAMP()) OR "
+            + "(processing_status='PROCESSING' AND lease_until<=UTC_TIMESTAMP())) "
+            + "ORDER BY id LIMIT #{limit} FOR UPDATE SKIP LOCKED")
+    List<SkitProviderImpressionInboxDO> selectReadyAttributionClaimsForUpdate(
+            @Param("limit") int limit);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Update("UPDATE skit_provider_impression_inbox SET processing_status='DEAD_LETTER',"
+            + "quarantine_reason=#{reason},lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,"
+            + "processed_at=UTC_TIMESTAMP() "
+            + "WHERE provider_connection_id=#{providerConnectionId} AND id=#{id} "
+            + "AND processing_status='PROCESSING' AND lease_until<=UTC_TIMESTAMP() "
+            + "AND processing_attempt_count>=#{maxAttempts} AND dedupe_scheme='OFFICIAL_V1' "
+            + "AND integrity_status='CANONICAL' AND integrity_revision=0")
+    int markExpiredAttributionDeadLetterCas(
+            @Param("providerConnectionId") long providerConnectionId,
+            @Param("id") long id,
+            @Param("reason") String reason,
+            @Param("maxAttempts") int maxAttempts);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Update("UPDATE skit_provider_impression_inbox SET processing_status='PROCESSING',"
+            + "quarantine_reason=NULL,lease_owner=#{leaseOwner},"
+            + "lease_until=TIMESTAMPADD(SECOND,#{leaseSeconds},UTC_TIMESTAMP()),"
+            + "processing_attempt_count=processing_attempt_count+1,next_attempt_at=NULL,"
+            + "processed_at=NULL WHERE provider_connection_id=#{providerConnectionId} AND id=#{id} "
+            + "AND processing_attempt_count<#{maxAttempts} AND dedupe_scheme='OFFICIAL_V1' "
+            + "AND integrity_status='CANONICAL' AND integrity_revision=0 "
+            + "AND canonical_attempt_id IS NOT NULL AND (processing_status='PENDING' OR "
+            + "(processing_status='RETRY_WAIT' AND next_attempt_at<=UTC_TIMESTAMP()) OR "
+            + "(processing_status='PROCESSING' AND lease_until<=UTC_TIMESTAMP()))")
+    int claimForAttributionCas(@Param("providerConnectionId") long providerConnectionId,
+                               @Param("id") long id,
+                               @Param("leaseOwner") String leaseOwner,
+                               @Param("leaseSeconds") int leaseSeconds,
+                               @Param("maxAttempts") int maxAttempts);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Update("UPDATE skit_provider_impression_inbox SET processing_status='DEAD_LETTER',"
+            + "quarantine_reason=#{reason},lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,"
+            + "processed_at=UTC_TIMESTAMP() "
+            + "WHERE provider_connection_id=#{providerConnectionId} AND id=#{id} "
+            + "AND processing_status='PROCESSING' AND lease_owner=#{leaseOwner} "
+            + "AND lease_until>=UTC_TIMESTAMP() AND processing_attempt_count>=#{maxAttempts}")
+    int markAttributionDeadLetterCas(@Param("providerConnectionId") long providerConnectionId,
+                                     @Param("id") long id,
+                                     @Param("leaseOwner") String leaseOwner,
+                                     @Param("reason") String reason,
+                                     @Param("maxAttempts") int maxAttempts);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Update("UPDATE skit_provider_impression_inbox SET processing_status='RETRY_WAIT',"
+            + "quarantine_reason=#{reason},lease_owner=NULL,lease_until=NULL,"
+            + "next_attempt_at=TIMESTAMPADD(SECOND,#{backoffSeconds},UTC_TIMESTAMP()),"
+            + "processed_at=NULL WHERE provider_connection_id=#{providerConnectionId} AND id=#{id} "
+            + "AND processing_status='PROCESSING' AND lease_owner=#{leaseOwner} "
+            + "AND lease_until>=UTC_TIMESTAMP() AND processing_attempt_count<#{maxAttempts}")
+    int markAttributionRetryWaitCas(@Param("providerConnectionId") long providerConnectionId,
+                                    @Param("id") long id,
+                                    @Param("leaseOwner") String leaseOwner,
+                                    @Param("reason") String reason,
+                                    @Param("maxAttempts") int maxAttempts,
+                                    @Param("backoffSeconds") int backoffSeconds);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Update("UPDATE skit_provider_impression_inbox SET processing_status='SUCCEEDED',"
+            + "lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,processed_at=#{processedAt} "
+            + "WHERE provider_connection_id=#{providerConnectionId} AND id=#{id} "
+            + "AND processing_status='PROCESSING' AND lease_owner=#{leaseOwner} "
+            + "AND lease_until>=UTC_TIMESTAMP() AND dedupe_scheme='OFFICIAL_V1' "
+            + "AND integrity_status='CANONICAL' AND integrity_revision=0")
+    int markAttributionSucceededCas(@Param("providerConnectionId") long providerConnectionId,
+                                    @Param("id") long id,
+                                    @Param("leaseOwner") String leaseOwner,
+                                    @Param("processedAt") LocalDateTime processedAt);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
+    @Update("UPDATE skit_provider_impression_inbox SET processing_status='QUARANTINED',"
+            + "quarantine_reason=#{reason},lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,"
+            + "processed_at=#{processedAt} WHERE provider_connection_id=#{providerConnectionId} "
+            + "AND id=#{id} AND processing_status='PROCESSING' AND lease_owner=#{leaseOwner} "
+            + "AND lease_until>=UTC_TIMESTAMP() AND dedupe_scheme='OFFICIAL_V1' "
+            + "AND integrity_status='CANONICAL' AND integrity_revision=0")
+    int markAttributionQuarantinedCas(@Param("providerConnectionId") long providerConnectionId,
+                                      @Param("id") long id,
+                                      @Param("leaseOwner") String leaseOwner,
+                                      @Param("reason") String reason,
+                                      @Param("processedAt") LocalDateTime processedAt);
 }

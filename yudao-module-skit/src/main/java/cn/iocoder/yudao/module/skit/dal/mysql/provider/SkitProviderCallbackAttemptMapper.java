@@ -45,6 +45,18 @@ public interface SkitProviderCallbackAttemptMapper {
 
     @TenantIgnore
     @InterceptorIgnore(tenantLine = "true")
+    @Select("SELECT a.* FROM skit_provider_callback_attempt a "
+            + "JOIN skit_provider_impression_inbox i ON i.provider_connection_id=a.provider_connection_id "
+            + "AND i.id=a.inbox_id AND i.canonical_attempt_id=a.id "
+            + "WHERE a.provider_connection_id=#{providerConnectionId} AND a.inbox_id=#{inboxId} "
+            + "AND a.id=#{attemptId} AND a.delivery_integrity_status='CANONICAL'")
+    SkitProviderCallbackAttemptDO selectCanonicalPayload(
+            @Param("providerConnectionId") long providerConnectionId,
+            @Param("inboxId") long inboxId,
+            @Param("attemptId") long attemptId);
+
+    @TenantIgnore
+    @InterceptorIgnore(tenantLine = "true")
     @Select("SELECT a.id,a.provider_connection_id,a.inbox_id "
             + "FROM skit_provider_callback_attempt a "
             + "WHERE a.payload_ciphertext IS NOT NULL "

@@ -175,9 +175,30 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             recordEdge(route, evidence, IMPRESSION, "INVALID_QUERY", authoritativeReceivedAt);
             return IngressResponse.REJECTED;
         }
+        return receiveCanonicalImpression(route, rawQuery, callback, authoritativeReceivedAt);
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.READ_COMMITTED, timeout = 2, rollbackFor = Exception.class)
+    public IngressResponse receiveAttributedImpression(
+            SkitCallbackRoutingService.CallbackRoute route, String rawQuery,
+            LocalDateTime authoritativeReceivedAt) {
+        requireAttributedRoute(route, authoritativeReceivedAt);
+        final TakuImpressionCallback callback;
+        try {
+            callback = canonicalizer.canonicalizeImpression(rawQuery);
+        } catch (TakuCallbackCanonicalizer.CallbackParseException invalid) {
+            return IngressResponse.REJECTED;
+        }
+        return receiveCanonicalImpression(route, rawQuery, callback, authoritativeReceivedAt);
+    }
+
+    private IngressResponse receiveCanonicalImpression(
+            SkitCallbackRoutingService.CallbackRoute route, String rawQuery,
+            TakuImpressionCallback callback, LocalDateTime receivedAt) {
         AtomicReference<IngressResponse> result = new AtomicReference<>();
         TenantUtils.execute(route.getTenantId(), () -> result.set(receiveImpressionInsideTenant(
-                route, rawQuery, callback, authoritativeReceivedAt)));
+                route, rawQuery, callback, receivedAt)));
         return Objects.requireNonNull(result.get(), "impression ingress result");
     }
 
@@ -515,6 +536,14 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
                 || route.getTenantId() <= 0 || route.getAdAccountId() <= 0
                 || route.getCallbackKeyVersion() <= 0) {
             throw new IllegalArgumentException("Pre-resolved tenant callback ingress is invalid");
+        }
+    }
+
+    private static void requireAttributedRoute(
+            SkitCallbackRoutingService.CallbackRoute route, LocalDateTime receivedAt) {
+        if (route == null || receivedAt == null || route.getTenantId() <= 0
+                || route.getAdAccountId() <= 0 || route.getCallbackKeyVersion() <= 0) {
+            throw new IllegalArgumentException("Attributed tenant impression route is invalid");
         }
     }
 
