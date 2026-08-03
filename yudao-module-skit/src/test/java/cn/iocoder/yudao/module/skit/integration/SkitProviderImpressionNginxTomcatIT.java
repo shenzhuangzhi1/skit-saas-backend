@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -94,6 +95,9 @@ import org.apache.catalina.Context;
 import org.apache.catalina.Wrapper;
 import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.Tomcat;
+import org.apache.ibatis.logging.Log;
+import org.apache.ibatis.logging.LogFactory;
+import org.apache.ibatis.logging.nologging.NoLoggingImpl;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.tomcat.util.descriptor.web.FilterDef;
 import org.apache.tomcat.util.descriptor.web.FilterMap;
@@ -171,7 +175,6 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
     new WebFrameworkUtils(webProperties);
     connectionId = installProviderConnection();
     captureBoundary = RealCaptureBoundary.start(dataSource());
-    safeLogCapture = SafeLogCapture.start();
     SkitTakuCallbackIngressDispatcher dispatcher = createProductionDispatcher(captureBoundary);
     Servlet controllerServlet = createProductionControllerServlet(dispatcher);
     List<Filter> filters =
@@ -186,6 +189,7 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
                   return "rewritten-by-xss";
                 }));
     transport = RealTransportHarness.start(controllerServlet, filters);
+    safeLogCapture = SafeLogCapture.start();
   }
 
   @AfterAll
@@ -387,6 +391,10 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
         0,
         xssCleanerInvocations.get(),
         "Callback query text passed through the XSS rewriting wrapper");
+    assertEquals(
+        1,
+        inboxCount(QUERY_SENTINEL),
+        "The log sentinel must reach the real MySQL capture boundary");
 
     List<String> surfaces =
         Arrays.asList(
@@ -729,12 +737,18 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
       AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
       context.registerBean("dataSource", DataSource.class, () -> dataSource);
       context.register(RealCaptureConfiguration.class);
-      context.refresh();
-      return new RealCaptureBoundary(
-          context,
-          context.getBean(SkitProviderImpressionCaptureService.class),
-          context.getBean(SkitProviderImpressionWireParser.class),
-          context.getBean(FailpointTransactionManager.class));
+      Class<? extends Log> previousLogImplementation =
+          LogFactory.getLog(RealCaptureBoundary.class).getClass().asSubclass(Log.class);
+      try {
+        context.refresh();
+        return new RealCaptureBoundary(
+            context,
+            context.getBean(SkitProviderImpressionCaptureService.class),
+            context.getBean(SkitProviderImpressionWireParser.class),
+            context.getBean(FailpointTransactionManager.class));
+      } finally {
+        LogFactory.useCustomLogging(previousLogImplementation);
+      }
     }
 
     SkitProviderImpressionCaptureService getCapture() {
@@ -845,6 +859,7 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
         DataSource dataSource, MybatisPlusInterceptor interceptor) {
       MybatisConfiguration configuration = new MybatisConfiguration();
       configuration.setMapUnderscoreToCamelCase(true);
+      configuration.setLogImpl(NoLoggingImpl.class);
       MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
       factory.setDataSource(dataSource);
       factory.setConfiguration(configuration);
@@ -906,16 +921,28 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
   static final class SafeLogCapture implements AutoCloseable {
 
     private final ch.qos.logback.classic.Logger rootLogger;
+    private final ch.qos.logback.classic.Logger inboxMapperLogger;
+    private final ch.qos.logback.classic.Logger attemptMapperLogger;
+    private final Level previousInboxMapperLevel;
+    private final Level previousAttemptMapperLevel;
     private final ListAppender<ILoggingEvent> logbackAppender;
     private final java.util.logging.Logger julRootLogger;
     private final CollectingJulHandler julHandler;
 
     private SafeLogCapture(
         ch.qos.logback.classic.Logger rootLogger,
+        ch.qos.logback.classic.Logger inboxMapperLogger,
+        ch.qos.logback.classic.Logger attemptMapperLogger,
+        Level previousInboxMapperLevel,
+        Level previousAttemptMapperLevel,
         ListAppender<ILoggingEvent> logbackAppender,
         java.util.logging.Logger julRootLogger,
         CollectingJulHandler julHandler) {
       this.rootLogger = rootLogger;
+      this.inboxMapperLogger = inboxMapperLogger;
+      this.attemptMapperLogger = attemptMapperLogger;
+      this.previousInboxMapperLevel = previousInboxMapperLevel;
+      this.previousAttemptMapperLevel = previousAttemptMapperLevel;
       this.logbackAppender = logbackAppender;
       this.julRootLogger = julRootLogger;
       this.julHandler = julHandler;
@@ -924,6 +951,14 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
     static SafeLogCapture start() {
       LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
       ch.qos.logback.classic.Logger root = context.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+      ch.qos.logback.classic.Logger inboxMapper =
+          context.getLogger(SkitProviderImpressionInboxMapper.class.getName());
+      ch.qos.logback.classic.Logger attemptMapper =
+          context.getLogger(SkitProviderCallbackAttemptMapper.class.getName());
+      Level previousInboxLevel = inboxMapper.getLevel();
+      Level previousAttemptLevel = attemptMapper.getLevel();
+      inboxMapper.setLevel(Level.DEBUG);
+      attemptMapper.setLevel(Level.DEBUG);
       ListAppender<ILoggingEvent> appender = new ListAppender<>();
       appender.setContext(context);
       appender.start();
@@ -931,7 +966,15 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
       java.util.logging.Logger julRoot = java.util.logging.Logger.getLogger("");
       CollectingJulHandler handler = new CollectingJulHandler();
       julRoot.addHandler(handler);
-      return new SafeLogCapture(root, appender, julRoot, handler);
+      return new SafeLogCapture(
+          root,
+          inboxMapper,
+          attemptMapper,
+          previousInboxLevel,
+          previousAttemptLevel,
+          appender,
+          julRoot,
+          handler);
     }
 
     String snapshot() {
@@ -957,6 +1000,8 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
     public void close() {
       rootLogger.detachAppender(logbackAppender);
       logbackAppender.stop();
+      inboxMapperLogger.setLevel(previousInboxMapperLevel);
+      attemptMapperLogger.setLevel(previousAttemptMapperLevel);
       julRootLogger.removeHandler(julHandler);
     }
   }

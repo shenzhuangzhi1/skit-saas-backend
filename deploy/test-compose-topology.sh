@@ -238,6 +238,8 @@ assert_yaml_value "${runtime_config}" "spring.redis.host" '${REDIS_HOST:redis}'
 assert_yaml_value "${runtime_config}" "spring.redis.port" '${REDIS_PORT:6379}'
 assert_yaml_value "${runtime_config}" "spring.quartz.job-store-type" "jdbc"
 assert_yaml_value "${runtime_config}" "spring.quartz.jdbc.initialize-schema" "NEVER"
+assert_yaml_value "${runtime_config}" "mybatis-plus.configuration.log-impl" \
+  "org.apache.ibatis.logging.nologging.NoLoggingImpl"
 assert_yaml_value "${runtime_config}" "logging.level.cn.iocoder.yudao.module" "INFO"
 assert_yaml_value "${runtime_config}" "wx.mp.config-storage.type" "RedisTemplate"
 assert_yaml_value "${runtime_config}" "wx.mp.config-storage.http-client-type" "HttpComponents"

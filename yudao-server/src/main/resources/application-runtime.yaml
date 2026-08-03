@@ -68,6 +68,12 @@ spring:
             threadCount: 10
             threadPriority: 5
 
+# Callback payload fields include provider request identifiers. Disable MyBatis statement logging
+# for container runtimes so raising an application logger cannot expose bound SQL parameters.
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
 logging:
   file:
     name: ${LOG_FILE:${user.home}/logs/${spring.application.name}.log}
