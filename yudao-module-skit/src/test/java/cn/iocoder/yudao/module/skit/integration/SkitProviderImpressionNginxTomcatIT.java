@@ -136,6 +136,9 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
   static final int HTTP_REQUEST_CEILING_BYTES = 64 * 1024;
   static final int APPLICATION_QUERY_CEILING_BYTES = 32 * 1024;
   static final String UPSTREAM_STATUS_HEADER = "x-observed-upstream-status";
+  // The official image links /var/log/nginx logs to live stdout/stderr streams.
+  static final String NGINX_ACCESS_LOG_PATH = "/tmp/skit-nginx-access.log";
+  static final String NGINX_ERROR_LOG_PATH = "/tmp/skit-nginx-error.log";
   static final String CALLBACK_SERVLET_MAPPING = "/app-api/*";
   private static final String VALID_CALLBACK_KEY = "acct_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
   private static final String UNKNOWN_CALLBACK_KEY = "acct_UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU";
@@ -1076,11 +1079,11 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
     }
 
     String nginxAccessLog() throws IOException, InterruptedException {
-      return containerFile("/var/log/nginx/access.log");
+      return containerFile(NGINX_ACCESS_LOG_PATH);
     }
 
     String nginxErrorLog() throws IOException, InterruptedException {
-      return containerFile("/var/log/nginx/error.log");
+      return containerFile(NGINX_ERROR_LOG_PATH);
     }
 
     String nginxContainerLog() {
@@ -1304,12 +1307,16 @@ class SkitProviderImpressionNginxTomcatIT extends SkitMySqlIntegrationTestBase {
 
   private static String nginxConfiguration(int tomcatPort) {
     return "worker_processes 1;\n"
-        + "error_log /var/log/nginx/error.log crit;\n"
+        + "error_log "
+        + NGINX_ERROR_LOG_PATH
+        + " crit;\n"
         + "pid /tmp/nginx.pid;\n"
         + "events { worker_connections 512; }\n"
         + "http {\n"
         + "  log_format redacted '$status $upstream_status';\n"
-        + "  access_log /var/log/nginx/access.log redacted;\n"
+        + "  access_log "
+        + NGINX_ACCESS_LOG_PATH
+        + " redacted;\n"
         + "  client_header_buffer_size 64k;\n"
         + "  large_client_header_buffers 4 64k;\n"
         + "  client_body_temp_path /tmp/client-body;\n"
