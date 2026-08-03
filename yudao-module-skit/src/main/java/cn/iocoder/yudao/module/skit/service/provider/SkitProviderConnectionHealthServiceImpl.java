@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 /** Reads one bounded global aggregate without changing the caller's tenant context. */
 @Service
 @TenantIgnore
-public final class SkitProviderConnectionHealthServiceImpl
+public class SkitProviderConnectionHealthServiceImpl
     implements SkitProviderConnectionHealthService {
 
   private final SkitProviderConnectionHealthMapper mapper;

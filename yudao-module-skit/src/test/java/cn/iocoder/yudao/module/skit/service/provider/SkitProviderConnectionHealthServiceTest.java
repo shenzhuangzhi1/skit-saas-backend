@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
+import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnoreAspect;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.skit.dal.dataobject.provider.SkitProviderConnectionHealthProjection;
 import cn.iocoder.yudao.module.skit.dal.mysql.provider.SkitProviderConnectionHealthMapper;
@@ -26,6 +27,8 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Options;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
+import org.springframework.aop.support.AopUtils;
 
 class SkitProviderConnectionHealthServiceTest {
 
@@ -95,6 +98,21 @@ class SkitProviderConnectionHealthServiceTest {
     assertNull(empty.getDbFailureAt());
     assertThrows(IllegalArgumentException.class, () -> service.getSafeHealth(0));
     assertThrows(IllegalArgumentException.class, () -> service.getSafeHealth(-1));
+  }
+
+  @Test
+  void tenantIgnoreServiceCanBeClassProxiedLikeTheProductionContext() {
+    SkitProviderConnectionHealthMapper mapper =
+        org.mockito.Mockito.mock(SkitProviderConnectionHealthMapper.class);
+    AspectJProxyFactory proxyFactory =
+        new AspectJProxyFactory(new SkitProviderConnectionHealthServiceImpl(mapper));
+    proxyFactory.setProxyTargetClass(true);
+    proxyFactory.addAspect(new TenantIgnoreAspect());
+
+    Object proxy = proxyFactory.getProxy();
+
+    assertTrue(AopUtils.isCglibProxy(proxy));
+    assertTrue(proxy instanceof SkitProviderConnectionHealthService);
   }
 
   @Test
