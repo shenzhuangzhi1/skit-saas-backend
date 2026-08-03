@@ -62,6 +62,7 @@ class SkitCallbackIngressServiceImplTest {
     private static final String PLACEMENT_ID = "reward-placement";
     private static final String SHOW_ID = "show-123";
     private static final String SESSION_PUBLIC_ID = "0123456789abcdefghijkl";
+    private static final String IMPRESSION_SESSION_PUBLIC_ID = "0123456789abcdefghijkQ";
     private static final String PSEUDONYMOUS_USER = "m_member_42";
     private static final byte[] REWARD_SECRET = "taku-reward-secret-32-bytes-value"
             .getBytes(StandardCharsets.US_ASCII);
@@ -205,6 +206,75 @@ class SkitCallbackIngressServiceImplTest {
         }
         verifyNoInteractions(routingService, rateLimiter);
         assertEquals(RECEIVED_AT, insertedInbox.get().getReceivedAt());
+    }
+
+    @Test
+    void tenantCallbackKeyPersistsItsMatchedImpressionProvenance() {
+        prepareMatchedImpressionSession();
+        String rawQuery = matchedImpressionQuery(777, "0007");
+
+        SkitCallbackIngressService.IngressResponse result =
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9");
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
+        assertEquals(SESSION_ROW_ID, insertedInbox.get().getAdSessionId());
+        assertEquals("TENANT_CALLBACK_MATCHED", insertedInbox.get().getEvidenceProvenance());
+    }
+
+    @Test
+    void providerAttributionPersistsItsOwnMatchedImpressionProvenance() {
+        prepareMatchedImpressionSession();
+        String rawQuery = matchedImpressionQuery(777, "0007");
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(
+                        TENANT_ID, ACCOUNT_ID, 4, true, null);
+
+        SkitCallbackIngressService.IngressResponse result =
+                service.receiveAttributedImpression(route, rawQuery, RECEIVED_AT);
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK, result);
+        assertEquals(SESSION_ROW_ID, insertedInbox.get().getAdSessionId());
+        assertEquals("PROVIDER_ATTRIBUTED_MATCHED", insertedInbox.get().getEvidenceProvenance());
+    }
+
+    @Test
+    void providerDuplicateCannotReuseTenantCallbackProvenance() {
+        prepareMatchedImpressionSession();
+        String rawQuery = matchedImpressionQuery(777, "0007");
+        List<String> attemptResults = captureAttemptResults();
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK,
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9"));
+        SkitAdCallbackInboxDO tenantCanonical = insertedInbox.get();
+        prepareDuplicateCanonical(tenantCanonical);
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(
+                        TENANT_ID, ACCOUNT_ID, 4, true, null);
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
+                service.receiveAttributedImpression(route, rawQuery, RECEIVED_AT));
+        assertEquals("TENANT_CALLBACK_MATCHED", tenantCanonical.getEvidenceProvenance());
+        assertEquals(Arrays.asList("CANONICAL", "PROVENANCE_CONFLICT"), attemptResults);
+    }
+
+    @Test
+    void tenantDuplicateCannotUpgradeProviderAttributedProvenance() {
+        prepareMatchedImpressionSession();
+        String rawQuery = matchedImpressionQuery(777, "0007");
+        List<String> attemptResults = captureAttemptResults();
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(
+                        TENANT_ID, ACCOUNT_ID, 4, true, null);
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.OK,
+                service.receiveAttributedImpression(route, rawQuery, RECEIVED_AT));
+        SkitAdCallbackInboxDO providerCanonical = insertedInbox.get();
+        prepareDuplicateCanonical(providerCanonical);
+
+        assertEquals(SkitCallbackIngressService.IngressResponse.REJECTED,
+                service.receiveImpression(CALLBACK_KEY, rawQuery, "203.0.113.9"));
+        assertEquals("PROVIDER_ATTRIBUTED_MATCHED", providerCanonical.getEvidenceProvenance());
+        assertEquals(Arrays.asList("CANONICAL", "PROVENANCE_CONFLICT"), attemptResults);
     }
 
     @Test
@@ -756,6 +826,39 @@ class SkitCallbackIngressServiceImplTest {
         Arrays.fill(keyHash, (byte) 11);
         Arrays.fill(ipHash, (byte) 12);
         return SkitCallbackIngressService.TenantIngressEvidence.of(keyHash, ipHash);
+    }
+
+    private static String matchedImpressionQuery(int networkFirmId, String adsourceId) {
+        return "user_id=" + PSEUDONYMOUS_USER + "&req_id=req-1"
+                + "&package_name=com.example.app&adformat=1"
+                + "&placement_id=" + PLACEMENT_ID + "&nw_firm_id=" + networkFirmId
+                + "&adsource_id=" + adsourceId
+                + "&adsource_price=1.234567891234&currency=USD&timestamp=1784042400"
+                + "&show_custom_ext=" + IMPRESSION_SESSION_PUBLIC_ID;
+    }
+
+    private void prepareMatchedImpressionSession() {
+        session.setSessionId(IMPRESSION_SESSION_PUBLIC_ID);
+        when(sessionMapper.selectByAccountAndSessionIdForUpdate(
+                TENANT_ID, ACCOUNT_ID, IMPRESSION_SESSION_PUBLIC_ID)).thenReturn(session);
+    }
+
+    private List<String> captureAttemptResults() {
+        List<String> results = new ArrayList<>();
+        when(attemptMapper.insert(any(SkitAdCallbackAttemptDO.class))).thenAnswer(invocation -> {
+            results.add(((SkitAdCallbackAttemptDO) invocation.getArgument(0)).getResultCode());
+            return 1;
+        });
+        return results;
+    }
+
+    private void prepareDuplicateCanonical(SkitAdCallbackInboxDO canonical) {
+        doAnswer(invocation -> {
+            ((SkitAdCallbackInboxDO) invocation.getArgument(0)).setId(INBOX_ID);
+            return 0;
+        }).when(inboxMapper).insertOrGetCanonical(any(SkitAdCallbackInboxDO.class));
+        when(inboxMapper.selectByTenantAccountAndIdForUpdate(TENANT_ID, ACCOUNT_ID, INBOX_ID))
+                .thenReturn(canonical);
     }
 
     private SkitAdNetworkCapabilityDO validCapability() {

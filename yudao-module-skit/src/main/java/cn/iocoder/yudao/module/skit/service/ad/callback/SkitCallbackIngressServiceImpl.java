@@ -39,6 +39,8 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
     private static final String PROVIDER = "TAKU";
     private static final String REWARD = "REWARD";
     private static final String IMPRESSION = "IMPRESSION";
+    private static final String TENANT_IMPRESSION_MATCHED = "TENANT_CALLBACK_MATCHED";
+    private static final String PROVIDER_IMPRESSION_MATCHED = "PROVIDER_ATTRIBUTED_MATCHED";
     private static final int PAYLOAD_RETENTION_DAYS = 90;
     private static final long SIGNED_REWARD_FIELD_MASK = 0x3fL;
 
@@ -175,7 +177,8 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
             recordEdge(route, evidence, IMPRESSION, "INVALID_QUERY", authoritativeReceivedAt);
             return IngressResponse.REJECTED;
         }
-        return receiveCanonicalImpression(route, rawQuery, callback, authoritativeReceivedAt);
+        return receiveCanonicalImpression(route, rawQuery, callback, authoritativeReceivedAt,
+                TENANT_IMPRESSION_MATCHED);
     }
 
     @Override
@@ -190,15 +193,17 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
         } catch (TakuCallbackCanonicalizer.CallbackParseException invalid) {
             return IngressResponse.REJECTED;
         }
-        return receiveCanonicalImpression(route, rawQuery, callback, authoritativeReceivedAt);
+        return receiveCanonicalImpression(route, rawQuery, callback, authoritativeReceivedAt,
+                PROVIDER_IMPRESSION_MATCHED);
     }
 
     private IngressResponse receiveCanonicalImpression(
             SkitCallbackRoutingService.CallbackRoute route, String rawQuery,
-            TakuImpressionCallback callback, LocalDateTime receivedAt) {
+            TakuImpressionCallback callback, LocalDateTime receivedAt,
+            String matchedProvenance) {
         AtomicReference<IngressResponse> result = new AtomicReference<>();
         TenantUtils.execute(route.getTenantId(), () -> result.set(receiveImpressionInsideTenant(
-                route, rawQuery, callback, receivedAt)));
+                route, rawQuery, callback, receivedAt, matchedProvenance)));
         return Objects.requireNonNull(result.get(), "impression ingress result");
     }
 
@@ -314,7 +319,8 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
 
     private IngressResponse receiveImpressionInsideTenant(
             SkitCallbackRoutingService.CallbackRoute route, String rawQuery,
-            TakuImpressionCallback callback, LocalDateTime receivedAt) {
+            TakuImpressionCallback callback, LocalDateTime receivedAt,
+            String matchedProvenance) {
         SkitAdSessionDO matched = null;
         if (callback.getShowCustomExt() != null && !callback.getShowCustomExt().isEmpty()) {
             SkitAdSessionDO candidate = sessionMapper.selectByAccountAndSessionIdForUpdate(
@@ -333,7 +339,7 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
                 .setNetworkFirmId(callback.getObservedNetworkFirmId())
                 .setSourceCurrency(callback.getCurrency())
                 .setSignedFieldMask(0L)
-                .setEvidenceProvenance(matched == null ? "UNMATCHED" : "MATCHED_SESSION")
+                .setEvidenceProvenance(matched == null ? "UNMATCHED" : matchedProvenance)
                 .setAuthenticationLevel("UNSIGNED_PROVIDER_OBSERVATION")
                 .setSignatureStatus("NOT_APPLICABLE");
         encryptPayload(candidate, rawQuery);
@@ -363,6 +369,11 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
                 }
             }
             appendAttempt(canonical, incomingHash, "PAYLOAD_CONFLICT", receivedAt);
+            return new CanonicalResult(canonical, IngressResponse.REJECTED);
+        }
+        if (!Objects.equals(candidate.getEvidenceProvenance(),
+                canonical.getEvidenceProvenance())) {
+            appendAttempt(canonical, incomingHash, "PROVENANCE_CONFLICT", receivedAt);
             return new CanonicalResult(canonical, IngressResponse.REJECTED);
         }
         appendAttempt(canonical, incomingHash, affected == 1 ? "CANONICAL" : "DUPLICATE", receivedAt);

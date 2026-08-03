@@ -892,6 +892,114 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void matchedImpressionAcceptsNewSourceFromTheTenantTakuAccountWithoutPerFirmRegistration() {
+        int newNetworkFirmId = 777;
+        String newAdsourceId = "987654321";
+        String query = impressionQuery("2.5", "USD")
+                .replace("nw_firm_id=66", "nw_firm_id=" + newNetworkFirmId)
+                .replace("adsource_id=" + ADSOURCE, "adsource_id=" + newAdsourceId);
+        decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
+        inbox = impressionInbox(query)
+                .setNetworkFirmId(newNetworkFirmId)
+                .setAdsourceId(newAdsourceId)
+                .setEvidenceProvenance("TENANT_CALLBACK_MATCHED");
+        session.setRewardVerificationStatus("PENDING");
+        session.setRevenueStatus("NONE");
+        AtomicReference<SkitAdRevenueEventDO> inserted = new AtomicReference<>();
+        doAnswer(invocation -> {
+            SkitAdRevenueEventDO row = invocation.getArgument(0);
+            row.setId(706L);
+            inserted.set(row);
+            return 1;
+        }).when(revenueMapper).insert(any(SkitAdRevenueEventDO.class));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        assertEquals(TENANT_ID, inserted.get().getTenantId());
+        assertEquals(MEMBER_ID, inserted.get().getSourceMemberId());
+        assertEquals(newAdsourceId, inserted.get().getAdsourceId());
+        assertEquals("USD", inserted.get().getSourceCurrency());
+        assertEquals(Long.valueOf(25_000L), inserted.get().getSourceAmountUnits());
+        assertEquals(Long.valueOf(25L), inserted.get().getEstimatedAmountUnits());
+        assertEquals(Integer.valueOf(4), inserted.get().getAmountScale());
+        verify(capabilityMapper, never()).selectForShare(
+                TENANT_ID, ACCOUNT_ID, newNetworkFirmId);
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
+    void providerAttributedImpressionStillRequiresPerFirmRevenueCapability() {
+        int newNetworkFirmId = 777;
+        String newAdsourceId = "987654321";
+        String query = impressionQuery("2.5", "USD")
+                .replace("nw_firm_id=66", "nw_firm_id=" + newNetworkFirmId)
+                .replace("adsource_id=" + ADSOURCE, "adsource_id=" + newAdsourceId);
+        decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
+        inbox = impressionInbox(query)
+                .setNetworkFirmId(newNetworkFirmId)
+                .setAdsourceId(newAdsourceId)
+                .setEvidenceProvenance("PROVIDER_ATTRIBUTED_MATCHED");
+        session.setRewardVerificationStatus("PENDING");
+        session.setRevenueStatus("NONE");
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("IMPRESSION_CAPABILITY_REJECTED", result.getErrorCode());
+        verify(capabilityMapper).selectForShare(TENANT_ID, ACCOUNT_ID, newNetworkFirmId);
+        verify(revenueMapper, never()).insert(any(SkitAdRevenueEventDO.class));
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+    }
+
+    @Test
+    void legacyMatchedImpressionRemainsFailClosedWithoutPerFirmCapability() {
+        int newNetworkFirmId = 777;
+        String newAdsourceId = "987654321";
+        String query = impressionQuery("2.5", "USD")
+                .replace("nw_firm_id=66", "nw_firm_id=" + newNetworkFirmId)
+                .replace("adsource_id=" + ADSOURCE, "adsource_id=" + newAdsourceId);
+        decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
+        inbox = impressionInbox(query)
+                .setNetworkFirmId(newNetworkFirmId)
+                .setAdsourceId(newAdsourceId)
+                .setEvidenceProvenance("MATCHED_SESSION");
+        session.setRewardVerificationStatus("PENDING");
+        session.setRevenueStatus("NONE");
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("IMPRESSION_CAPABILITY_REJECTED", result.getErrorCode());
+        verify(capabilityMapper).selectForShare(TENANT_ID, ACCOUNT_ID, newNetworkFirmId);
+        verify(revenueMapper, never()).insert(any(SkitAdRevenueEventDO.class));
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+    }
+
+    @Test
+    void matchedImpressionStillRejectsAResponseWithoutNetworkSourceIdentity() {
+        String query = impressionQuery("2.5", "USD")
+                .replace("&nw_firm_id=66", "");
+        decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
+        inbox = impressionInbox(query).setNetworkFirmId(null);
+        session.setRewardVerificationStatus("PENDING");
+        session.setRevenueStatus("NONE");
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.REJECTED, result.getOutcome());
+        assertEquals("IMPRESSION_SOURCE_ID_MISSING", result.getErrorCode());
+        verify(revenueMapper, never()).insert(any(SkitAdRevenueEventDO.class));
+        verify(entitlementMapper, never()).insertGrantedIfAbsent(any());
+        verify(grantMapper, never()).insert(any());
+    }
+
+    @Test
     void impressionAfterRewardCreatesRewardQualifiedFrozenEventWithoutTouchingRewardState() {
         String query = impressionQuery("1", "CNY");
         decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
@@ -1307,7 +1415,7 @@ class SkitAdCallbackProcessorTest {
                 .setAdSessionId(SESSION_ID).setCallbackKeyVersion(4).setProviderUserId(PSEUDONYMOUS_USER)
                 .setProviderRequestId(parsed.getRequestId()).setPlacementId(PLACEMENT)
                 .setAdsourceId(ADSOURCE).setNetworkFirmId(66).setSourceCurrency(parsed.getCurrency())
-                .setSignedFieldMask(0L).setEvidenceProvenance("MATCHED_SESSION")
+                .setSignedFieldMask(0L).setEvidenceProvenance("PROVIDER_ATTRIBUTED_MATCHED")
                 .setAuthenticationLevel("UNSIGNED_PROVIDER_OBSERVATION")
                 .setSignatureStatus("NOT_APPLICABLE");
     }

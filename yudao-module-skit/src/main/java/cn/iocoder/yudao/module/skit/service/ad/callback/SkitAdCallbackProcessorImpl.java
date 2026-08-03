@@ -48,6 +48,9 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private static final String IMPRESSION = "IMPRESSION";
     private static final String IMPRESSION_SOURCE = "TAKU_IMPRESSION";
     private static final String SIGNED_REWARD = "SIGNED_REWARD";
+    private static final String TENANT_IMPRESSION_MATCHED = "TENANT_CALLBACK_MATCHED";
+    private static final String PROVIDER_IMPRESSION_MATCHED = "PROVIDER_ATTRIBUTED_MATCHED";
+    private static final String LEGACY_IMPRESSION_MATCHED = "MATCHED_SESSION";
     private static final long SIGNED_REWARD_FIELD_MASK = 0x3fL;
     private static final int LEGACY_GROSS_SCALE = 8;
     private static final int PANGLE_OVERSEAS_NETWORK_FIRM_ID = 50;
@@ -304,10 +307,17 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         if (callbackError != null) {
             return rejectInbox(inbox, callbackError);
         }
-        SkitAdNetworkCapabilityDO capability = capabilityMapper.selectForShare(
-                inbox.getTenantId(), inbox.getAdAccountId(), callback.getObservedNetworkFirmId());
-        if (!impressionCapabilityAllows(inbox, capability, callback.getObservedNetworkFirmId())) {
-            return rejectInbox(inbox, "IMPRESSION_CAPABILITY_REJECTED");
+        if (callback.getObservedNetworkFirmId() == null) {
+            return rejectInbox(inbox, "IMPRESSION_SOURCE_ID_MISSING");
+        }
+        if (!TENANT_IMPRESSION_MATCHED.equals(inbox.getEvidenceProvenance())) {
+            SkitAdNetworkCapabilityDO capability = capabilityMapper.selectForShare(
+                    inbox.getTenantId(), inbox.getAdAccountId(),
+                    callback.getObservedNetworkFirmId());
+            if (!impressionCapabilityAllows(inbox, capability,
+                    callback.getObservedNetworkFirmId())) {
+                return rejectInbox(inbox, "IMPRESSION_CAPABILITY_REJECTED");
+            }
         }
 
         ImpressionMoney money;
@@ -437,7 +447,9 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                 || !IMPRESSION.equals(inbox.getCallbackType())
                 || !"UNSIGNED_PROVIDER_OBSERVATION".equals(inbox.getAuthenticationLevel())
                 || !"NOT_APPLICABLE".equals(inbox.getSignatureStatus())
-                || !"MATCHED_SESSION".equals(inbox.getEvidenceProvenance())
+                || !(TENANT_IMPRESSION_MATCHED.equals(inbox.getEvidenceProvenance())
+                || PROVIDER_IMPRESSION_MATCHED.equals(inbox.getEvidenceProvenance())
+                || LEGACY_IMPRESSION_MATCHED.equals(inbox.getEvidenceProvenance()))
                 || !Objects.equals(inbox.getSignedFieldMask(), 0L)) {
             return "IMPRESSION_PROVENANCE_INVALID";
         }
