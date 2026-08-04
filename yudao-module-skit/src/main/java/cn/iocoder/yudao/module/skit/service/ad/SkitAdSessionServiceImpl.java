@@ -257,8 +257,19 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
 
         Long nativeGrantId = null;
         if (grantReference != null) {
-            SkitContentEntitlementService.PlayerGrantScope scope =
-                    entitlementService.lockAndUsePlayerGrant(grantReference, command.getDramaId());
+            SkitContentEntitlementService.PlayerGrantScope scope;
+            try {
+                scope = entitlementService.lockAndUsePlayerGrant(
+                        grantReference, command.getDramaId());
+            } catch (ServiceException invalid) {
+                if (!AD_PLAYER_GRANT_INVALID.getCode().equals(invalid.getCode())) {
+                    throw invalid;
+                }
+                // Expired-but-unrevoked grant: bind the session to the grant identity
+                // without renewing it, so the client can watch an ad and unlock again.
+                // Entitlement is still granted only after reward verification.
+                scope = entitlementService.scopeOf(grantReference);
+            }
             if (!tenantId.equals(scope.getTenantId()) || !memberId.equals(scope.getMemberId())
                     || !command.getDramaId().equals(scope.getDramaId()) || scope.getGrantId() == null) {
                 throw exception(AD_SESSION_INVALID);
@@ -648,12 +659,56 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             LocalDateTime recoveryReferenceTime = databaseNow();
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
-            SkitContentEntitlementService.PlayerGrantScope scope =
-                    entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
-            result.set(getInsideTenant(
-                    scope.getMemberId(), sessionId, scope, recoveryReferenceTime));
+            try {
+                SkitContentEntitlementService.PlayerGrantScope scope =
+                        entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
+                result.set(getInsideTenant(
+                        scope.getMemberId(), sessionId, scope, recoveryReferenceTime));
+            } catch (ServiceException expired) {
+                if (!AD_PLAYER_GRANT_INVALID.getCode().equals(expired.getCode())) {
+                    throw expired;
+                }
+                // Expired-but-unrevoked grant: surface the terminal session state
+                // (e.g. VERIFY_TIMEOUT) so the client drops the stale session and
+                // creates a fresh one instead of retrying forever.
+                result.set(recoverExpiredGrantSession(reference, sessionId, recoveryReferenceTime));
+            }
         });
         return result.get();
+    }
+
+    /**
+     * Read-only recovery for an expired-but-unrevoked player grant: validates that
+     * the session was created through a native grant for the same member, applies
+     * server-side expiry transitions, and returns the authoritative view. This lets
+     * clients holding a stale grant token learn the session's terminal state (e.g.
+     * VERIFY_TIMEOUT) and create a fresh session instead of retrying forever.
+     */
+    private SessionView recoverExpiredGrantSession(
+            SkitContentEntitlementService.PlayerGrantReference reference,
+            String sessionId, LocalDateTime recoveryReferenceTime) {
+        validateSessionId(sessionId);
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        SkitAdSessionDO row = sessionMapper.selectByTenantMemberAndSessionId(
+                tenantId, reference.getMemberId(), sessionId);
+        requireSession(row, tenantId, reference.getMemberId(), sessionId);
+        if (!"NATIVE_PLAYER_GRANT".equals(row.getAccessMode())
+                || row.getNativePlayerGrantId() == null) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        LocalDateTime authoritativeNow = now();
+        if (!needsServerExpiry(row, authoritativeNow, recoveryReferenceTime)) {
+            return toView(row);
+        }
+        row = sessionMapper.selectByTenantMemberAndSessionIdForUpdate(
+                tenantId, reference.getMemberId(), sessionId);
+        requireSession(row, tenantId, reference.getMemberId(), sessionId);
+        rejectStalePureCreated(
+                row, tenantId, reference.getMemberId(), recoveryReferenceTime);
+        expireLoad(row, tenantId, reference.getMemberId(), authoritativeNow);
+        expirePendingReward(row, tenantId, reference.getMemberId(), authoritativeNow);
+        rejectLegacyUnrewardedClosed(row, tenantId, reference.getMemberId(), authoritativeNow);
+        return toView(row);
     }
 
     private SessionView getInsideTenant(Long memberId, String sessionId,
@@ -704,10 +759,19 @@ public class SkitAdSessionServiceImpl implements SkitAdSessionService {
             LocalDateTime recoveryReferenceTime = databaseNow();
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.AD_SESSION);
-            SkitContentEntitlementService.PlayerGrantScope scope =
-                    entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
-            result.set(recordClientEventsInsideTenant(
-                    scope.getMemberId(), sessionId, events, scope, recoveryReferenceTime));
+            try {
+                SkitContentEntitlementService.PlayerGrantScope scope =
+                        entitlementService.lockAndUsePlayerGrant(reference, reference.getDramaId());
+                result.set(recordClientEventsInsideTenant(
+                        scope.getMemberId(), sessionId, events, scope, recoveryReferenceTime));
+            } catch (ServiceException expired) {
+                if (!AD_PLAYER_GRANT_INVALID.getCode().equals(expired.getCode())) {
+                    throw expired;
+                }
+                // Expired-but-unrevoked grant: telemetry is not applied; surface the
+                // terminal session state so the client can drop the stale session.
+                result.set(recoverExpiredGrantSession(reference, sessionId, recoveryReferenceTime));
+            }
         });
         return result.get();
     }

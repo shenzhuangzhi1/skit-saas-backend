@@ -197,6 +197,23 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         return new PlayerGrantScope(tenantId, row.getId(), row.getMemberId(), row.getDramaId());
     }
 
+    @Override
+    public PlayerGrantScope scopeOf(PlayerGrantReference reference) {
+        Objects.requireNonNull(reference, "reference");
+        Long tenantId = TenantContextHolder.getRequiredTenantId();
+        if (!tenantId.equals(reference.getTenantId())) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        SkitNativePlayerGrantDO row = nativeGrantMapper.selectExact(tenantId,
+                reference.getGrantId(), reference.getMemberId(), reference.getDramaId());
+        if (row == null || row.getId() == null || row.getId() <= 0
+                || row.getMemberId() == null || row.getDramaId() == null) {
+            throw exception(AD_PLAYER_GRANT_INVALID);
+        }
+        return new PlayerGrantScope(reference.getTenantId(), reference.getGrantId(),
+                reference.getMemberId(), reference.getDramaId());
+    }
+
     private PlayerGrantScope readPlayerGrant(PlayerGrantReference reference, Long expectedDramaId) {
         Objects.requireNonNull(reference, "reference");
         requirePositive(expectedDramaId, "dramaId");

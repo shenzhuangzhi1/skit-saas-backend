@@ -17,6 +17,17 @@ public interface SkitContentEntitlementService {
 
     PlayerGrantScope lockAndUsePlayerGrant(PlayerGrantReference reference, Long expectedDramaId);
 
+    /**
+     * Resolves a player-grant scope from the grant row without expiry checks.
+     * <p>
+     * Identity-only binding used by session recovery when the grant has expired
+     * but was never revoked: the session may still be created or recovered so
+     * the client can re-watch an ad and unlock again, while the grant itself
+     * stays non-renewable. Entitlement is still granted only after reward
+     * verification.
+     */
+    PlayerGrantScope scopeOf(PlayerGrantReference reference);
+
     EntitlementSnapshot getEntitlementSnapshot(
             Long memberId, Long dramaId, SkitTenantAdCapabilityService.ClientRuntime runtime);
 
