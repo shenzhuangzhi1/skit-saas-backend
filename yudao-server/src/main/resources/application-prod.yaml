@@ -67,6 +67,7 @@ skit:
   ad:
     callback:
       public-base-url: ${SKIT_AD_CALLBACK_PUBLIC_BASE_URL}
+      legacy-impression-alias: ${SKIT_AD_CALLBACK_LEGACY_IMPRESSION_ALIAS:7f57b32820acbc0e34f067c1aff0a05d98197683678cc3af60d0027935bce6d4=1a0041c9f0864fa47222cacd113032ed2658cbb83f66c79ed325278ee0e7ac71}
     credential-encryption:
       current-key-id: ${SKIT_AD_CREDENTIAL_KEY_ID:primary}
       current-key: ${SKIT_AD_CREDENTIAL_KEY}

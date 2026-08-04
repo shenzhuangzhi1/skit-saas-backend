@@ -410,6 +410,74 @@ class SkitTakuCallbackIngressDispatcherImplTest {
     }
 
     @Test
+    void expiredOldKeyImpressionUsesPinnedAliasTargetVersion() {
+        Fixture fixture = fixture(AUDIT_KEY);
+        RouteLookup aliased = RouteLookup.tenant(163L, 71L, 2, true, null);
+        AtomicReference<byte[]> aliasedHash = new AtomicReference<>();
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(163L, 71L, 2, true, null);
+        when(fixture.registryService.lookup(any(byte[].class), eq(RECEIVED_AT), eq(RECEIVED_AT)))
+                .thenThrow(new SkitCallbackRouteRegistryService.CallbackRouteRejectedException());
+        when(fixture.aliasResolver.resolve(any(byte[].class), eq(RECEIVED_AT)))
+                .thenAnswer(invocation -> {
+                    aliasedHash.set(((byte[]) invocation.getArgument(0)).clone());
+                    return aliased;
+                });
+        when(fixture.routingService.resolveTenantReward(aliased, RECEIVED_AT)).thenReturn(route);
+        when(fixture.tenantIngressService.receiveImpression(eq(route), eq(RAW_QUERY), any(),
+                eq(RECEIVED_AT))).thenReturn(SkitCallbackIngressService.IngressResponse.OK);
+
+        assertEquals(SkitTakuCallbackIngressDispatcher.DispatchResponse.ACK_200,
+                fixture.dispatcher.dispatch(
+                        SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION,
+                        KEY, RAW_QUERY, metadata()));
+
+        assertArrayEquals(sha256(KEY), aliasedHash.get());
+        verify(fixture.aliasResolver).resolve(any(byte[].class), eq(RECEIVED_AT));
+        verify(fixture.tenantIngressService).receiveImpression(eq(route), eq(RAW_QUERY), any(),
+                eq(RECEIVED_AT));
+        verify(fixture.providerConnectionService, never())
+                .resolveProviderImpression(any(RouteLookup.class), any(LocalDateTime.class));
+    }
+
+    @Test
+    void expiredOldKeyRewardNeverUsesImpressionAlias() {
+        Fixture fixture = fixture(AUDIT_KEY);
+        when(fixture.registryService.lookup(any(byte[].class), eq(RECEIVED_AT), eq(RECEIVED_AT)))
+                .thenThrow(new SkitCallbackRouteRegistryService.CallbackRouteRejectedException());
+
+        assertEquals(SkitTakuCallbackIngressDispatcher.DispatchResponse.REJECT_602,
+                fixture.dispatcher.dispatch(
+                        SkitTakuCallbackIngressDispatcher.CallbackType.REWARD,
+                        KEY, RAW_QUERY, metadata()));
+
+        verify(fixture.aliasResolver, never()).resolve(any(byte[].class), any(LocalDateTime.class));
+        verify(fixture.tenantIngressService, never()).receiveReward(any(), any(), any(), any());
+    }
+
+    @Test
+    void currentTenantKeyBypassesImpressionAlias() {
+        Fixture fixture = fixture(AUDIT_KEY);
+        RouteLookup current = RouteLookup.tenant(163L, 71L, 2, true, null);
+        SkitCallbackRoutingService.CallbackRoute route =
+                new SkitCallbackRoutingService.CallbackRoute(163L, 71L, 2, true, null);
+        when(fixture.registryService.lookup(any(byte[].class), eq(RECEIVED_AT), eq(RECEIVED_AT)))
+                .thenReturn(current);
+        when(fixture.routingService.resolveTenantReward(current, RECEIVED_AT)).thenReturn(route);
+        when(fixture.tenantIngressService.receiveImpression(eq(route), eq(RAW_QUERY), any(),
+                eq(RECEIVED_AT))).thenReturn(SkitCallbackIngressService.IngressResponse.OK);
+
+        assertEquals(SkitTakuCallbackIngressDispatcher.DispatchResponse.ACK_200,
+                fixture.dispatcher.dispatch(
+                        SkitTakuCallbackIngressDispatcher.CallbackType.IMPRESSION,
+                        KEY, RAW_QUERY, metadata()));
+
+        verify(fixture.aliasResolver, never()).resolve(any(byte[].class), any(LocalDateTime.class));
+        verify(fixture.tenantIngressService).receiveImpression(eq(route), eq(RAW_QUERY), any(),
+                eq(RECEIVED_AT));
+    }
+
+    @Test
     void providerBoundaryFailureIs602AndMissingAuditKeyIs503WithoutCapture() {
         Fixture boundary = acceptingProviderFixture(AUDIT_KEY, 74L, 43L);
         assertEquals(SkitTakuCallbackIngressDispatcher.DispatchResponse.REJECT_602,
@@ -445,6 +513,8 @@ class SkitTakuCallbackIngressDispatcherImplTest {
 
     private static Fixture fixture(String auditKey, ZoneId tenantDatabaseZone) {
         SkitCallbackRouteRegistryService registry = mock(SkitCallbackRouteRegistryService.class);
+        SkitLegacyImpressionAliasResolver aliasResolver =
+                mock(SkitLegacyImpressionAliasResolver.class);
         SkitCallbackRoutingService routing = mock(SkitCallbackRoutingService.class);
         SkitCallbackIngressService tenantIngress = mock(SkitCallbackIngressService.class);
         SkitProviderConnectionService provider = mock(SkitProviderConnectionService.class);
@@ -462,8 +532,8 @@ class SkitTakuCallbackIngressDispatcherImplTest {
         SkitTakuCallbackIngressDispatcherImpl dispatcher =
                 new SkitTakuCallbackIngressDispatcherImpl(registry, routing, tenantIngress,
                         provider, new SkitProviderImpressionWireParser(), capture, rateLimiter,
-                        capacity, audit, observation, clock, tenantDatabaseZone);
-        return new Fixture(dispatcher, registry, routing, tenantIngress,
+                        capacity, audit, observation, aliasResolver, clock, tenantDatabaseZone);
+        return new Fixture(dispatcher, registry, aliasResolver, routing, tenantIngress,
                 provider, capture, rateLimiter, capacity, meters);
     }
 
@@ -539,6 +609,7 @@ class SkitTakuCallbackIngressDispatcherImplTest {
     private static final class Fixture {
         private final SkitTakuCallbackIngressDispatcherImpl dispatcher;
         private final SkitCallbackRouteRegistryService registryService;
+        private final SkitLegacyImpressionAliasResolver aliasResolver;
         private final SkitCallbackRoutingService routingService;
         private final SkitCallbackIngressService tenantIngressService;
         private final SkitProviderConnectionService providerConnectionService;
@@ -549,6 +620,7 @@ class SkitTakuCallbackIngressDispatcherImplTest {
 
         private Fixture(SkitTakuCallbackIngressDispatcherImpl dispatcher,
                         SkitCallbackRouteRegistryService registryService,
+                        SkitLegacyImpressionAliasResolver aliasResolver,
                         SkitCallbackRoutingService routingService,
                         SkitCallbackIngressService tenantIngressService,
                         SkitProviderConnectionService providerConnectionService,
@@ -558,6 +630,7 @@ class SkitTakuCallbackIngressDispatcherImplTest {
                         SimpleMeterRegistry meters) {
             this.dispatcher = dispatcher;
             this.registryService = registryService;
+            this.aliasResolver = aliasResolver;
             this.routingService = routingService;
             this.tenantIngressService = tenantIngressService;
             this.providerConnectionService = providerConnectionService;

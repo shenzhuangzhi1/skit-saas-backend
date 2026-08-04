@@ -49,6 +49,7 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
     private final SkitProviderConnectionCapacityGuard capacityGuard;
     private final SkitProviderCallbackAuditFactory auditFactory;
     private final SkitProviderImpressionCaptureObservation observation;
+    private final SkitLegacyImpressionAliasResolver legacyImpressionAliasResolver;
     private final Clock clock;
     private final ZoneId tenantDatabaseZone;
 
@@ -63,10 +64,11 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
             SkitCallbackRateLimiter rateLimiter,
             SkitProviderConnectionCapacityGuard capacityGuard,
             SkitProviderCallbackAuditFactory auditFactory,
-            SkitProviderImpressionCaptureObservation observation) {
+            SkitProviderImpressionCaptureObservation observation,
+            SkitLegacyImpressionAliasResolver legacyImpressionAliasResolver) {
         this(registryService, routingService, tenantIngressService, providerConnectionService,
                 wireParser, captureService, rateLimiter, capacityGuard, auditFactory,
-                observation, Clock.systemUTC(), ZoneId.systemDefault());
+                observation, legacyImpressionAliasResolver, Clock.systemUTC(), ZoneId.systemDefault());
     }
 
     SkitTakuCallbackIngressDispatcherImpl(
@@ -83,7 +85,7 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
             Clock clock) {
         this(registryService, routingService, tenantIngressService, providerConnectionService,
                 wireParser, captureService, rateLimiter, capacityGuard, auditFactory,
-                observation, clock, ZoneOffset.UTC);
+                observation, SkitLegacyImpressionAliasResolver.disabled(), clock, ZoneOffset.UTC);
     }
 
     SkitTakuCallbackIngressDispatcherImpl(
@@ -99,6 +101,26 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
             SkitProviderImpressionCaptureObservation observation,
             Clock clock,
             ZoneId tenantDatabaseZone) {
+        this(registryService, routingService, tenantIngressService, providerConnectionService,
+                wireParser, captureService, rateLimiter, capacityGuard, auditFactory,
+                observation, SkitLegacyImpressionAliasResolver.disabled(), clock,
+                tenantDatabaseZone);
+    }
+
+    SkitTakuCallbackIngressDispatcherImpl(
+            SkitCallbackRouteRegistryService registryService,
+            SkitCallbackRoutingService routingService,
+            SkitCallbackIngressService tenantIngressService,
+            SkitProviderConnectionService providerConnectionService,
+            SkitProviderImpressionWireParser wireParser,
+            SkitProviderImpressionCaptureService captureService,
+            SkitCallbackRateLimiter rateLimiter,
+            SkitProviderConnectionCapacityGuard capacityGuard,
+            SkitProviderCallbackAuditFactory auditFactory,
+            SkitProviderImpressionCaptureObservation observation,
+            SkitLegacyImpressionAliasResolver legacyImpressionAliasResolver,
+            Clock clock,
+            ZoneId tenantDatabaseZone) {
         this.registryService = Objects.requireNonNull(registryService, "registryService");
         this.routingService = Objects.requireNonNull(routingService, "routingService");
         this.tenantIngressService = Objects.requireNonNull(tenantIngressService,
@@ -111,6 +133,8 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
         this.capacityGuard = Objects.requireNonNull(capacityGuard, "capacityGuard");
         this.auditFactory = Objects.requireNonNull(auditFactory, "auditFactory");
         this.observation = Objects.requireNonNull(observation, "observation");
+        this.legacyImpressionAliasResolver = Objects.requireNonNull(
+                legacyImpressionAliasResolver, "legacyImpressionAliasResolver");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.tenantDatabaseZone = Objects.requireNonNull(
                 tenantDatabaseZone, "tenantDatabaseZone");
@@ -166,9 +190,21 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
                 // Existing tenant callback DATETIME values use the database/host local zone.
                 lookup = registryService.lookup(keyHash, providerReceivedAt, tenantReceivedAt);
             } catch (CallbackRouteRejectedException rejected) {
-                recordRedisDegradation(globalAddressGate, scope);
-                return globalAddressGate == RateGateOutcome.PASSED
-                        ? DispatchResponse.REJECT_602 : DispatchResponse.FAILURE_503;
+                if (callbackType != CallbackType.IMPRESSION
+                        || globalAddressGate != RateGateOutcome.PASSED) {
+                    recordRedisDegradation(globalAddressGate, scope);
+                    return globalAddressGate == RateGateOutcome.PASSED
+                            ? DispatchResponse.REJECT_602 : DispatchResponse.FAILURE_503;
+                }
+                try {
+                    lookup = legacyImpressionAliasResolver.resolve(keyHash, tenantReceivedAt);
+                } catch (CallbackRouteRejectedException aliasRejected) {
+                    recordRedisDegradation(globalAddressGate, scope);
+                    return DispatchResponse.REJECT_602;
+                } catch (RuntimeException infrastructureFailure) {
+                    recordRedisDegradation(globalAddressGate, scope);
+                    return DispatchResponse.FAILURE_503;
+                }
             } catch (RuntimeException infrastructureFailure) {
                 recordRedisDegradation(globalAddressGate, scope);
                 return DispatchResponse.FAILURE_503;
