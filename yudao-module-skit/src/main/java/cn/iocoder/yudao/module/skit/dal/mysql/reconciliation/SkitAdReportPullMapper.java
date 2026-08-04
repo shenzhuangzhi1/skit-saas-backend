@@ -7,6 +7,8 @@ import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
+
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.util.List;
@@ -55,6 +57,7 @@ public interface SkitAdReportPullMapper {
             + "AND `credential_version`=#{credentialVersion} "
             + "AND `final_window`=#{finalWindow} "
             + "AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitAdReportPullDO selectCanonicalForUpdate(@Param("tenantId") long tenantId,
                                                 @Param("adAccountId") long adAccountId,
                                                 @Param("rangeStart") LocalDateTime rangeStart,

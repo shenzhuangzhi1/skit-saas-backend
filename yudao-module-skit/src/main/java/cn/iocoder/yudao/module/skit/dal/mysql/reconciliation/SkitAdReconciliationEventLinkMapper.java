@@ -7,6 +7,8 @@ import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
+
 @Mapper
 public interface SkitAdReconciliationEventLinkMapper {
 
@@ -22,6 +24,7 @@ public interface SkitAdReconciliationEventLinkMapper {
     @Select("SELECT * FROM `skit_ad_reconciliation_event_link` "
             + "WHERE `tenant_id`=#{tenantId} AND `reconciliation_revision_id`=#{revisionId} "
             + "AND `event_id`=#{eventId} AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitAdReconciliationEventLinkDO selectCanonicalForUpdate(
             @Param("tenantId") long tenantId,
             @Param("revisionId") long revisionId,

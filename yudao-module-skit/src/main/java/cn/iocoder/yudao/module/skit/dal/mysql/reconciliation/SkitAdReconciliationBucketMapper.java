@@ -8,6 +8,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
+
 import java.time.LocalDate;
 
 @Mapper
@@ -34,6 +36,7 @@ public interface SkitAdReconciliationBucketMapper {
             + "AND `network_account_id`=#{networkAccountId} AND `network_firm_id`=#{networkFirmId} "
             + "AND `adsource_id`=#{adsourceId} AND `currency`=#{currency} "
             + "AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitAdReconciliationBucketDO selectIdentityForUpdate(
             @Param("tenantId") long tenantId, @Param("adAccountId") long adAccountId,
             @Param("bucketKey") String bucketKey, @Param("reportDate") LocalDate reportDate,
