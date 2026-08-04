@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.skit.service.member;
 
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.skit.dal.dataobject.agent.SkitAgentDO;
@@ -165,7 +166,8 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
     }
 
     @Override
-    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class,
+            noRollbackFor = ServiceException.class)
     public PlayerGrantScope lockAndUsePlayerGrant(PlayerGrantReference reference, Long expectedDramaId) {
         Objects.requireNonNull(reference, "reference");
         requirePositive(expectedDramaId, "dramaId");
