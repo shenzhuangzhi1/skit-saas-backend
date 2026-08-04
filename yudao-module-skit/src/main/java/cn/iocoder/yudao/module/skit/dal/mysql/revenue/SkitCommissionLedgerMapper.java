@@ -51,6 +51,7 @@ public interface SkitCommissionLedgerMapper extends BaseMapperX<SkitCommissionLe
             + "AND `beneficiary_member_id`=#{beneficiaryMemberId} AND `level_no`=#{levelNo} "
             + "AND `entry_type`=#{entryType} AND `revision_no`=#{revisionNo} "
             + "AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitCommissionLedgerDO selectCanonicalEntryForUpdate(
             @Param("tenantId") long tenantId,
             @Param("eventId") long eventId,

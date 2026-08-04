@@ -31,6 +31,7 @@ public interface SkitAdReconciliationRevisionMapper {
             + "AND `ad_account_id`=#{adAccountId} AND `bucket_key`=#{bucketKey} "
             + "AND `report_date`=#{reportDate} AND `revision_hash`=#{revisionHash} "
             + "AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitAdReconciliationRevisionDO selectCanonicalForUpdate(
             @Param("tenantId") long tenantId, @Param("adAccountId") long adAccountId,
             @Param("bucketKey") String bucketKey, @Param("reportDate") LocalDate reportDate,

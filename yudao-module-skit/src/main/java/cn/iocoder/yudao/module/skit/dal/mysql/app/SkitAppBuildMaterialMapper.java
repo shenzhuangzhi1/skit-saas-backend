@@ -19,10 +19,12 @@ public interface SkitAppBuildMaterialMapper {
 
     @Select("SELECT * FROM `skit_app_build_material` WHERE `tenant_id`=#{tenantId} "
             + "AND `active`=b'1' AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitAppBuildMaterialDO selectActiveForUpdate(@Param("tenantId") Long tenantId);
 
     @Select("SELECT * FROM `skit_app_build_material` WHERE `tenant_id`=#{tenantId} "
             + "AND `deleted`=b'0' ORDER BY `material_version` DESC LIMIT 1 FOR UPDATE")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; preserve MySQL locking-clause order
     SkitAppBuildMaterialDO selectLatestForUpdate(@Param("tenantId") Long tenantId);
 
     @Select("SELECT COALESCE(MAX(`material_version`),0) FROM `skit_app_build_material` "
