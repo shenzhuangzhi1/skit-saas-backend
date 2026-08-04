@@ -60,6 +60,24 @@ class SkitTakuCallbackIngressDispatcherImplTest {
     }
 
     @Test
+    void productionBoundaryConstructorRemainsAvailable() throws Exception {
+        Constructor<SkitTakuCallbackIngressDispatcherImpl> constructor =
+                SkitTakuCallbackIngressDispatcherImpl.class.getConstructor(
+                        SkitCallbackRouteRegistryService.class,
+                        SkitCallbackRoutingService.class,
+                        SkitCallbackIngressService.class,
+                        SkitProviderConnectionService.class,
+                        SkitProviderImpressionWireParser.class,
+                        SkitProviderImpressionCaptureService.class,
+                        SkitCallbackRateLimiter.class,
+                        SkitProviderConnectionCapacityGuard.class,
+                        SkitProviderCallbackAuditFactory.class,
+                        SkitProviderImpressionCaptureObservation.class);
+
+        assertEquals(10, constructor.getParameterCount());
+    }
+
+    @Test
     void requestMetadataIsBoundedDefensiveRedactedAndClearable() throws Exception {
         String sentinelIp = "203.0.113.7";
         String sentinelAccept = "application/sentinel";

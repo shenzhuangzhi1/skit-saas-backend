@@ -53,6 +53,23 @@ public class SkitTakuCallbackIngressDispatcherImpl implements SkitTakuCallbackIn
     private final Clock clock;
     private final ZoneId tenantDatabaseZone;
 
+    public SkitTakuCallbackIngressDispatcherImpl(
+            SkitCallbackRouteRegistryService registryService,
+            SkitCallbackRoutingService routingService,
+            SkitCallbackIngressService tenantIngressService,
+            SkitProviderConnectionService providerConnectionService,
+            SkitProviderImpressionWireParser wireParser,
+            SkitProviderImpressionCaptureService captureService,
+            SkitCallbackRateLimiter rateLimiter,
+            SkitProviderConnectionCapacityGuard capacityGuard,
+            SkitProviderCallbackAuditFactory auditFactory,
+            SkitProviderImpressionCaptureObservation observation) {
+        this(registryService, routingService, tenantIngressService, providerConnectionService,
+                wireParser, captureService, rateLimiter, capacityGuard, auditFactory,
+                observation, SkitLegacyImpressionAliasResolver.disabled(), Clock.systemUTC(),
+                ZoneId.systemDefault());
+    }
+
     @Autowired
     public SkitTakuCallbackIngressDispatcherImpl(
             SkitCallbackRouteRegistryService registryService,
