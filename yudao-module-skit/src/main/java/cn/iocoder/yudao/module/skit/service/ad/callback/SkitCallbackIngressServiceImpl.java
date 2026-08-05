@@ -462,12 +462,16 @@ public class SkitCallbackIngressServiceImpl implements SkitCallbackIngressServic
     private boolean impressionSessionMatches(
             SkitCallbackRoutingService.CallbackRoute route, SkitAdSessionDO session,
             TakuImpressionCallback callback) {
+        // Taku's impression callback delivers user_id empty; correlation then relies on
+        // placement_id (+ show_custom_ext during later evidence processing).
+        String callbackUserId = callback.getUserId();
         return session != null && Objects.equals(session.getTenantId(), route.getTenantId())
                 && Objects.equals(session.getAdAccountId(), route.getAdAccountId())
                 && Objects.equals(session.getCallbackKeyVersion(), route.getCallbackKeyVersion())
                 && PROVIDER.equals(session.getProvider())
                 && Objects.equals(session.getPlacementId(), callback.getPlacementId())
-                && Objects.equals(session.getPseudonymousUserId(), callback.getUserId());
+                && (callbackUserId == null || callbackUserId.isEmpty()
+                || Objects.equals(session.getPseudonymousUserId(), callbackUserId));
     }
 
     private boolean canonicalScopeMatches(

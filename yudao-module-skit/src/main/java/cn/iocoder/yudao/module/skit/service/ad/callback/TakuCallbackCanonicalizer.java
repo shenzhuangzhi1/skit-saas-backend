@@ -62,7 +62,7 @@ public class TakuCallbackCanonicalizer {
             "gaid", "oaid", "imei", "idfa", "idfv", "amazon_id", "show_custom_ext"));
     private static final Set<String> IMPRESSION_ALLOW_LIST = immutableSet(IMPRESSION_FIELDS);
     private static final List<String> IMPRESSION_REQUIRED = Collections.unmodifiableList(Arrays.asList(
-            "user_id", "req_id", "package_name", "adformat", "placement_id", "adsource_id",
+            "req_id", "package_name", "adformat", "placement_id", "adsource_id",
             "adsource_price", "currency", "timestamp", "show_custom_ext"));
 
     public TakuRewardCallback canonicalizeReward(String rawQuery) {
@@ -85,7 +85,12 @@ public class TakuCallbackCanonicalizer {
     public TakuImpressionCallback canonicalizeImpression(String rawQuery) {
         Map<String, String> values = parseRawQuery(rawQuery, IMPRESSION_ALLOW_LIST);
         validateRequiredNonEmpty(values, IMPRESSION_REQUIRED);
-        validateOpaque(values.get("user_id"));
+        // user_id is documented as developer-set custom data, but Taku's impression
+        // callback currently delivers it empty even when the SDK sets KEY.USER_ID.
+        // The session correlation still holds via show_custom_ext + placement_id.
+        if (hasValue(values, "user_id")) {
+            validateOpaque(values.get("user_id"));
+        }
         validateOpaque(values.get("req_id"));
         validateOpaque(values.get("package_name"));
         validateOpaque(values.get("placement_id"));

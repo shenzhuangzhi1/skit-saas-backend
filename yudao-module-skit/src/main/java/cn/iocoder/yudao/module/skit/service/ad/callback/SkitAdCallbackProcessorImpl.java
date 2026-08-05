@@ -487,8 +487,12 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         if (!Objects.equals(callback.getShowCustomExt(), session.getSessionId())) {
             return "IMPRESSION_SESSION_UNMATCHED";
         }
-        if (!Objects.equals(callback.getUserId(), session.getPseudonymousUserId())
-                || !Objects.equals(callback.getUserId(), inbox.getProviderUserId())) {
+        // Taku's impression callback delivers user_id empty; correlation holds via
+        // show_custom_ext + placement_id + req_id/adsource_id idempotency instead.
+        String callbackUserId = callback.getUserId();
+        if ((callbackUserId != null && !callbackUserId.isEmpty())
+                && (!Objects.equals(callbackUserId, session.getPseudonymousUserId())
+                || !Objects.equals(callbackUserId, inbox.getProviderUserId()))) {
             return "IMPRESSION_USER_MISMATCH";
         }
         if (!Objects.equals(callback.getPlacementId(), session.getPlacementId())
