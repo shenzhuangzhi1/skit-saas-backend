@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumption
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitStablePageRespVO;
 import cn.iocoder.yudao.module.skit.service.management.SkitManagementTimezone;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -558,12 +559,15 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
 
     /** First configured USD->CNY rate for the tenant, or null when unset (display stays USD). */
     private BigDecimal fxRateForTenant(long tenantId) {
-        List<BigDecimal> rates = jdbcTemplate.query(
-                "SELECT `fx_rate_cny_per_usd` FROM `skit_ad_account` WHERE `tenant_id`=? "
-                        + "AND `deleted`=b'0' AND `fx_rate_cny_per_usd` IS NOT NULL "
-                        + "ORDER BY `id` LIMIT 1",
-                (rs, rowNum) -> rs.getBigDecimal(1), tenantId);
-        return rates.isEmpty() ? null : rates.get(0);
+        try {
+            return jdbcTemplate.queryForObject(
+                    "SELECT `fx_rate_cny_per_usd` FROM `skit_ad_account` WHERE `tenant_id`=? "
+                            + "AND `deleted`=b'0' AND `fx_rate_cny_per_usd` IS NOT NULL "
+                            + "ORDER BY `id` LIMIT 1",
+                    BigDecimal.class, tenantId);
+        } catch (EmptyResultDataAccessException absent) {
+            return null;
+        }
     }
 
     private static String decimal(BigDecimal value) {

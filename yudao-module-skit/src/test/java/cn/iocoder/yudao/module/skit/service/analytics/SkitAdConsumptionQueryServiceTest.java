@@ -237,7 +237,7 @@ class SkitAdConsumptionQueryServiceTest {
 
         invoke(service, "getSummary", new Class<?>[]{long.class, query.getClass()}, 42L, query);
 
-        assertEquals(2, jdbc.calls.size());
+        assertEquals(3, jdbc.calls.size());
         String lifecycleSql = jdbc.calls.get(0).sql;
         assertTrue(lifecycleSql.contains("COUNT(*) AS `session_count`"), lifecycleSql);
         assertTrue(lifecycleSql.contains("AS `client_shown_count`"), lifecycleSql);
@@ -278,6 +278,8 @@ class SkitAdConsumptionQueryServiceTest {
         assertTrue(moneySql.contains("GROUP BY `e`.`source_currency`,`e`.`amount_scale`"), moneySql);
         assertTrue(moneySql.contains("`e`.`legacy_unverified`=b'0'"), moneySql);
         assertTrue(moneySql.contains("`e`.`mock`=b'0'"), moneySql);
+        String fxSql = jdbc.calls.get(2).sql;
+        assertTrue(fxSql.contains("fx_rate_cny_per_usd"), fxSql);
     }
 
     @Test
