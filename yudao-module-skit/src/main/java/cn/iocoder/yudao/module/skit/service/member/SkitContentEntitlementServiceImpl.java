@@ -216,6 +216,23 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
                 reference.getMemberId(), reference.getDramaId());
     }
 
+    /**
+     * Uses the player grant, renewing it; falls back to identity-only scope binding
+     * when the grant has expired but was never revoked. Read-only client flows
+     * (entitlements, reward provenance) must stay usable after idle expiry so the
+     * client can recover instead of deadlocking.
+     */
+    private PlayerGrantScope useOrScope(PlayerGrantReference reference) {
+        try {
+            return lockAndUsePlayerGrant(reference, reference.getDramaId());
+        } catch (ServiceException invalid) {
+            if (!AD_PLAYER_GRANT_INVALID.getCode().equals(invalid.getCode())) {
+                throw invalid;
+            }
+            return scopeOf(reference);
+        }
+    }
+
     private PlayerGrantScope readPlayerGrant(PlayerGrantReference reference, Long expectedDramaId) {
         Objects.requireNonNull(reference, "reference");
         requirePositive(expectedDramaId, "dramaId");
@@ -358,7 +375,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         TenantUtils.execute(reference.getTenantId(), () -> {
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
-            PlayerGrantScope scope = readPlayerGrant(reference, reference.getDramaId());
+            PlayerGrantScope scope = useOrScope(reference);
             SkitContentScopeService.AccessibleDrama drama =
                     contentScopeService.requireAccessibleDrama(scope.getDramaId());
             if (drama == null || !scope.getTenantId().equals(drama.getTenantId())
@@ -384,7 +401,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         TenantUtils.execute(reference.getTenantId(), () -> {
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
-            PlayerGrantScope scope = readPlayerGrant(reference, reference.getDramaId());
+            PlayerGrantScope scope = useOrScope(reference);
             SkitContentScopeService.AccessibleDrama drama =
                     contentScopeService.requireAccessibleDrama(scope.getDramaId());
             if (drama == null || !scope.getTenantId().equals(drama.getTenantId())
@@ -410,7 +427,7 @@ public class SkitContentEntitlementServiceImpl implements SkitContentEntitlement
         TenantUtils.execute(reference.getTenantId(), () -> {
             requireClientAccess(reference.getMemberId(), runtime,
                     SkitTenantAdCapabilityService.AccessOperation.PLAYER_GRANT);
-            PlayerGrantScope scope = lockAndUsePlayerGrant(reference, reference.getDramaId());
+            PlayerGrantScope scope = useOrScope(reference);
             List<SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow> rows =
                     entitlementGrantMapper.selectVerifiedRewardProvenance(
                             scope.getTenantId(), scope.getMemberId(), scope.getDramaId(), episodeNo,
