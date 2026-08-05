@@ -231,11 +231,14 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
             response.setEarlyClosedCount(longValue(values.get("early_closed_count")));
         }
         long platformImpressionCount = 0L;
+        BigDecimal fx = fxRateForTenant(tenantId);
         List<SkitAdConsumptionSummaryRespVO.CurrencyAmount> amounts = new ArrayList<>();
         for (Map<String, Object> values : moneyRows) {
             SkitAdConsumptionSummaryRespVO.CurrencyAmount amount =
                     new SkitAdConsumptionSummaryRespVO.CurrencyAmount();
-            amount.setCurrency(stringValue(values.get("source_currency")));
+            String sourceCurrency = stringValue(values.get("source_currency"));
+            boolean cny = "USD".equals(sourceCurrency) && fx != null;
+            amount.setCurrency(cny ? "CNY" : sourceCurrency);
             int scale = intValue(values.get("amount_scale"));
             long impressionCount = longValue(values.get("platform_impression_count"));
             long reconciledImpressionCount = longValue(values.get("reconciled_impression_count"));
@@ -243,10 +246,11 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
             Long reconciledUnits = nullableLongValue(values.get("reconciled_amount_units"));
             amount.setAmountScale(scale);
             amount.setPlatformImpressionCount(impressionCount);
-            amount.setEstimatedAmount(money(estimatedUnits, scale));
-            amount.setReconciledAmount(money(reconciledUnits, scale));
-            amount.setEstimatedEcpm(ecpm(estimatedUnits, scale, impressionCount));
-            amount.setReconciledEcpm(ecpm(reconciledUnits, scale, reconciledImpressionCount));
+            amount.setEstimatedAmount(money(estimatedUnits, scale, cny ? fx : null));
+            amount.setReconciledAmount(money(reconciledUnits, scale, cny ? fx : null));
+            amount.setEstimatedEcpm(ecpm(estimatedUnits, scale, impressionCount, cny ? fx : null));
+            amount.setReconciledEcpm(ecpm(reconciledUnits, scale, reconciledImpressionCount,
+                    cny ? fx : null));
             amounts.add(amount);
             platformImpressionCount += impressionCount;
         }
@@ -376,14 +380,17 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
         result.setEntitlementStatus(rs.getString("entitlement_status"));
         result.setRevenueStatus(rs.getString("revenue_status"));
         result.setFailureReason(rs.getString("failure_reason"));
-        result.setCurrency(rs.getString("source_currency"));
+        BigDecimal fx = fxRateForTenant(rs.getLong("tenant_id"));
+        String sourceCurrency = rs.getString("source_currency");
+        boolean cny = "USD".equals(sourceCurrency) && fx != null;
+        result.setCurrency(cny ? "CNY" : sourceCurrency);
         int scale = nullableInteger(rs, "amount_scale") == null ? 0 : rs.getInt("amount_scale");
         Long estimatedUnits = nullableLong(rs, "estimated_amount_units");
         Long reconciledUnits = nullableLong(rs, "reconciled_amount_units");
-        result.setEstimatedAmount(money(estimatedUnits, scale));
-        result.setReconciledAmount(money(reconciledUnits, scale));
-        result.setEstimatedEcpm(ecpm(estimatedUnits, scale, 1L));
-        result.setReconciledEcpm(ecpm(reconciledUnits, scale, 1L));
+        result.setEstimatedAmount(money(estimatedUnits, scale, cny ? fx : null));
+        result.setReconciledAmount(money(reconciledUnits, scale, cny ? fx : null));
+        result.setEstimatedEcpm(ecpm(estimatedUnits, scale, 1L, cny ? fx : null));
+        result.setReconciledEcpm(ecpm(reconciledUnits, scale, 1L, cny ? fx : null));
         result.setCreatedAt(timezone.fromDatabase(dateTime(rs.getTimestamp("create_time"))));
         result.setRequestedAt(result.getCreatedAt());
         result.setLastEventAt(timezone.fromDatabase(dateTime(rs.getTimestamp("last_event_at"))));
@@ -516,20 +523,47 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
     }
 
     private static String money(Long units, int scale) {
+        return money(units, scale, null);
+    }
+
+    /** Formats units as money, converting USD to CNY with the account fx rate when available. */
+    private static String money(Long units, int scale, BigDecimal fxRateCnyPerUsd) {
         if (units == null) {
             return null;
         }
-        return decimal(BigDecimal.valueOf(units, scale));
+        BigDecimal value = BigDecimal.valueOf(units, scale);
+        if (fxRateCnyPerUsd != null) {
+            value = value.multiply(fxRateCnyPerUsd);
+        }
+        return decimal(value);
     }
 
     private static String ecpm(Long units, int scale, long impressionCount) {
+        return ecpm(units, scale, impressionCount, null);
+    }
+
+    private static String ecpm(Long units, int scale, long impressionCount,
+                               BigDecimal fxRateCnyPerUsd) {
         if (units == null || impressionCount <= 0) {
             return null;
         }
         BigDecimal value = BigDecimal.valueOf(units, scale)
                 .multiply(BigDecimal.valueOf(1000L))
                 .divide(BigDecimal.valueOf(impressionCount), Math.max(scale, 6), RoundingMode.HALF_UP);
+        if (fxRateCnyPerUsd != null) {
+            value = value.multiply(fxRateCnyPerUsd);
+        }
         return decimal(value);
+    }
+
+    /** First configured USD->CNY rate for the tenant, or null when unset (display stays USD). */
+    private BigDecimal fxRateForTenant(long tenantId) {
+        List<BigDecimal> rates = jdbcTemplate.query(
+                "SELECT `fx_rate_cny_per_usd` FROM `skit_ad_account` WHERE `tenant_id`=? "
+                        + "AND `deleted`=b'0' AND `fx_rate_cny_per_usd` IS NOT NULL "
+                        + "ORDER BY `id` LIMIT 1",
+                (rs, rowNum) -> rs.getBigDecimal(1), tenantId);
+        return rates.isEmpty() ? null : rates.get(0);
     }
 
     private static String decimal(BigDecimal value) {

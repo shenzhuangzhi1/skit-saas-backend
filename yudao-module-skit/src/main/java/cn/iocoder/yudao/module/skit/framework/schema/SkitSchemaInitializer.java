@@ -467,6 +467,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                             "datetime DEFAULT NULL"),
                     new Task2ColumnSpec("skit_ad_account", "report_failure_count",
                             "int NOT NULL DEFAULT 0"),
+                    new Task2ColumnSpec("skit_ad_account", "fx_rate_cny_per_usd",
+                            "decimal(12,6) DEFAULT NULL"),
                     new Task2ColumnSpec("skit_ad_report_pull", "report_date", "date NOT NULL",
                             "date DEFAULT NULL"),
                     new Task2ColumnSpec("skit_ad_report_pull", "report_timezone",

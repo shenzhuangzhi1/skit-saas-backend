@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.*;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @TableName(value = "skit_ad_account", autoResultMap = true)
@@ -36,6 +37,8 @@ public class SkitAdAccountDO extends TenantBaseDO {
     private String reportTimezone;
     private String reportCurrency;
     private Integer reportAmountScale;
+    /** Taku USD->CNY rate (cur_rate) observed from the latest signed reward ilrd; NULL = show USD. */
+    private BigDecimal fxRateCnyPerUsd;
     private String reportPullLeaseOwner;
     private LocalDateTime reportPullLeaseUntil;
     private LocalDateTime reportNextAllowedAt;

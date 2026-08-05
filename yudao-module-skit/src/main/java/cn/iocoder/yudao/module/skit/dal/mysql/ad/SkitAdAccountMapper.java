@@ -97,6 +97,17 @@ public interface SkitAdAccountMapper extends BaseMapperX<SkitAdAccountDO> {
             + "AND `deleted`=b'0' FOR UPDATE")
     Long lockByTenantAndId(@Param("tenantId") Long tenantId, @Param("id") Long id);
 
+    @Update("UPDATE `skit_ad_account` SET `fx_rate_cny_per_usd`=#{fxRate},"
+            + "`updater`='callback-processor',`update_time`=CURRENT_TIMESTAMP "
+            + "WHERE `tenant_id`=#{tenantId} AND `id`=#{id} AND `deleted`=b'0'")
+    int updateFxRateCnyPerUsd(@Param("tenantId") Long tenantId, @Param("id") Long id,
+                               @Param("fxRate") java.math.BigDecimal fxRate);
+
+    @Select("SELECT `fx_rate_cny_per_usd` FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
+            + "AND `deleted`=b'0' AND `fx_rate_cny_per_usd` IS NOT NULL "
+            + "ORDER BY `id` LIMIT 1")
+    java.math.BigDecimal selectFxRateCnyPerUsdForTenant(@Param("tenantId") Long tenantId);
+
     @Select("SELECT * FROM `skit_ad_account` WHERE `tenant_id`=#{tenantId} "
             + "AND `provider`=#{provider} AND `deleted`=b'0' LIMIT 1 FOR UPDATE")
     @Results({

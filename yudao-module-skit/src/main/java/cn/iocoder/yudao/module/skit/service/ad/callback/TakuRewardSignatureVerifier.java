@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
@@ -140,8 +141,21 @@ public class TakuRewardSignatureVerifier {
         String showId = optionalStrictIdentifier(root.get("id"));
         String adUnitId = optionalStrictIdentifier(root.get("adunit_id"));
         String showCustomExt = optionalSessionId(root.get("show_custom_ext"));
+        BigDecimal fxRateCnyPerUsd = null;
+        JsonNode fxNode = root.get("cur_rate");
+        if (fxNode != null && fxNode.isNumber()) {
+            try {
+                BigDecimal raw = fxNode.decimalValue();
+                if (raw.compareTo(BigDecimal.ZERO) > 0
+                        && raw.compareTo(new BigDecimal("1000000")) < 0) {
+                    fxRateCnyPerUsd = raw;
+                }
+            } catch (ArithmeticException ignored) {
+                // non-terminating decimal or out of range: treat as absent
+            }
+        }
         return new SignedIlrdEvidence(networkNode.intValue(), adsourceId, showId, adUnitId,
-                showCustomExt);
+                showCustomExt, fxRateCnyPerUsd);
     }
 
     private static void validateTreeBounds(JsonNode root) {
@@ -345,14 +359,17 @@ public class TakuRewardSignatureVerifier {
         private final String showId;
         private final String adUnitId;
         private final String showCustomExt;
+        private final BigDecimal fxRateCnyPerUsd;
 
         private SignedIlrdEvidence(int networkFirmId, String adsourceId,
-                                   String showId, String adUnitId, String showCustomExt) {
+                                   String showId, String adUnitId, String showCustomExt,
+                                   BigDecimal fxRateCnyPerUsd) {
             this.networkFirmId = networkFirmId;
             this.adsourceId = adsourceId;
             this.showId = showId;
             this.adUnitId = adUnitId;
             this.showCustomExt = showCustomExt;
+            this.fxRateCnyPerUsd = fxRateCnyPerUsd;
         }
 
         public int getNetworkFirmId() {
@@ -373,6 +390,11 @@ public class TakuRewardSignatureVerifier {
 
         public String getShowCustomExt() {
             return showCustomExt;
+        }
+
+        /** Taku's USD->CNY rate from the signed ilrd (cur_rate), when present. */
+        public BigDecimal getFxRateCnyPerUsd() {
+            return fxRateCnyPerUsd;
         }
     }
 

@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.ad.SkitTenantAdCapabilityDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlementDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
@@ -95,6 +96,7 @@ class SkitAdCallbackProcessorTest {
     private SkitContentEntitlementMapper entitlementMapper;
     private SkitEntitlementGrantMapper grantMapper;
     private SkitAdRevenueEventMapper revenueMapper;
+    private SkitAdAccountMapper accountMapper;
     private SkitCallbackPayloadCryptoService payloadCrypto;
     private SkitAdCredentialVersionService credentialService;
     private SkitAdSessionTokenService tokenService;
@@ -118,6 +120,7 @@ class SkitAdCallbackProcessorTest {
         entitlementMapper = mock(SkitContentEntitlementMapper.class);
         grantMapper = mock(SkitEntitlementGrantMapper.class);
         revenueMapper = mock(SkitAdRevenueEventMapper.class);
+        accountMapper = mock(SkitAdAccountMapper.class);
         payloadCrypto = mock(SkitCallbackPayloadCryptoService.class);
         credentialService = mock(SkitAdCredentialVersionService.class);
         snapshotService = mock(SkitPolicySnapshotService.class);
@@ -131,7 +134,8 @@ class SkitAdCallbackProcessorTest {
                 ZoneId.of("Asia/Shanghai"));
         processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
                 pangleAttestationMapper, entitlementMapper, grantMapper, revenueMapper,
-                payloadCrypto, credentialService, tokenService, snapshotService, projectionService,
+                accountMapper, payloadCrypto, credentialService, tokenService, snapshotService,
+                projectionService,
                 new TakuCallbackCanonicalizer(),
                 new TakuRewardSignatureVerifier(new ObjectMapper()),
                 new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), clock);
@@ -513,7 +517,8 @@ class SkitAdCallbackProcessorTest {
                 PROCESSING_AT.atZone(zone).toInstant());
         processor = new SkitAdCallbackProcessorImpl(inboxMapper, sessionMapper, capabilityMapper,
                 pangleAttestationMapper, entitlementMapper, grantMapper, revenueMapper,
-                payloadCrypto, credentialService, tokenService, snapshotService, projectionService,
+                accountMapper, payloadCrypto, credentialService, tokenService, snapshotService,
+                projectionService,
                 new TakuCallbackCanonicalizer(),
                 new TakuRewardSignatureVerifier(new ObjectMapper()),
                 new SkitRewardAuthorityPolicy(tenantCapabilityMapper, capabilityMapper), stagedClock);

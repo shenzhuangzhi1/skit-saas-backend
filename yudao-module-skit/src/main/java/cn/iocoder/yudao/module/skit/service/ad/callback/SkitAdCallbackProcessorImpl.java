@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitContentEntitlement
 import cn.iocoder.yudao.module.skit.dal.dataobject.member.SkitEntitlementGrantDO;
 import cn.iocoder.yudao.module.skit.dal.dataobject.revenue.SkitAdRevenueEventDO;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdCallbackInboxMapper;
+import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdAccountMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdNetworkCapabilityMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitAdSessionMapper;
 import cn.iocoder.yudao.module.skit.dal.mysql.ad.SkitPangleRewardAttestationMapper;
@@ -62,6 +63,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
     private final SkitContentEntitlementMapper entitlementMapper;
     private final SkitEntitlementGrantMapper grantMapper;
     private final SkitAdRevenueEventMapper revenueMapper;
+    private final SkitAdAccountMapper accountMapper;
     private final SkitCallbackPayloadCryptoService payloadCrypto;
     private final SkitAdCredentialVersionService credentialService;
     private final SkitAdSessionTokenService tokenService;
@@ -80,6 +82,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                        SkitContentEntitlementMapper entitlementMapper,
                                        SkitEntitlementGrantMapper grantMapper,
                                        SkitAdRevenueEventMapper revenueMapper,
+                                       SkitAdAccountMapper accountMapper,
                                        SkitCallbackPayloadCryptoService payloadCrypto,
                                        SkitAdCredentialVersionService credentialService,
                                        SkitAdSessionTokenService tokenService,
@@ -90,9 +93,9 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                        SkitRewardAuthorityPolicy rewardAuthorityPolicy) {
         this(inboxMapper, sessionMapper, capabilityMapper, pangleAttestationMapper,
                 entitlementMapper, grantMapper,
-                revenueMapper, payloadCrypto, credentialService, tokenService, snapshotService,
-                projectionService, canonicalizer, signatureVerifier, rewardAuthorityPolicy,
-                Clock.systemDefaultZone());
+                revenueMapper, accountMapper, payloadCrypto, credentialService, tokenService,
+                snapshotService, projectionService, canonicalizer, signatureVerifier,
+                rewardAuthorityPolicy, Clock.systemDefaultZone());
     }
 
     SkitAdCallbackProcessorImpl(SkitAdCallbackInboxMapper inboxMapper,
@@ -102,6 +105,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
                                 SkitContentEntitlementMapper entitlementMapper,
                                 SkitEntitlementGrantMapper grantMapper,
                                 SkitAdRevenueEventMapper revenueMapper,
+                                SkitAdAccountMapper accountMapper,
                                 SkitCallbackPayloadCryptoService payloadCrypto,
                                 SkitAdCredentialVersionService credentialService,
                                 SkitAdSessionTokenService tokenService,
@@ -119,6 +123,7 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         this.entitlementMapper = Objects.requireNonNull(entitlementMapper, "entitlementMapper");
         this.grantMapper = Objects.requireNonNull(grantMapper, "grantMapper");
         this.revenueMapper = Objects.requireNonNull(revenueMapper, "revenueMapper");
+        this.accountMapper = Objects.requireNonNull(accountMapper, "accountMapper");
         this.payloadCrypto = Objects.requireNonNull(payloadCrypto, "payloadCrypto");
         this.credentialService = Objects.requireNonNull(credentialService, "credentialService");
         this.tokenService = Objects.requireNonNull(tokenService, "tokenService");
@@ -237,6 +242,13 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
         }
 
         grantEpisodes(session, episodes, existing, authority.getTransactionId(), grantedAt);
+        // Keep the account's USD->CNY display rate fresh from the signed ilrd.
+        BigDecimal fxRate = authority.getSignedIlrdEvidence() == null ? null
+                : authority.getSignedIlrdEvidence().getFxRateCnyPerUsd();
+        if (fxRate != null) {
+            accountMapper.updateFxRateCnyPerUsd(
+                    session.getTenantId(), session.getAdAccountId(), fxRate);
+        }
         if (rewardedEstimate != null) {
             projectionService.projectRewardedEstimate(rewardedEstimate);
         }
