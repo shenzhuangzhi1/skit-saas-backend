@@ -59,7 +59,8 @@ public class TakuCallbackCanonicalizer {
     private static final List<String> IMPRESSION_FIELDS = Collections.unmodifiableList(Arrays.asList(
             "user_id", "req_id", "geo_short", "package_name", "adformat", "placement_id",
             "nw_firm_id", "adsource_id", "adsource_price", "currency", "timestamp", "client_ip",
-            "gaid", "oaid", "imei", "idfa", "idfv", "amazon_id", "show_custom_ext"));
+            "gaid", "oaid", "imei", "idfa", "idfv", "amazon_id", "show_custom_ext",
+            "server_timestamp"));
     private static final Set<String> IMPRESSION_ALLOW_LIST = immutableSet(IMPRESSION_FIELDS);
     private static final List<String> IMPRESSION_REQUIRED = Collections.unmodifiableList(Arrays.asList(
             "req_id", "package_name", "adformat", "placement_id", "adsource_id",
