@@ -29,6 +29,7 @@ public interface SkitCommissionLedgerMapper extends BaseMapperX<SkitCommissionLe
             + "#{balanceBucket},#{currency},#{grossAmountUnits},#{amountUnits},#{amountScale},"
             + "#{reversalOfId},#{reconciliationRevisionId},#{policySnapshotId},#{revisionNo},"
             + "#{legacyUnverified},'verified-estimate','verified-estimate')")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; prevent tenant-line column re-append
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insertCanonicalEstimate(SkitCommissionLedgerDO row);
 
@@ -43,6 +44,7 @@ public interface SkitCommissionLedgerMapper extends BaseMapperX<SkitCommissionLe
             + "#{balanceBucket},#{currency},#{grossAmountUnits},#{amountUnits},#{amountScale},"
             + "#{reversalOfId},#{reconciliationRevisionId},#{policySnapshotId},#{revisionNo},"
             + "#{legacyUnverified},'reconciliation','reconciliation')")
+    @InterceptorIgnore(tenantLine = "true") // tenant_id is explicit; prevent tenant-line column re-append
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insertCanonicalReconciliationEntry(SkitCommissionLedgerDO row);
 
