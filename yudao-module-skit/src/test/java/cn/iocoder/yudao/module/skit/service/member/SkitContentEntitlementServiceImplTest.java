@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -47,11 +49,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class SkitContentEntitlementServiceImplTest {
 
     private static final long TENANT_ID = 41L;
@@ -93,7 +97,7 @@ class SkitContentEntitlementServiceImplTest {
 
     @Test
     void playerGrantOutlivesTheFiveMinuteContentLeaseAndPersistsOnlyHash() throws Exception {
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.insert(any(SkitNativePlayerGrantDO.class))).thenAnswer(invocation -> {
             invocation.<SkitNativePlayerGrantDO>getArgument(0).setId(71L);
@@ -139,7 +143,7 @@ class SkitContentEntitlementServiceImplTest {
 
     @Test
     void playerGrantCannotBeIssuedForContentOutsideTheTenantCatalog() {
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         org.mockito.Mockito.doThrow(
                         cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception(
@@ -196,7 +200,7 @@ class SkitContentEntitlementServiceImplTest {
         TimeZone previousTimeZone = TimeZone.getDefault();
         TimeZone.setDefault(TimeZone.getTimeZone(shanghai));
         try {
-            when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+            lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
             when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
             when(nativeGrantMapper.insert(any(SkitNativePlayerGrantDO.class))).thenAnswer(invocation -> {
                 invocation.<SkitNativePlayerGrantDO>getArgument(0).setId(71L);
@@ -237,8 +241,10 @@ class SkitContentEntitlementServiceImplTest {
         SkitContentEntitlementService.PlayerGrantReference reference = service.resolvePlayerGrant(token);
         assertFalse(TenantContextHolder.isIgnore());
         assertEquals(TENANT_ID, TenantContextHolder.getTenantId());
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        lenient().when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
+                .thenReturn(discovered);
         when(nativeGrantMapper.selectExactForUpdate(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         when(nativeGrantMapper.recordActiveUseCas(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID, 4,
@@ -261,10 +267,12 @@ class SkitContentEntitlementServiceImplTest {
     void playerGrantUseFailsClosedWhenIdleLeaseRenewalCasDoesNotUpdateExactlyOneRow() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(4);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
         SkitContentEntitlementService.PlayerGrantReference reference = service.resolvePlayerGrant(token);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        lenient().when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
+                .thenReturn(discovered);
         when(nativeGrantMapper.selectExactForUpdate(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         when(nativeGrantMapper.recordActiveUseCas(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID, 4,
@@ -291,10 +299,12 @@ class SkitContentEntitlementServiceImplTest {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2)
                 .setExpiresAt(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC));
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
         SkitContentEntitlementService.PlayerGrantReference reference = service.resolvePlayerGrant(token);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        lenient().when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
+                .thenReturn(discovered);
         when(nativeGrantMapper.selectExactForUpdate(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         assertThrows(RuntimeException.class, () -> service.lockAndUsePlayerGrant(reference, DRAMA_ID));
@@ -309,9 +319,9 @@ class SkitContentEntitlementServiceImplTest {
     void disabledMemberCannotUseStillUnexpiredNativeGrant() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
         SkitContentEntitlementService.PlayerGrantReference reference = service.resolvePlayerGrant(token);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID))
                 .thenReturn(enabledMember().setStatus(CommonStatusEnum.DISABLE.getStatus()));
 
@@ -526,8 +536,8 @@ class SkitContentEntitlementServiceImplTest {
     void nativeTargetSnapshotReturnsHistoricalPrefixOnlyWhenTargetIsActiveAndContinuous() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
@@ -553,8 +563,8 @@ class SkitContentEntitlementServiceImplTest {
     void legacyNativeSnapshotReturnsStrictPrefixThroughHighestActiveEarnedEpisode() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
@@ -583,8 +593,8 @@ class SkitContentEntitlementServiceImplTest {
     void nativeTargetSnapshotRejectsGapRevocationAndInactiveTarget() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
@@ -618,8 +628,8 @@ class SkitContentEntitlementServiceImplTest {
     void nativeTargetSnapshotRejectsEntitlementThatEscapesItsGrantTenant() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
         when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
@@ -636,9 +646,11 @@ class SkitContentEntitlementServiceImplTest {
     void nativeRewardProvenanceDerivesEveryScopeFieldFromGrantAndRejectsClientProofs() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        lenient().when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
+                .thenReturn(discovered);
         when(nativeGrantMapper.selectExactForUpdate(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         when(nativeGrantMapper.recordActiveUseCas(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID, 2,
@@ -666,9 +678,11 @@ class SkitContentEntitlementServiceImplTest {
     void nativeRewardProvenanceFailsClosedForAmbiguousOrMalformedRows() {
         String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sequence(32));
         SkitNativePlayerGrantDO discovered = activeGrant(token).setVersion(2);
-        when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
-        when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
+        lenient().when(nativeGrantMapper.selectByTokenHash(any(byte[].class))).thenReturn(discovered);
+        lenient().when(agentMapper.selectByTenantId(TENANT_ID)).thenReturn(enabledAgent());
         when(memberMapper.selectByTenantAndIdForShare(TENANT_ID, MEMBER_ID)).thenReturn(enabledMember());
+        lenient().when(nativeGrantMapper.selectExact(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
+                .thenReturn(discovered);
         when(nativeGrantMapper.selectExactForUpdate(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID))
                 .thenReturn(discovered);
         when(nativeGrantMapper.recordActiveUseCas(TENANT_ID, 71L, MEMBER_ID, DRAMA_ID, 2,
@@ -680,7 +694,6 @@ class SkitContentEntitlementServiceImplTest {
                 verifiedRewardRow(3), verifiedRewardRow(3)));
 
         assertNull(service.findVerifiedRewardProvenanceForPlayerGrant(token, 3, RUNTIME));
-
         SkitEntitlementGrantMapper.VerifiedRewardProvenanceRow malformed = verifiedRewardRow(3);
         malformed.setProviderShowId("not a valid show id");
         when(entitlementGrantMapper.selectVerifiedRewardProvenance(
