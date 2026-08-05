@@ -467,8 +467,6 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                             "datetime DEFAULT NULL"),
                     new Task2ColumnSpec("skit_ad_account", "report_failure_count",
                             "int NOT NULL DEFAULT 0"),
-                    new Task2ColumnSpec("skit_ad_account", "fx_rate_cny_per_usd",
-                            "decimal(12,6) DEFAULT NULL"),
                     new Task2ColumnSpec("skit_ad_report_pull", "report_date", "date NOT NULL",
                             "date DEFAULT NULL"),
                     new Task2ColumnSpec("skit_ad_report_pull", "report_timezone",
@@ -1055,6 +1053,7 @@ public class SkitSchemaInitializer implements ApplicationRunner {
     private static final int AD_ACCOUNT_APP_KEY_CAPACITY_MIGRATION_VERSION = 2026072501;
     private static final int PANGLE_REWARD_CALLBACK_MIGRATION_VERSION = 2026073001;
     private static final int PROVIDER_IMPRESSION_PHASE_1_MIGRATION_VERSION = 2026080201;
+    private static final int AD_ACCOUNT_FX_RATE_MIGRATION_VERSION = 2026080501;
     private static final String CREATE_PANGLE_REWARD_ATTESTATION_TABLE_SQL =
             "CREATE TABLE IF NOT EXISTS `skit_pangle_reward_attestation` ("
                     + "`id` bigint NOT NULL AUTO_INCREMENT,`tenant_id` bigint NOT NULL,"
@@ -1835,6 +1834,8 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 "add tenant-bound Pangle reward attestations", pangleRewardCallbackSteps()));
         result.add(migrationFromSteps(PROVIDER_IMPRESSION_PHASE_1_MIGRATION_VERSION,
                 "add account-level Taku impression capture", providerImpressionPhase1Steps()));
+        result.add(migrationFromSteps(AD_ACCOUNT_FX_RATE_MIGRATION_VERSION,
+                "add USD->CNY display rate on ad accounts", adAccountFxRateSteps()));
         return sortedMigrations(result);
     }
 
@@ -3546,6 +3547,11 @@ public class SkitSchemaInitializer implements ApplicationRunner {
                 schemaStep("validate-legacy-admin-record-repair-schema",
                         this::validateLegacyAdminRecordRepairSchema,
                         "skit-admin-record-repair-audit-v1"));
+    }
+
+    private List<SchemaStep> adAccountFxRateSteps() {
+        return Collections.singletonList(addColumnStep(
+                "skit_ad_account", "fx_rate_cny_per_usd", "decimal(12,6) DEFAULT NULL"));
     }
 
     void seedStandardAgentPackage() {
