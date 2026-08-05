@@ -161,6 +161,26 @@ class TakuCallbackCanonicalizerTest {
     }
 
     @Test
+    void acceptsRealTakuImpressionPayloadWithEmptyUserIdAndServerTimestamp() {
+        // Captured verbatim from production (2026-08-05): Taku sends empty user_id,
+        // a server_timestamp field outside the documented list, and high-precision
+        // adsource_price (14 fractional digits).
+        String query = "adformat=1&adsource_id=15050622&adsource_price=52.85535071707227"
+                + "&amazon_id=&client_ip=112.224.183.249&currency=USD&gaid=&geo_short=CN"
+                + "&idfa=&idfv=&imei=&nw_firm_id=28&oaid=45829edc82482544"
+                + "&package_name=top.yunque8.xingtufangge&placement_id=b6a5b3e4f20e14"
+                + "&req_id=ab756686f3a07a1ddcaa238b8aa11018&server_timestamp=1785894913217"
+                + "&show_custom_ext=nsmXeyrqgQq9nPz5FpVgkg&timestamp=1785894913100&user_id=";
+
+        TakuImpressionCallback callback = canonicalizer.canonicalizeImpression(query);
+
+        assertEquals("ab756686f3a07a1ddcaa238b8aa11018", callback.getRequestId());
+        assertEquals("15050622", callback.getAdsourceId());
+        assertEquals("nsmXeyrqgQq9nPz5FpVgkg", callback.getShowCustomExt());
+        assertEquals("", callback.getUserId());
+    }
+
+    @Test
     void canonicalizesTheOfficialImpressionAllowListAsUnsignedObservation() {
         String query = "user_id=member-pseudo-42&req_id=req-100&geo_short=CN"
                 + "&package_name=com.example.skit&adformat=1&placement_id=b5b449fb3d89d7"

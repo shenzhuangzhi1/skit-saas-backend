@@ -37,7 +37,7 @@ public class TakuCallbackCanonicalizer {
     private static final Pattern FIELD_NAME = Pattern.compile("[a-z0-9_]{1,64}");
     private static final Pattern POSITIVE_INTEGER = Pattern.compile("[1-9][0-9]{0,18}");
     private static final Pattern REWARD_AMOUNT = Pattern.compile("[1-9][0-9]{0,8}");
-    private static final Pattern DECIMAL = Pattern.compile("(?:0|[1-9][0-9]{0,17})(?:\\.[0-9]{1,12})?");
+    private static final Pattern DECIMAL = Pattern.compile("(?:0|[1-9][0-9]{0,17})(?:\\.[0-9]{1,20})?");
     private static final Pattern SIGNATURE = Pattern.compile("[0-9a-fA-F]{32}");
     private static final Pattern CURRENCY = Pattern.compile("[A-Z]{3}");
     private static final Pattern UNSIGNED_INTEGER = Pattern.compile("[0-9]{1,19}");
