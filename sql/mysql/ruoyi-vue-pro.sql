@@ -5757,6 +5757,8 @@ CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_last_success
   'ALTER TABLE `skit_ad_account` ADD COLUMN `report_last_success_at` datetime DEFAULT NULL')$$
 CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','report_failure_count',
   'ALTER TABLE `skit_ad_account` ADD COLUMN `report_failure_count` int NOT NULL DEFAULT 0')$$
+CALL `skit_apply_ddl_if_missing`('COLUMN','skit_ad_account','fx_rate_cny_per_usd',
+  'ALTER TABLE `skit_ad_account` ADD COLUMN `fx_rate_cny_per_usd` decimal(12,6) DEFAULT NULL')$$
 UPDATE `skit_ad_account` SET `config_data`=JSON_SET(`config_data`,'$.adFormat','rewarded_video')
   WHERE `provider`='TAKU' AND JSON_VALID(`config_data`)
     AND JSON_UNQUOTE(JSON_EXTRACT(`config_data`,'$.adFormat')) IS NULL$$
