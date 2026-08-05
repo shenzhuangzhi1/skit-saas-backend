@@ -897,6 +897,37 @@ class SkitAdCallbackProcessorTest {
     }
 
     @Test
+    void matchedImpressionAcceptsHighPrecisionEcpmBeyondEighteenDecimalPlaces() {
+        // Taku prices can carry more than 18 fractional digits; scale 18 was too
+        // strict and rejected real impressions with IMPRESSION_AMOUNT_OUT_OF_RANGE
+        // (observed on production session 246). Scale 30 keeps the sanity bound.
+        String query = impressionQuery("52.8553507170722712345", "USD");
+        decryptedPayload.set(query.getBytes(StandardCharsets.US_ASCII));
+        inbox = impressionInbox(query);
+        session.setRewardVerificationStatus("PENDING");
+        session.setRevenueStatus("NONE");
+        when(capabilityMapper.selectForShare(TENANT_ID, ACCOUNT_ID, 66))
+                .thenReturn(impressionCapability());
+        AtomicReference<SkitAdRevenueEventDO> inserted = new AtomicReference<>();
+        doAnswer(invocation -> {
+            SkitAdRevenueEventDO row = invocation.getArgument(0);
+            row.setId(701L);
+            inserted.set(row);
+            return 1;
+        }).when(revenueMapper).insert(any(SkitAdRevenueEventDO.class));
+
+        SkitAdCallbackProcessor.ProcessResult result =
+                processor.process(TENANT_ID, ACCOUNT_ID, INBOX_ID, WORKER);
+
+        assertEquals(SkitAdCallbackProcessor.Outcome.SUCCEEDED, result.getOutcome());
+        SkitAdRevenueEventDO event = inserted.get();
+        assertEquals(Long.MAX_VALUE, event.getSourceAmountUnits().longValue());
+        assertEquals(Long.valueOf(52_855_350_717_072_271L), event.getEstimatedAmountUnits());
+        assertEquals(Integer.valueOf(18), event.getAmountScale());
+        assertEquals(new BigDecimal("0.05285535"), event.getGrossAmount());
+    }
+
+    @Test
     void matchedImpressionAcceptsNewSourceFromTheTenantTakuAccountWithoutPerFirmRegistration() {
         int newNetworkFirmId = 777;
         String newAdsourceId = "987654321";

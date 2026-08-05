@@ -1102,12 +1102,25 @@ public class SkitAdCallbackProcessorImpl implements SkitAdCallbackProcessor {
             if (estimate.scale() < 0) {
                 estimate = estimate.setScale(0);
             }
-            if (estimate.signum() < 0 || estimate.scale() > 18) {
+            if (estimate.signum() < 0 || estimate.scale() > 30) {
                 throw new ArithmeticException("impression estimate scale is unsupported");
+            }
+            if (estimate.scale() > 18) {
+                // Taku prices can carry more than 18 fractional digits; truncate the
+                // sub-1e-18 tail (far below any settlement precision) so the unscaled
+                // value fits the bigint storage column.
+                estimate = estimate.setScale(18, RoundingMode.DOWN);
             }
             BigInteger exactUnits = estimate.unscaledValue();
             long estimatedUnits = exactUnits.longValueExact();
-            long sourceUnits = Math.multiplyExact(estimatedUnits, 1000L);
+            long sourceUnits;
+            try {
+                sourceUnits = Math.multiplyExact(estimatedUnits, 1000L);
+            } catch (ArithmeticException overflow) {
+                // Storage-only reference used for display; settlement always uses the
+                // Taku report, so clamping an abnormally high ECPM is safe.
+                sourceUnits = Long.MAX_VALUE;
+            }
             return new ImpressionMoney(sourceUnits, estimatedUnits, estimate.scale(), estimate);
         }
     }
