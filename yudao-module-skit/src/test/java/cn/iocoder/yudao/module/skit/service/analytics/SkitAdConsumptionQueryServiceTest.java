@@ -272,7 +272,7 @@ class SkitAdConsumptionQueryServiceTest {
         }
 
         String moneySql = jdbc.calls.get(1).sql;
-        assertTrue(moneySql.contains("`reward_qualification_status`<>'NON_REWARDED'"), moneySql);
+        assertTrue(moneySql.contains("`reward_qualification_status`='REWARDED'"), moneySql);
         assertTrue(moneySql.contains("AS `estimated_impression_count`"), moneySql);
         assertTrue(moneySql.contains("`e`.`reconciliation_status`='RECONCILED'"), moneySql);
         assertTrue(moneySql.contains("AS `reconciled_impression_count`"), moneySql);

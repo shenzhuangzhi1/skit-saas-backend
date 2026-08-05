@@ -203,9 +203,9 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
 
         String moneySql = "SELECT `e`.`source_currency`,`e`.`amount_scale`,COUNT(`e`.`id`) "
                 + "AS `platform_impression_count`,"
-                + "SUM(CASE WHEN `e`.`reward_qualification_status`<>'NON_REWARDED' "
+                + "SUM(CASE WHEN `e`.`reward_qualification_status`='REWARDED' "
                 + "THEN 1 ELSE 0 END) AS `estimated_impression_count`,"
-                + "SUM(CASE WHEN `e`.`reward_qualification_status`<>'NON_REWARDED' "
+                + "SUM(CASE WHEN `e`.`reward_qualification_status`='REWARDED' "
                 + "THEN `e`.`estimated_amount_units` ELSE NULL END) "
                 + "AS `estimated_amount_units`,"
                 + "SUM(CASE WHEN `e`.`reconciliation_status`='RECONCILED' THEN 1 ELSE 0 END) "
@@ -395,14 +395,14 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
         int scale = nullableInteger(rs, "amount_scale") == null ? 0 : rs.getInt("amount_scale");
         Long estimatedUnits = nullableLong(rs, "estimated_amount_units");
         Long reconciledUnits = nullableLong(rs, "reconciled_amount_units");
-        // Unfinished rewarded-video impressions (NON_REWARDED) carry a display-only ECPM
-        // estimate that never settles; hide it so the page does not show phantom income.
-        boolean nonRewarded = "NON_REWARDED".equals(rs.getString("reward_qualification_status"));
-        result.setEstimatedAmount(nonRewarded ? null
-                : money(estimatedUnits, scale, cny ? fx : null));
+        // Only reward-verified (completed) rewarded-video impressions carry a real
+        // estimate. PENDING_REWARD / NON_REWARDED events are display-only ECPM noise
+        // that can never settle; hide amount and eCPM until the reward verifies.
+        boolean rewardVerified = "REWARDED".equals(rs.getString("reward_qualification_status"));
+        result.setEstimatedAmount(rewardVerified ? money(estimatedUnits, scale, cny ? fx : null) : null);
         result.setReconciledAmount(money(reconciledUnits, scale, cny ? fx : null));
-        result.setEstimatedEcpm(nonRewarded ? null
-                : ecpm(estimatedUnits, scale, 1L, cny ? fx : null));
+        result.setEstimatedEcpm(rewardVerified
+                ? ecpm(estimatedUnits, scale, 1L, cny ? fx : null) : null);
         result.setReconciledEcpm(ecpm(reconciledUnits, scale, 1L, cny ? fx : null));
         result.setCreatedAt(timezone.fromDatabase(dateTime(rs.getTimestamp("create_time"))));
         result.setRequestedAt(result.getCreatedAt());
