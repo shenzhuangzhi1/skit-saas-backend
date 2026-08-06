@@ -13,6 +13,7 @@ permissions:
 env:
   IMAGE_NAME: ghcr.io/shenzhuangzhi1/skit-saas-backend
   IMAGE_TAG: hky-${{ github.sha }}
+  RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   unit-tests:
@@ -130,9 +131,10 @@ jobs:
           : "${CUSTOMER_SERVER_USER:?Set CUSTOMER_SERVER_USER secret}"
           SERVER_PORT="${CUSTOMER_SERVER_PORT:-22}"
           SSH_TARGET="${CUSTOMER_SERVER_USER}@${CUSTOMER_SERVER_HOST}"
-          RELEASE_BUNDLE_PATH="skit-saas/releases/backend-${IMAGE_TAG}"
+          DEPLOY_PATH="skit-saas"
+          RELEASE_BUNDLE_PATH="${DEPLOY_PATH}/releases/backend-${RELEASE_ID}"
           .deploy/ssh "${SSH_TARGET}" \
-            "mkdir -p '${RELEASE_BUNDLE_PATH}' && mkdir -p skit-saas/releases"
+            "mkdir -p '${DEPLOY_PATH}/releases' && mkdir -- '${RELEASE_BUNDLE_PATH}'"
           .deploy/scp deploy/activate-backend.sh deploy/cleanup-backend-release-env.sh \
             deploy/docker-compose.prod.yml "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
           if [ -n "${CUSTOMER_SERVER_ENV_BASE64}" ]; then
@@ -153,9 +155,10 @@ jobs:
           set -euo pipefail
           SERVER_PORT="${CUSTOMER_SERVER_PORT:-22}"
           SSH_TARGET="${CUSTOMER_SERVER_USER}@${CUSTOMER_SERVER_HOST}"
-          RELEASE_BUNDLE_PATH="skit-saas/releases/backend-${IMAGE_TAG}"
+          DEPLOY_PATH="skit-saas"
+          RELEASE_BUNDLE_PATH="${DEPLOY_PATH}/releases/backend-${RELEASE_ID}"
           .deploy/ssh "${SSH_TARGET}" \
-            "cd '${RELEASE_BUNDLE_PATH}' && DEPLOY_PATH=skit-saas \
-             RELEASE_BUNDLE_PATH='${RELEASE_BUNDLE_PATH}' \
+            "DEPLOY_PATH='${DEPLOY_PATH}' \
+             RELEASE_BUNDLE_PATH='releases/backend-${RELEASE_ID}' \
              IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' \
-             bash activate-backend.sh"
+             bash '${RELEASE_BUNDLE_PATH}/activate-backend.sh'"
