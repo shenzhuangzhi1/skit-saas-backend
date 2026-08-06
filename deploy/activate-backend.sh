@@ -784,7 +784,28 @@ upsert_env FRONTEND_PORT "${FRONTEND_PORT:-48081}"
 upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 
-compose -f docker-compose.prod.yml --env-file .env pull backend
+# The persisted .env is sourced into the shell at startup, so shell variables can hold
+# values from the PREVIOUS release. docker compose interpolates shell-first over
+# --env-file, which would resurrect the previous image tag. Re-source the freshly
+# upserted .env so shell interpolation matches the release being activated.
+set -a
+. ./.env
+set +a
+
+if docker_cmd image inspect "${IMAGE_NAME}:${IMAGE_TAG}" >/dev/null 2>&1; then
+  echo "Image ${IMAGE_NAME}:${IMAGE_TAG} already present locally; skipping registry pull."
+else
+  echo "Image ${IMAGE_NAME}:${IMAGE_TAG} not present locally; pulling (bounded to 15 minutes)."
+  # `compose` is a shell function; the GNU `timeout` binary cannot exec it directly,
+  # so export the helper functions and run the pull inside a child bash.
+  export -f compose docker_cmd compose_cmd sudo_cmd 2>/dev/null || true
+  export DOCKER_USE_SUDO DOCKER_CONFIG 2>/dev/null || true
+  if ! timeout 900 bash -c 'compose -f docker-compose.prod.yml --env-file .env pull backend'; then
+    echo "Backend image pull failed or timed out; cannot activate without the image."
+    exit 1
+  fi
+fi
+
 compose -f docker-compose.prod.yml --env-file .env up -d mysql redis
 
 mysql_ready=0

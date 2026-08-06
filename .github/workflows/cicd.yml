@@ -347,6 +347,22 @@ jobs:
             ".deploy/quartz.sql" \
             "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
 
+      - name: Transfer backend image to server
+        if: steps.deploy_config.outputs.enabled == 'true'
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SKIT_SSH_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_USER:?Set SERVER_USER secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
+          echo "Streaming ${IMAGE_NAME}:${IMAGE_TAG} to ${SSH_TARGET} via docker save (bypasses slow ghcr.io pulls from China)."
+          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | .deploy/ssh "${SSH_TARGET}" "docker load"
+          .deploy/ssh "${SSH_TARGET}" "docker image inspect '${IMAGE_NAME}:${IMAGE_TAG}' >/dev/null 2>&1 && echo image-present || echo image-missing"
+
       - name: Activate backend on server
         id: activate_backend
         if: steps.deploy_config.outputs.enabled == 'true'
