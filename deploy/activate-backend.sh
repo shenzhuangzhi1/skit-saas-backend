@@ -784,7 +784,15 @@ upsert_env FRONTEND_PORT "${FRONTEND_PORT:-48081}"
 upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 
-compose -f docker-compose.prod.yml --env-file .env pull backend
+if docker_cmd image inspect "${IMAGE_NAME}:${IMAGE_TAG}" >/dev/null 2>&1; then
+  echo "Image ${IMAGE_NAME}:${IMAGE_TAG} already present locally; skipping registry pull."
+else
+  echo "Image ${IMAGE_NAME}:${IMAGE_TAG} not present locally; pulling (bounded to 15 minutes)."
+  timeout 900 compose -f docker-compose.prod.yml --env-file .env pull backend || {
+    echo "Backend image pull failed or timed out; cannot activate without the image."
+    exit 1
+  }
+fi
 
 # External RDS mode: when MYSQL_HOST points at a customer-managed database, skip the bundled
 # mysql service entirely and wait for the external database to accept connections instead.

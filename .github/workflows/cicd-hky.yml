@@ -155,6 +155,22 @@ jobs:
           fi
           echo "bundle uploaded to ${SSH_TARGET}:${RELEASE_BUNDLE_PATH}"
 
+      - name: Transfer backend image to customer server
+        if: steps.deploy_config.outputs.enabled == 'true'
+        env:
+          CUSTOMER_SERVER_HOST: ${{ secrets.CUSTOMER_SERVER_HOST }}
+          CUSTOMER_SERVER_USER: ${{ secrets.CUSTOMER_SERVER_USER }}
+          CUSTOMER_SERVER_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+          CUSTOMER_SERVER_PORT: ${{ secrets.CUSTOMER_SERVER_PORT }}
+          SKIT_SSH_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SERVER_PORT="${CUSTOMER_SERVER_PORT:-22}"
+          SSH_TARGET="${CUSTOMER_SERVER_USER}@${CUSTOMER_SERVER_HOST}"
+          echo "Streaming ${IMAGE_NAME}:${IMAGE_TAG} to ${SSH_TARGET} via docker save (bypasses slow ghcr.io pulls from China)."
+          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | .deploy/ssh "${SSH_TARGET}" "docker load"
+          .deploy/ssh "${SSH_TARGET}" "docker image inspect '${IMAGE_NAME}:${IMAGE_TAG}' >/dev/null 2>&1 && echo image-present || echo image-missing"
+
       - name: Activate backend on customer server
         if: steps.deploy_config.outputs.enabled == 'true'
         env:
