@@ -363,7 +363,9 @@ jobs:
           # The build step uses `docker buildx build --push`, which does not leave the
           # image in the local daemon, so ensure the tag exists before saving it.
           docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
-          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | .deploy/ssh "${SSH_TARGET}" "sudo docker load"
+          # gzip -1 shrinks the stream ~43% (measured on the 458MB backend image); the
+          # runner -> China server link is bandwidth-starved (~70KB/s), so halve it.
+          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | gzip -1 | .deploy/ssh "${SSH_TARGET}" "gzip -d | sudo docker load"
           .deploy/ssh "${SSH_TARGET}" "sudo docker image inspect '${IMAGE_NAME}:${IMAGE_TAG}' >/dev/null 2>&1 && echo image-present || echo image-missing"
 
       - name: Activate backend on server
