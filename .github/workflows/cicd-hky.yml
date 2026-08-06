@@ -1,0 +1,161 @@
+name: Backend CI/CD (hky customer environment)
+
+on:
+  push:
+    branches:
+      - hky
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/shenzhuangzhi1/skit-saas-backend
+  IMAGE_TAG: hky-${{ github.sha }}
+
+jobs:
+  unit-tests:
+    name: Backend unit and security checks (hky)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+
+      - name: Verify Skit tests and security
+        run: |
+          mvn -B -T1 -pl yudao-module-skit -am test
+          ./scripts/test-backend-footprint-contract.sh
+          ./deploy/test-compose-topology.sh
+          ./deploy/test-encryption-key.sh
+          ./deploy/test-activation-encryption-key.sh
+          ./deploy/test-release-security.sh
+
+  build-and-deploy:
+    needs: unit-tests
+    if: github.ref == 'refs/heads/hky'
+    name: Build and deploy backend to customer environment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+
+      - name: Build server jar
+        run: mvn -B -T1 -pl yudao-server -am -DskipTests package
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --label app=skit-saas-backend \
+            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            --load \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            yudao-server
+
+      - name: Push image to GHCR
+        run: |
+          set -euo pipefail
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect customer deployment secrets
+        id: deploy_config
+        env:
+          CUSTOMER_SERVER_HOST: ${{ secrets.CUSTOMER_SERVER_HOST }}
+          CUSTOMER_SERVER_USER: ${{ secrets.CUSTOMER_SERVER_USER }}
+          CUSTOMER_SERVER_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+        run: |
+          if [ -n "${CUSTOMER_SERVER_HOST}" ] && [ -n "${CUSTOMER_SERVER_USER}" ] && [ -n "${CUSTOMER_SERVER_PASSWORD}" ]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::Customer deployment skipped: set CUSTOMER_SERVER_HOST/USER/PASSWORD secrets."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Prepare SSH tooling
+        if: steps.deploy_config.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .deploy
+          cat > .deploy/ssh << 'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e ssh -o PreferredAuthentications=password,keyboard-interactive \
+            -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "${SERVER_PORT:-22}" "$@"
+          EOF
+          cat > .deploy/scp << 'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e scp -o PreferredAuthentications=password,keyboard-interactive \
+            -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "${SERVER_PORT:-22}" "$@"
+          EOF
+          chmod +x .deploy/ssh .deploy/scp
+
+      - name: Upload release bundle to customer server
+        if: steps.deploy_config.outputs.enabled == 'true'
+        env:
+          CUSTOMER_SERVER_HOST: ${{ secrets.CUSTOMER_SERVER_HOST }}
+          CUSTOMER_SERVER_USER: ${{ secrets.CUSTOMER_SERVER_USER }}
+          CUSTOMER_SERVER_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+          CUSTOMER_SERVER_PORT: ${{ secrets.CUSTOMER_SERVER_PORT }}
+          CUSTOMER_SERVER_ENV_BASE64: ${{ secrets.CUSTOMER_SERVER_ENV_BASE64 }}
+          SKIT_SSH_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${CUSTOMER_SERVER_USER:?Set CUSTOMER_SERVER_USER secret}"
+          SERVER_PORT="${CUSTOMER_SERVER_PORT:-22}"
+          SSH_TARGET="${CUSTOMER_SERVER_USER}@${CUSTOMER_SERVER_HOST}"
+          RELEASE_BUNDLE_PATH="skit-saas/releases/backend-${IMAGE_TAG}"
+          .deploy/ssh "${SSH_TARGET}" \
+            "mkdir -p '${RELEASE_BUNDLE_PATH}' && mkdir -p skit-saas/releases"
+          .deploy/scp deploy/activate-backend.sh deploy/cleanup-backend-release-env.sh \
+            deploy/docker-compose.prod.yml "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
+          if [ -n "${CUSTOMER_SERVER_ENV_BASE64}" ]; then
+            echo "${CUSTOMER_SERVER_ENV_BASE64}" | base64 -d > server.env
+            .deploy/scp server.env "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/server.env"
+          fi
+          echo "bundle uploaded to ${SSH_TARGET}:${RELEASE_BUNDLE_PATH}"
+
+      - name: Activate backend on customer server
+        if: steps.deploy_config.outputs.enabled == 'true'
+        env:
+          CUSTOMER_SERVER_HOST: ${{ secrets.CUSTOMER_SERVER_HOST }}
+          CUSTOMER_SERVER_USER: ${{ secrets.CUSTOMER_SERVER_USER }}
+          CUSTOMER_SERVER_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+          CUSTOMER_SERVER_PORT: ${{ secrets.CUSTOMER_SERVER_PORT }}
+          SKIT_SSH_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SERVER_PORT="${CUSTOMER_SERVER_PORT:-22}"
+          SSH_TARGET="${CUSTOMER_SERVER_USER}@${CUSTOMER_SERVER_HOST}"
+          RELEASE_BUNDLE_PATH="skit-saas/releases/backend-${IMAGE_TAG}"
+          .deploy/ssh "${SSH_TARGET}" \
+            "cd '${RELEASE_BUNDLE_PATH}' && DEPLOY_PATH=skit-saas \
+             RELEASE_BUNDLE_PATH='${RELEASE_BUNDLE_PATH}' \
+             IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' \
+             bash activate-backend.sh"
