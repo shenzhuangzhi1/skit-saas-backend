@@ -777,12 +777,21 @@ for legacy_gate_env in \
 done
 upsert_env MYSQL_DATABASE "${MYSQL_DATABASE:-skit_saas}"
 upsert_env MYSQL_PORT "${MYSQL_PORT:-3306}"
+upsert_env MYSQL_HOST "${MYSQL_HOST:-mysql}"
+upsert_env MYSQL_USERNAME "${MYSQL_USERNAME:-root}"
 upsert_env REDIS_PORT "${REDIS_PORT:-6379}"
 upsert_env BACKEND_PORT "${BACKEND_PORT:-48080}"
 upsert_env BACKEND_HEALTH_PATH "${BACKEND_HEALTH_PATH:-/actuator/health}"
 upsert_env FRONTEND_PORT "${FRONTEND_PORT:-48081}"
 upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
+# The persisted .env is sourced into the shell at startup, so shell variables can hold
+# values from the PREVIOUS release. docker compose interpolates shell-first over
+# --env-file, which would resurrect the previous image tag. Re-source the freshly
+# upserted .env so shell interpolation matches the release being activated.
+set -a
+. ./.env
+set +a
 
 if docker_cmd image inspect "${IMAGE_NAME}:${IMAGE_TAG}" >/dev/null 2>&1; then
   echo "Image ${IMAGE_NAME}:${IMAGE_TAG} already present locally; skipping registry pull."
