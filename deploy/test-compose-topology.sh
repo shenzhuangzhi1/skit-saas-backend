@@ -90,7 +90,7 @@ for service_name in mysql redis; do
   fi
 done
 for required_runtime_environment in \
-    'MYSQL_HOST: mysql' \
+    'MYSQL_HOST: ${MYSQL_HOST:-mysql}' \
     'MYSQL_SERVICE_PORT: 3306' \
     'MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}' \
     'REDIS_HOST: redis' \

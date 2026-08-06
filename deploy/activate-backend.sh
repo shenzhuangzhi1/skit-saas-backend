@@ -785,23 +785,49 @@ upsert_env BACKEND_IMAGE "${IMAGE_NAME}"
 upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 
 compose -f docker-compose.prod.yml --env-file .env pull backend
-compose -f docker-compose.prod.yml --env-file .env up -d mysql redis
 
-mysql_ready=0
-for _ in $(seq 1 60); do
-  # The quoted variables are intentionally expanded by sh inside the MySQL container.
-  # shellcheck disable=SC2016
-  if compose -f docker-compose.prod.yml --env-file .env exec -T \
-      mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqladmin -uroot --silent ping' \
-      >/dev/null 2>&1; then
-    mysql_ready=1
-    break
+# External RDS mode: when MYSQL_HOST points at a customer-managed database, skip the bundled
+# mysql service entirely and wait for the external database to accept connections instead.
+mysql_mode="container"
+if [ -n "${MYSQL_HOST:-}" ] && [ "${MYSQL_HOST}" != "mysql" ]; then
+  mysql_mode="external"
+fi
+
+if [ "${mysql_mode}" = "container" ]; then
+  compose -f docker-compose.prod.yml --env-file .env up -d mysql redis
+
+  mysql_ready=0
+  for _ in $(seq 1 60); do
+    # The quoted variables are intentionally expanded by sh inside the MySQL container.
+    # shellcheck disable=SC2016
+    if compose -f docker-compose.prod.yml --env-file .env exec -T \
+        mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqladmin -uroot --silent ping' \
+        >/dev/null 2>&1; then
+      mysql_ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "${mysql_ready}" != "1" ]; then
+    echo "MySQL did not become ready for backend activation."
+    exit 1
   fi
-  sleep 2
-done
-if [ "${mysql_ready}" != "1" ]; then
-  echo "MySQL did not become ready for backend activation."
-  exit 1
+else
+  compose -f docker-compose.prod.yml --env-file .env up -d redis
+  external_db_host="${MYSQL_HOST}"
+  external_db_port="${MYSQL_SERVICE_PORT:-3306}"
+  external_db_ready=0
+  for _ in $(seq 1 60); do
+    if timeout 3 bash -c "echo > /dev/tcp/${external_db_host}/${external_db_port}" 2>/dev/null; then
+      external_db_ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "${external_db_ready}" != "1" ]; then
+    echo "External database ${external_db_host}:${external_db_port} did not become reachable for backend activation."
+    exit 1
+  fi
 fi
 
 mysql_in_container() {
@@ -816,6 +842,10 @@ mysql_in_container() {
 # application can be HTTP-healthy while an old production database still carries a stale table
 # shape, so print the structural facts needed to diagnose write failures in the activation log.
 print_skit_schema_summary() {
+  if [ "${mysql_mode}" != "container" ]; then
+    echo "External database mode: skipping containerized schema summary."
+    return 0
+  fi
   local summary_sql="SELECT 'MIGRATIONS' AS kind,\`version\`,\`description\` FROM \`skit_schema_migration\` ORDER BY \`version\`; \
 SELECT 'COLUMNS' AS kind,\`TABLE_NAME\`,\`COLUMN_NAME\`,\`COLUMN_TYPE\`,\`IS_NULLABLE\`,\`COLUMN_DEFAULT\`,\`EXTRA\` \
   FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() \
@@ -847,7 +877,10 @@ SELECT 'TRIGGERS' AS kind,\`TRIGGER_NAME\`,\`EVENT_OBJECT_TABLE\`,\`ACTION_TIMIN
 # is also best-effort: diagnostic availability must never decide whether a healthy release stays
 # active.
 print_network_capability_error_diagnostic() {
-  local diagnostic_sql="SELECT /*+ MAX_EXECUTION_TIME(2000) */ \`exception_name\`,
+  if [ "${mysql_mode}" != "container" ]; then
+    return 0
+  fi
+  local diagnostic_sql="SELECT /*+ MAX_EXECUTION_TIME(2000) */ \`exception_name\`,\
     CASE WHEN \`exception_root_cause_message\`
       REGEXP '^[A-Za-z_$][A-Za-z0-9_$]*([.][A-Za-z_$][A-Za-z0-9_$]*)+$'
       AND \`exception_root_cause_message\` NOT REGEXP '[[:cntrl:]]'
@@ -886,6 +919,7 @@ validate_quartz_schema_columns() {
   mysql_in_container --batch --skip-column-names -e "${quartz_schema_probe_sql}" >/dev/null
 }
 
+if [ "${mysql_mode}" = "container" ]; then
 quartz_schema_state="$(read_quartz_schema_state)"
 case "${quartz_schema_state}" in
   11:79:11)
@@ -912,8 +946,9 @@ case "${quartz_schema_state}" in
     exit 1
     ;;
 esac
+fi
 
-if [ "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" = "1" ]; then
+if [ "${SKIT_CLEAR_LEGACY_AD_CREDENTIALS:-0}" = "1" ] && [ "${mysql_mode}" = "container" ]; then
   # Destructive credential cleanup is intentionally opt-in. A missing local marker is not proof
   # that database ciphertext uses the legacy key (for example after disaster recovery).
   # Public account metadata and all revenue history remain intact.
