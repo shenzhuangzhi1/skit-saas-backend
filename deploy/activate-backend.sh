@@ -16,7 +16,7 @@ cleanup_server_env=0
 production_gate_file=""
 
 # Invoked indirectly by the EXIT trap below.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   exit_code=$?
   trap - EXIT
@@ -789,6 +789,7 @@ upsert_env BACKEND_IMAGE_TAG "${IMAGE_TAG}"
 # --env-file, which would resurrect the previous image tag. Re-source the freshly
 # upserted .env so shell interpolation matches the release being activated.
 set -a
+# shellcheck disable=SC1091
 . ./.env
 set +a
 
