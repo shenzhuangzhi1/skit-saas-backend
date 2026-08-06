@@ -977,7 +977,11 @@ write_verified_deployment_proof() {
     echo "Running backend image does not match the requested immutable release."
     return 1
   fi
-  if [ "${running_revision}" != "${IMAGE_TAG}" ]; then
+  # hky tags carry a branch prefix (hky-<sha>) while the OCI revision label is the bare
+  # commit sha; allow the caller to pin the expected revision explicitly (production
+  # keeps the legacy IMAGE_TAG comparison).
+  expected_revision="${EXPECTED_REVISION:-${IMAGE_TAG}}"
+  if [ "${running_revision}" != "${expected_revision}" ]; then
     echo "Running backend image revision label does not match the requested release."
     return 1
   fi

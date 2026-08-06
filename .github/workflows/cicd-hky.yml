@@ -189,4 +189,5 @@ jobs:
             "DEPLOY_PATH='${DEPLOY_PATH}' \
              RELEASE_BUNDLE_PATH='releases/backend-${RELEASE_ID}' \
              IMAGE_NAME='${IMAGE_NAME}' IMAGE_TAG='${IMAGE_TAG}' \
+             EXPECTED_REVISION='${GITHUB_SHA}' \
              bash '${RELEASE_BUNDLE_PATH}/activate-backend.sh'"
