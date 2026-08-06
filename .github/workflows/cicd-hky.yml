@@ -125,6 +125,7 @@ jobs:
           CUSTOMER_SERVER_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
           CUSTOMER_SERVER_PORT: ${{ secrets.CUSTOMER_SERVER_PORT }}
           CUSTOMER_SERVER_ENV_BASE64: ${{ secrets.CUSTOMER_SERVER_ENV_BASE64 }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIT_SSH_PASSWORD: ${{ secrets.CUSTOMER_SERVER_PASSWORD }}
         run: |
           set -euo pipefail
@@ -137,9 +138,20 @@ jobs:
             "mkdir -p '${DEPLOY_PATH}/releases' && mkdir -- '${RELEASE_BUNDLE_PATH}'"
           .deploy/scp deploy/activate-backend.sh deploy/cleanup-backend-release-env.sh \
             deploy/docker-compose.prod.yml "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
+          mkdir -p .deploy
+          cp sql/mysql/ruoyi-vue-pro.sql sql/mysql/skit-saas.sql sql/mysql/quartz.sql .deploy/
+          .deploy/scp .deploy/ruoyi-vue-pro.sql .deploy/skit-saas.sql .deploy/quartz.sql \
+            "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
           if [ -n "${CUSTOMER_SERVER_ENV_BASE64}" ]; then
-            echo "${CUSTOMER_SERVER_ENV_BASE64}" | base64 -d > server.env
+            {
+              echo "GHCR_USERNAME=${GITHUB_ACTOR}"
+              echo "GHCR_TOKEN=${GITHUB_TOKEN}"
+              echo "${CUSTOMER_SERVER_ENV_BASE64}" | base64 -d
+            } > server.env
             .deploy/scp server.env "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/server.env"
+          else
+            echo "::error::Set CUSTOMER_SERVER_ENV_BASE64 (customer server.env, base64) to deploy."
+            exit 1
           fi
           echo "bundle uploaded to ${SSH_TARGET}:${RELEASE_BUNDLE_PATH}"
 
