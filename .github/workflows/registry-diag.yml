@@ -24,6 +24,7 @@ jobs:
           : "${AUTH_VALUE:?Set SERVER_SSH_KEY or SERVER_PASSWORD secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
           install -m 700 -d ~/.ssh
+          mkdir -p .deploy
           KEY_FILE="$HOME/.ssh/skit_deploy_key"
           if printf '%s' "${AUTH_VALUE}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
             printf '%s' "${AUTH_VALUE}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${KEY_FILE}"
