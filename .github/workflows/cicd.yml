@@ -347,26 +347,13 @@ jobs:
             ".deploy/quartz.sql" \
             "${SSH_TARGET}:${RELEASE_BUNDLE_PATH}/"
 
-      - name: Transfer backend image to server
-        if: steps.deploy_config.outputs.enabled == 'true'
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SKIT_SSH_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
-        run: |
-          set -euo pipefail
-          : "${SERVER_USER:?Set SERVER_USER secret}"
-          SERVER_PORT="${SERVER_PORT:-22}"
-          SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
-          echo "Streaming ${IMAGE_NAME}:${IMAGE_TAG} to ${SSH_TARGET} via docker save (bypasses slow ghcr.io pulls from China)."
-          # The build step uses `docker buildx build --push`, which does not leave the
-          # image in the local daemon, so ensure the tag exists before saving it.
-          docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
-          # gzip -1 shrinks the stream ~43% (measured on the 458MB backend image); the
-          # runner -> China server link is bandwidth-starved (~70KB/s), so halve it.
-          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | gzip -1 | .deploy/ssh "${SSH_TARGET}" "gzip -d | sudo docker load"
-          .deploy/ssh "${SSH_TARGET}" "sudo docker image inspect '${IMAGE_NAME}:${IMAGE_TAG}' >/dev/null 2>&1 && echo image-present || echo image-missing"
+      # Image delivery now relies on the server pulling from ghcr.io during
+      # activation (activate-backend.sh logs in with GHCR_TOKEN and runs
+      # `compose pull backend`, bounded to 15 minutes). Measured 2026-08-07:
+      # direct ghcr pull of the 458MB backend image took ~5 minutes, versus
+      # ~73 minutes for the docker save|gzip|scp stream the removed step used
+      # (runner -> China server link is bandwidth-starved ~70KB/s). Layer
+      # reuse makes subsequent releases even faster.
 
       - name: Activate backend on server
         id: activate_backend
