@@ -100,19 +100,19 @@ jobs:
             fi
           done
           echo
-          echo "===== Real docker pull speed (alpine:latest, ~3MB) ====="
-          for base in docker.1ms.run docker.m.daocloud.io ghcr.nju.edu.cn; do
-            img="${base}/library/alpine:latest"
-            if [ "${base}" = "ghcr.nju.edu.cn" ]; then
-              img="${base}/stefanprodan/alpine:latest"
-            fi
-            echo "--- pull ${img} ---"
-            if timeout 120 docker pull "${img}" >/tmp/pull.log 2>&1; then
-              grep -E "Downloaded|Pull complete|Status" /tmp/pull.log | tail -4
+          echo "===== Real docker pull speed (project image via mirrors) ====="
+          for img in \
+            "ghcr.nju.edu.cn/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182" \
+            "ghcr.nju.edu.cn/stefanprodan/alpine:latest" \
+            "ghcr.io/stefanprodan/alpine:latest"; do
+            echo "--- sudo docker pull ${img} ---"
+            if timeout 180 sudo docker pull "${img}" >/tmp/pull.log 2>&1; then
+              grep -E "Downloaded|Pull complete|Status|digest" /tmp/pull.log | tail -5
+              echo "PULL OK (exit 0)"
             else
-              echo "PULL FAILED:"; tail -3 /tmp/pull.log
+              echo "PULL FAILED:"; tail -4 /tmp/pull.log
             fi
-            timeout 30 docker rmi "${img}" >/dev/null 2>&1 || true
+            timeout 30 sudo docker rmi "${img}" >/dev/null 2>&1 || true
           done
           echo
           echo "===== ghcr.io direct blob probe (public package manifest) ====="
