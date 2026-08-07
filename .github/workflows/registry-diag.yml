@@ -75,6 +75,7 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           : "${SERVER_USER:?Set SERVER_USER secret}"
@@ -115,8 +116,14 @@ jobs:
             timeout 30 sudo docker rmi "${img}" >/dev/null 2>&1 || true
           done
           echo
-          echo "===== ghcr.io direct blob probe (public package manifest) ====="
-          timeout 30 curl -sL -o /dev/null -w "ghcr.io manifest: %{http_code}|%{time_total}s\n" \
-            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-            https://ghcr.io/v2/stefanprodan/alpine/manifests/latest 2>&1 || echo "ghcr.io manifest: FAIL"
+          echo "===== ghcr.io direct pull speed (private project image) ====="
+          echo "${GITHUB_TOKEN}" | sudo docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          if timeout 300 sudo docker pull ghcr.io/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182 >/tmp/pull2.log 2>&1; then
+            grep -E "Downloaded|Pull complete|Status|digest" /tmp/pull2.log | tail -6
+            echo "PULL OK (exit 0)"
+          else
+            echo "PULL FAILED:"; tail -5 /tmp/pull2.log
+          fi
+          sudo docker logout ghcr.io >/dev/null 2>&1 || true
+          timeout 30 sudo docker rmi ghcr.io/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182 >/dev/null 2>&1 || true
           REMOTE
