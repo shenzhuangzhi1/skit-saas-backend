@@ -81,10 +81,11 @@ jobs:
           : "${SERVER_USER:?Set SERVER_USER secret}"
           SERVER_PORT="${SERVER_PORT:-22}"
           SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
-          .deploy/ssh "${SSH_TARGET}" 'bash -s' <<'REMOTE'
+          .deploy/ssh "${SSH_TARGET}" \
+            "export GHCR_ACTOR='${GITHUB_ACTOR}' GHCR_TOKEN='${GITHUB_TOKEN}'; bash -s" <<'REMOTE'
           set -e
           echo "===== DNS resolution ====="
-          for h in ghcr.io ghcr.nju.edu.cn ccr.ccs.tencentyun.com docker.1ms.run docker.m.daocloud.io docker.1panel.live; do
+          for h in ghcr.io ccr.ccs.tencentyun.com; do
             ip=$(getent hosts "$h" 2>/dev/null | awk '{print $1}' | head -1)
             echo "$h -> ${ip:-NO_DNS}"
           done
@@ -92,37 +93,13 @@ jobs:
           echo "===== Docker daemon config ====="
           cat /etc/docker/daemon.json 2>/dev/null || echo "(no daemon.json)"
           echo
-          echo "===== TLS/HTTP reachability (http_code|connect_s|total_s) ====="
-          for url in https://ghcr.io/v2/ https://ghcr.nju.edu.cn/v2/ https://ccr.ccs.tencentyun.com/v2/ https://docker.1ms.run/v2/ https://docker.m.daocloud.io/v2/; do
-            if out=$(timeout 15 curl -so /dev/null -w "%{http_code}|%{time_connect}s|%{time_total}s" "$url" 2>&1); then
-              echo "$url -> $out"
-            else
-              echo "$url -> FAIL/TIMEOUT"
-            fi
-          done
-          echo
-          echo "===== Real docker pull speed (project image via mirrors) ====="
-          for img in \
-            "ghcr.nju.edu.cn/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182" \
-            "ghcr.nju.edu.cn/stefanprodan/alpine:latest" \
-            "ghcr.io/stefanprodan/alpine:latest"; do
-            echo "--- sudo docker pull ${img} ---"
-            if timeout 180 sudo docker pull "${img}" >/tmp/pull.log 2>&1; then
-              grep -E "Downloaded|Pull complete|Status|digest" /tmp/pull.log | tail -5
-              echo "PULL OK (exit 0)"
-            else
-              echo "PULL FAILED:"; tail -4 /tmp/pull.log
-            fi
-            timeout 30 sudo docker rmi "${img}" >/dev/null 2>&1 || true
-          done
-          echo
-          echo "===== ghcr.io direct pull speed (private project image) ====="
-          echo "${GITHUB_TOKEN}" | sudo docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          if timeout 300 sudo docker pull ghcr.io/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182 >/tmp/pull2.log 2>&1; then
-            grep -E "Downloaded|Pull complete|Status|digest" /tmp/pull2.log | tail -6
+          echo "===== ghcr.io direct pull speed (private project image, 458MB) ====="
+          echo "${GHCR_TOKEN}" | sudo docker login ghcr.io -u "${GHCR_ACTOR}" --password-stdin
+          if timeout 600 sudo docker pull ghcr.io/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182 >/tmp/pull2.log 2>&1; then
+            grep -E "Downloaded|Pull complete|Status|digest" /tmp/pull2.log | tail -8
             echo "PULL OK (exit 0)"
           else
-            echo "PULL FAILED:"; tail -5 /tmp/pull2.log
+            echo "PULL FAILED (exit $?):"; tail -5 /tmp/pull2.log
           fi
           sudo docker logout ghcr.io >/dev/null 2>&1 || true
           timeout 30 sudo docker rmi ghcr.io/shenzhuangzhi1/skit-saas-backend:4c6254c2071390f2052a0088eaaf7345c0cac182 >/dev/null 2>&1 || true
