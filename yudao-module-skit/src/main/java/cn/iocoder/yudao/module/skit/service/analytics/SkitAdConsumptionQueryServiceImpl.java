@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.skit.service.analytics;
 
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionDetailRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionMemberRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionMemberSummaryRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionSummaryRespVO;
@@ -58,6 +60,47 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
             + "`g`.`tenant_id`=`s`.`tenant_id` AND `g`.`id`=`s`.`native_player_grant_id` "
             + "AND `g`.`member_id`=`s`.`member_id` AND `g`.`drama_id`=`s`.`drama_id` "
             + "AND `g`.`deleted`=b'0' ";
+
+    /**
+     * Settled-normal money facts for the per-member aggregate. The revenue event
+     * is the root: only events the platform actually settled (reconciled and
+     * reward-qualified, trusted, non-mock) count as consumption. The session
+     * join brings drama/episode/ad-source filters; the member join brings identity.
+     */
+    private static final String MEMBER_SETTLED_JOIN = "FROM `skit_ad_revenue_event` `e` "
+            + "JOIN `skit_ad_session` `s` ON `s`.`tenant_id`=`e`.`tenant_id` "
+            + "AND `s`.`id`=`e`.`ad_session_id` AND `s`.`deleted`=b'0' "
+            + "JOIN `skit_member` `m` ON `m`.`tenant_id`=`e`.`tenant_id` "
+            + "AND `m`.`id`=`e`.`source_member_id` AND `m`.`deleted`=b'0' ";
+
+    private static final String MEMBER_SETTLED_CONDITIONS =
+            "`e`.`reconciliation_status`='RECONCILED' "
+            + "AND `e`.`reward_qualification_status`='REWARDED' "
+            + "AND `e`.`legacy_unverified`=b'0' AND `e`.`mock`=b'0' AND `e`.`deleted`=b'0' ";
+
+    private static final String MEMBER_ROW_SELECT = "SELECT `e`.`tenant_id`,"
+            + "`e`.`source_member_id` AS `member_id`,`m`.`nickname` AS `member_nickname`,"
+            + "CASE WHEN `m`.`mobile` IS NULL THEN NULL WHEN `m`.`mobile`='' THEN '' "
+            + "WHEN CHAR_LENGTH(`m`.`mobile`)<=7 THEN CONCAT(LEFT(`m`.`mobile`,2),'***') "
+            + "ELSE CONCAT(LEFT(`m`.`mobile`,3),'****',RIGHT(`m`.`mobile`,4)) END "
+            + "AS `member_mobile_masked`,`e`.`source_currency`,`e`.`amount_scale`,"
+            + "COUNT(`e`.`id`) AS `settled_impression_count`,"
+            + "SUM(`e`.`reconciled_amount_units`) AS `settled_amount_units`,"
+            + "SUM(`e`.`estimated_amount_units`) AS `estimated_amount_units`,"
+            + "MIN(`e`.`occurred_time`) AS `first_consumed_at`,"
+            + "MAX(`e`.`occurred_time`) AS `last_consumed_at` ";
+
+    private static final String MEMBER_GROUP_BY = "GROUP BY `e`.`tenant_id`,"
+            + "`e`.`source_member_id`,`e`.`source_currency`,`e`.`amount_scale` ";
+
+    private static final String MEMBER_MONEY_SELECT = "SELECT `e`.`source_currency`,"
+            + "`e`.`amount_scale`,COUNT(`e`.`id`) AS `settled_impression_count`,"
+            + "SUM(`e`.`reconciled_amount_units`) AS `settled_amount_units`,"
+            + "SUM(`e`.`estimated_amount_units`) AS `estimated_amount_units` ";
+
+    private static final String MEMBER_CURRENCY_GROUP_BY =
+            "GROUP BY `e`.`source_currency`,`e`.`amount_scale` "
+            + "ORDER BY `e`.`source_currency`,`e`.`amount_scale` ";
 
     private static final String CLIENT_REWARD_OBSERVED = "EXISTS (SELECT 1 FROM "
             + "`skit_ad_client_event` `rewarded` WHERE "
@@ -265,6 +308,141 @@ public class SkitAdConsumptionQueryServiceImpl implements SkitAdConsumptionQuery
         response.setPlatformImpressionCount(platformImpressionCount);
         response.setCurrencyGroups(amounts);
         return response;
+    }
+
+    @Override
+    public SkitStablePageRespVO<SkitAdConsumptionMemberRespVO> getMemberPage(
+            long tenantId, SkitAdConsumptionPageReqVO query) {
+        return getMemberPageInternal(tenantId, query);
+    }
+
+    @Override
+    public SkitStablePageRespVO<SkitAdConsumptionMemberRespVO> getGlobalMemberPage(
+            SkitAdConsumptionPageReqVO query) {
+        return getMemberPageInternal(null, query);
+    }
+
+    private SkitStablePageRespVO<SkitAdConsumptionMemberRespVO> getMemberPageInternal(
+            Long tenantId, SkitAdConsumptionPageReqVO query) {
+        QueryWindow window = window(query);
+        Filter filter = memberFilter(tenantId, query, window);
+        Long total = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM (SELECT 1 " + MEMBER_SETTLED_JOIN + filter.where
+                        + MEMBER_GROUP_BY + ") `member_agg`",
+                Long.class, filter.args.toArray());
+        List<Object> args = new ArrayList<>(filter.args);
+        args.add(query.getPageSize());
+        args.add((query.getPageNo() - 1) * query.getPageSize());
+        List<SkitAdConsumptionMemberRespVO> list = jdbcTemplate.query(
+                MEMBER_ROW_SELECT + MEMBER_SETTLED_JOIN + filter.where + MEMBER_GROUP_BY
+                        + " ORDER BY `last_consumed_at` DESC,`e`.`source_member_id`,"
+                        + "`e`.`source_currency`,`e`.`amount_scale` LIMIT ? OFFSET ?",
+                args.toArray(), (rs, rowNum) -> memberRow(rs));
+
+        SkitStablePageRespVO<SkitAdConsumptionMemberRespVO> response =
+                new SkitStablePageRespVO<>();
+        response.setTenantId(tenantId);
+        response.setAsOf(window.asOf);
+        response.setTimezone(window.timezone.getName());
+        response.setPageNo(query.getPageNo());
+        response.setPageSize(query.getPageSize());
+        response.setTotal(total == null ? 0L : total);
+        response.setList(list);
+        return response;
+    }
+
+    @Override
+    public SkitAdConsumptionMemberSummaryRespVO getMemberSummary(
+            long tenantId, SkitAdConsumptionPageReqVO query) {
+        return getMemberSummaryInternal(tenantId, query);
+    }
+
+    @Override
+    public SkitAdConsumptionMemberSummaryRespVO getGlobalMemberSummary(
+            SkitAdConsumptionPageReqVO query) {
+        return getMemberSummaryInternal(null, query);
+    }
+
+    private SkitAdConsumptionMemberSummaryRespVO getMemberSummaryInternal(
+            Long tenantId, SkitAdConsumptionPageReqVO query) {
+        QueryWindow window = window(query);
+        Filter filter = memberFilter(tenantId, query, window);
+        SkitAdConsumptionMemberSummaryRespVO response =
+                new SkitAdConsumptionMemberSummaryRespVO();
+        response.setTenantId(tenantId);
+        response.setAsOf(window.asOf);
+        response.setTimezone(window.timezone.getName());
+        Long memberCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(DISTINCT `e`.`source_member_id`) " + MEMBER_SETTLED_JOIN
+                        + filter.where,
+                Long.class, filter.args.toArray());
+        response.setMemberCount(memberCount == null ? 0L : memberCount);
+        List<Map<String, Object>> moneyRows = jdbcTemplate.queryForList(
+                MEMBER_MONEY_SELECT + MEMBER_SETTLED_JOIN + filter.where
+                        + MEMBER_CURRENCY_GROUP_BY,
+                filter.args.toArray());
+        long settledImpressionCount = 0L;
+        for (Map<String, Object> values : moneyRows) {
+            SkitAdConsumptionMemberSummaryRespVO.CurrencyAmount amount =
+                    new SkitAdConsumptionMemberSummaryRespVO.CurrencyAmount();
+            amount.setCurrency(stringValue(values.get("source_currency")));
+            amount.setAmountScale(intValue(values.get("amount_scale")));
+            long count = longValue(values.get("settled_impression_count"));
+            amount.setSettledImpressionCount(count);
+            amount.setSettledAmountUnits(nullableLongValue(values.get("settled_amount_units")));
+            amount.setEstimatedAmountUnits(nullableLongValue(values.get("estimated_amount_units")));
+            response.getCurrencyGroups().add(amount);
+            settledImpressionCount += count;
+        }
+        response.setSettledImpressionCount(settledImpressionCount);
+        return response;
+    }
+
+    private Filter memberFilter(Long tenantId, SkitAdConsumptionPageReqVO query,
+                                QueryWindow window) {
+        StringBuilder where = new StringBuilder(" WHERE ");
+        List<Object> args = new ArrayList<>();
+        if (tenantId != null) {
+            where.append("`e`.`tenant_id`=? AND ");
+            args.add(tenantId);
+        }
+        where.append(MEMBER_SETTLED_CONDITIONS);
+        where.append("AND `e`.`occurred_time`>=? AND `e`.`occurred_time`<? ");
+        args.add(window.startDatabase);
+        args.add(window.endDatabase);
+        append(where, args, "`s`.`drama_id`", query.getDramaId());
+        if (query.getEpisodeNo() != null) {
+            where.append("AND `s`.`episode_from`<=? AND `s`.`episode_to`>=? ");
+            args.add(query.getEpisodeNo());
+            args.add(query.getEpisodeNo());
+        }
+        append(where, args, "`e`.`provider`", normalize(query.getProvider()));
+        append(where, args, "`s`.`network_firm_id`", query.getNetworkFirmId());
+        String memberKeyword = normalize(query.getMemberKeyword());
+        if (memberKeyword != null) {
+            where.append("AND (CAST(`e`.`source_member_id` AS CHAR)=? OR `m`.`mobile` LIKE ? "
+                    + "OR `m`.`nickname` LIKE ?) ");
+            args.add(memberKeyword);
+            args.add(mobileLikePattern(memberKeyword));
+            args.add("%" + memberKeyword + "%");
+        }
+        return new Filter(where.toString(), args);
+    }
+
+    private SkitAdConsumptionMemberRespVO memberRow(ResultSet rs) throws SQLException {
+        SkitAdConsumptionMemberRespVO result = new SkitAdConsumptionMemberRespVO();
+        result.setTenantId(rs.getLong("tenant_id"));
+        result.setMemberId(rs.getLong("member_id"));
+        result.setMemberNickname(rs.getString("member_nickname"));
+        result.setMemberMobileMasked(maskMobile(rs.getString("member_mobile_masked")));
+        result.setCurrency(rs.getString("source_currency"));
+        result.setAmountScale(rs.getInt("amount_scale"));
+        result.setSettledImpressionCount(rs.getLong("settled_impression_count"));
+        result.setSettledAmountUnits(nullableLong(rs, "settled_amount_units"));
+        result.setEstimatedAmountUnits(nullableLong(rs, "estimated_amount_units"));
+        result.setFirstConsumedAt(dateTime(rs.getTimestamp("first_consumed_at")));
+        result.setLastConsumedAt(dateTime(rs.getTimestamp("last_consumed_at")));
+        return result;
     }
 
     @Override
