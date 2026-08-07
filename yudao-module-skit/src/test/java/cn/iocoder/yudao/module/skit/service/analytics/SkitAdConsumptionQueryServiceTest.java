@@ -344,7 +344,9 @@ class SkitAdConsumptionQueryServiceTest {
                 + "SkitAdConsumptionRespVO");
         Class<?> detail = requireClass("cn.iocoder.yudao.module.skit.controller.admin.tenant.vo."
                 + "SkitAdConsumptionDetailRespVO");
-        for (Class<?> type : new Class<?>[]{row, detail}) {
+        Class<?> member = requireClass("cn.iocoder.yudao.module.skit.controller.admin.tenant.vo."
+                + "SkitAdConsumptionMemberRespVO");
+        for (Class<?> type : new Class<?>[]{row, detail, member}) {
             for (Class<?> cursor = type; cursor != null; cursor = cursor.getSuperclass()) {
                 for (Field field : cursor.getDeclaredFields()) {
                     String name = field.getName().toLowerCase();
@@ -402,6 +404,125 @@ class SkitAdConsumptionQueryServiceTest {
             assertNotNull(get, methodName);
             assertEquals(methodName.equals("getSummary") ? "/summary"
                     : methodName.equals("getPage") ? "/page" : "/get", get.value()[0]);
+        }
+    }
+
+    @Test
+    void memberPageAggregatesSettledEventsByMemberWithTenantScope() throws Exception {
+        RecordingJdbcTemplate jdbc = new RecordingJdbcTemplate();
+        Object service = newService(jdbc);
+        Object query = newQuery();
+
+        invoke(service, "getMemberPage", new Class<?>[]{long.class, query.getClass()}, 42L, query);
+
+        SqlCall count = jdbc.calls.get(0);
+        assertTrue(count.sql.startsWith(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM `skit_ad_revenue_event` `e`"), count.sql);
+        assertTrue(count.sql.contains("`e`.`tenant_id`=?"), count.sql);
+        assertTrue(count.sql.contains("`e`.`reconciliation_status`='RECONCILED'"), count.sql);
+        assertTrue(count.sql.contains("`e`.`reward_qualification_status`='REWARDED'"), count.sql);
+        assertTrue(count.sql.contains("`e`.`legacy_unverified`=b'0'"), count.sql);
+        assertTrue(count.sql.contains("`e`.`mock`=b'0'"), count.sql);
+        assertTrue(count.sql.contains("`e`.`occurred_time`>=?"), count.sql);
+        assertTrue(count.sql.contains("GROUP BY `e`.`tenant_id`,`e`.`source_member_id`"), count.sql);
+        SqlCall page = jdbc.calls.get(1);
+        assertTrue(page.sql.contains("JOIN `skit_ad_session` `s` ON"), page.sql);
+        assertTrue(page.sql.contains("JOIN `skit_member` `m` ON"), page.sql);
+        assertTrue(page.sql.contains("COUNT(`e`.`id`) AS `settled_impression_count`"), page.sql);
+        assertTrue(page.sql.contains("SUM(`e`.`reconciled_amount_units`) AS `settled_amount_units`"),
+                page.sql);
+        assertTrue(page.sql.contains("SUM(`e`.`estimated_amount_units`) AS `estimated_amount_units`"),
+                page.sql);
+        assertTrue(page.sql.contains("ORDER BY `last_consumed_at` DESC"), page.sql);
+        assertTrue(page.sql.contains("LIMIT ? OFFSET ?"), page.sql);
+        assertEquals(42L, count.args[0]);
+    }
+
+    @Test
+    void memberPageSupportsOperationalFiltersWithoutDroppingTenantScope() throws Exception {
+        RecordingJdbcTemplate jdbc = new RecordingJdbcTemplate();
+        Object service = newService(jdbc);
+        Object query = newQuery();
+        set(query, "setStartTime", LocalDateTime.class, LocalDateTime.of(2026, 7, 20, 0, 0));
+        set(query, "setEndTime", LocalDateTime.class, LocalDateTime.of(2026, 7, 21, 0, 0));
+        set(query, "setDramaId", Long.class, 9001L);
+        set(query, "setEpisodeNo", Integer.class, 41);
+        set(query, "setProvider", String.class, "TAKU");
+        set(query, "setNetworkFirmId", Integer.class, 66);
+        set(query, "setMemberKeyword", String.class, "199****4550");
+
+        invoke(service, "getMemberPage", new Class<?>[]{long.class, query.getClass()}, 42L, query);
+
+        String sql = jdbc.calls.get(0).sql;
+        assertTrue(sql.contains("`s`.`drama_id`=?"), sql);
+        assertTrue(sql.contains("`s`.`episode_from`<=? AND `s`.`episode_to`>=?"), sql);
+        assertTrue(sql.contains("`e`.`provider`=?"), sql);
+        assertTrue(sql.contains("`s`.`network_firm_id`=?"), sql);
+        assertTrue(sql.contains("`m`.`mobile` LIKE ?"), sql);
+        assertTrue(sql.contains("`m`.`nickname` LIKE ?"), sql);
+        Object[] args = jdbc.calls.get(0).args;
+        assertEquals(42L, args[0]);
+        assertEquals("TAKU", args[6]);
+        assertEquals(66, args[7]);
+        assertEquals("199****4550", args[8]);
+        assertEquals("199%4550", args[9]);
+        assertEquals("%199****4550%", args[10]);
+    }
+
+    @Test
+    void memberSummarySeparatesEstimatedAndSettledUnitsPerCurrency() throws Exception {
+        RecordingJdbcTemplate jdbc = new RecordingJdbcTemplate();
+        Object service = newService(jdbc);
+        Object query = newQuery();
+
+        invoke(service, "getMemberSummary", new Class<?>[]{long.class, query.getClass()}, 42L, query);
+
+        assertEquals(2, jdbc.calls.size());
+        String memberCountSql = jdbc.calls.get(0).sql;
+        assertTrue(memberCountSql.startsWith("SELECT COUNT(DISTINCT `e`.`source_member_id`)"),
+                memberCountSql);
+        assertTrue(memberCountSql.contains("`e`.`reconciliation_status`='RECONCILED'"),
+                memberCountSql);
+        String moneySql = jdbc.calls.get(1).sql;
+        assertTrue(moneySql.contains("SUM(`e`.`reconciled_amount_units`) AS `settled_amount_units`"),
+                moneySql);
+        assertTrue(moneySql.contains("SUM(`e`.`estimated_amount_units`) AS `estimated_amount_units`"),
+                moneySql);
+        assertTrue(moneySql.contains("GROUP BY `e`.`source_currency`,`e`.`amount_scale`"), moneySql);
+        assertTrue(moneySql.contains("ORDER BY `e`.`source_currency`,`e`.`amount_scale`"), moneySql);
+    }
+
+    @Test
+    void globalMemberAggregatesNeverInjectTenantWhereClause() throws Exception {
+        RecordingJdbcTemplate jdbc = new RecordingJdbcTemplate();
+        Object service = newService(jdbc);
+        Object query = newQuery();
+
+        invoke(service, "getGlobalMemberPage", new Class<?>[]{query.getClass()}, query);
+
+        String sql = jdbc.calls.get(0).sql;
+        assertFalse(sql.contains("WHERE `e`.`tenant_id`=?"), sql);
+        assertTrue(sql.contains("GROUP BY `e`.`tenant_id`,`e`.`source_member_id`"), sql);
+    }
+
+    @Test
+    void controllerPublishesGuardedMemberAggregateRoutes() throws Exception {
+        Class<?> controller = requireClass(
+                "cn.iocoder.yudao.module.skit.controller.admin.tenant.SkitAdConsumptionController");
+        for (String methodName : new String[]{"getMemberPage", "getMemberSummary"}) {
+            Method method = null;
+            for (Method candidate : controller.getDeclaredMethods()) {
+                if (methodName.equals(candidate.getName())) {
+                    method = candidate;
+                    break;
+                }
+            }
+            assertNotNull(method, methodName);
+            GetMapping get = method.getAnnotation(GetMapping.class);
+            assertNotNull(get, methodName);
+            assertEquals(methodName.equals("getMemberPage") ? "/member-page" : "/member-summary",
+                    get.value()[0]);
+            assertEquals(1, method.getParameterTypes().length, methodName);
         }
     }
 

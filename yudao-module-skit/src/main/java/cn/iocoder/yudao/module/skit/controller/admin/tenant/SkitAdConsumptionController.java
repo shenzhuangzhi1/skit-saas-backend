@@ -2,6 +2,8 @@ package cn.iocoder.yudao.module.skit.controller.admin.tenant;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionDetailRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionMemberRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionMemberSummaryRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionSummaryRespVO;
@@ -69,6 +71,24 @@ public class SkitAdConsumptionController {
         return success(tenantScopeGuard.readTenantOrGlobal(tenantId, true,
                 scope -> consumptionQueryService.get(scope.getTargetTenantId(), id, timezone),
                 () -> consumptionQueryService.getGlobal(id, timezone)));
+    }
+
+    @GetMapping("/member-page")
+    @Operation(summary = "分页获得按用户聚合的结算正常广告消费")
+    public CommonResult<SkitStablePageRespVO<SkitAdConsumptionMemberRespVO>> getMemberPage(
+            @Valid SkitAdConsumptionPageReqVO reqVO) {
+        return success(tenantScopeGuard.readTenantOrGlobal(reqVO.getTenantId(), true,
+                scope -> consumptionQueryService.getMemberPage(scope.getTargetTenantId(), reqVO),
+                () -> consumptionQueryService.getGlobalMemberPage(reqVO)));
+    }
+
+    @GetMapping("/member-summary")
+    @Operation(summary = "获得按用户聚合的结算正常广告消费概览")
+    public CommonResult<SkitAdConsumptionMemberSummaryRespVO> getMemberSummary(
+            @Valid SkitAdConsumptionPageReqVO reqVO) {
+        return success(tenantScopeGuard.readTenantOrGlobal(reqVO.getTenantId(), true,
+                scope -> consumptionQueryService.getMemberSummary(scope.getTargetTenantId(), reqVO),
+                () -> consumptionQueryService.getGlobalMemberSummary(reqVO)));
     }
 
 }

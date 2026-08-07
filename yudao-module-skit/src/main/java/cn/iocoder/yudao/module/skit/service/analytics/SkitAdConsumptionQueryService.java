@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.skit.service.analytics;
 
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionDetailRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionMemberRespVO;
+import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionMemberSummaryRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionPageReqVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionRespVO;
 import cn.iocoder.yudao.module.skit.controller.admin.tenant.vo.SkitAdConsumptionSummaryRespVO;
@@ -23,5 +25,21 @@ public interface SkitAdConsumptionQueryService {
     SkitAdConsumptionDetailRespVO get(long tenantId, long sessionRecordId, String timezone);
 
     SkitAdConsumptionDetailRespVO getGlobal(long sessionRecordId, String timezone);
+
+    /**
+     * Per-member aggregate of settled (reconciled + rewarded) ad consumption,
+     * one row per (member, currency, amountScale).
+     */
+    SkitStablePageRespVO<SkitAdConsumptionMemberRespVO> getMemberPage(
+            long tenantId, SkitAdConsumptionPageReqVO query);
+
+    SkitStablePageRespVO<SkitAdConsumptionMemberRespVO> getGlobalMemberPage(
+            SkitAdConsumptionPageReqVO query);
+
+    SkitAdConsumptionMemberSummaryRespVO getMemberSummary(
+            long tenantId, SkitAdConsumptionPageReqVO query);
+
+    SkitAdConsumptionMemberSummaryRespVO getGlobalMemberSummary(
+            SkitAdConsumptionPageReqVO query);
 
 }
