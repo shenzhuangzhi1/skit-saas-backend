@@ -1,0 +1,121 @@
+name: Registry Channel Diagnostics
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    name: Probe registry channels from production server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_HOST:?Set SERVER_HOST secret}"
+          AUTH_VALUE="${SERVER_SSH_KEY:-${SERVER_PASSWORD:-}}"
+          : "${AUTH_VALUE:?Set SERVER_SSH_KEY or SERVER_PASSWORD secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          install -m 700 -d ~/.ssh
+          KEY_FILE="$HOME/.ssh/skit_deploy_key"
+          if printf '%s' "${AUTH_VALUE}" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s' "${AUTH_VALUE}" | perl -0pe 's/\\n/\n/g; s/\r\n?/\n/g; s/\n?$/\n/' > "${KEY_FILE}"
+            chmod 600 "${KEY_FILE}"
+            if ! ssh-keygen -y -P "" -f "${KEY_FILE}" >/dev/null; then
+              echo "::error::SERVER_SSH_KEY is not a readable private key"
+              exit 1
+            fi
+            printf 'SKIT_AUTH_MODE=key\n' > .deploy/ssh-auth.env
+          else
+            if printf '%s' "${AUTH_VALUE}" | tr -d '\r\n ' | base64 -d > "${KEY_FILE}" 2>/dev/null \
+              && chmod 600 "${KEY_FILE}" \
+              && ssh-keygen -y -P "" -f "${KEY_FILE}" >/dev/null 2>&1; then
+              printf 'SKIT_AUTH_MODE=key\n' > .deploy/ssh-auth.env
+            else
+              sudo apt-get update
+              sudo apt-get install -y sshpass
+              {
+                printf 'SKIT_AUTH_MODE=password\n'
+                printf 'SKIT_SSH_PASSWORD=%q\n' "${AUTH_VALUE}"
+              } > .deploy/ssh-auth.env
+            fi
+          fi
+          chmod 600 .deploy/ssh-auth.env
+          cat > .deploy/ssh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$(dirname "$0")/ssh-auth.env"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          SSH_OPTIONS=(
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=60
+            -o TCPKeepAlive=yes
+            -o ConnectTimeout=30
+          )
+          if [ "${SKIT_AUTH_MODE}" = "password" ]; then
+            SSHPASS="${SKIT_SSH_PASSWORD}" sshpass -e ssh "${SSH_OPTIONS[@]}" -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -p "${SERVER_PORT}" "$@"
+          else
+            ssh "${SSH_OPTIONS[@]}" -i "$HOME/.ssh/skit_deploy_key" -p "${SERVER_PORT}" "$@"
+          fi
+          EOF
+          chmod +x .deploy/ssh
+          install -m 600 deploy/known_hosts ~/.ssh/known_hosts
+
+      - name: Probe registry channels
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_USER:?Set SERVER_USER secret}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+          SSH_TARGET="${SERVER_USER}@${SERVER_HOST}"
+          .deploy/ssh "${SSH_TARGET}" 'bash -s' <<'REMOTE'
+          set -e
+          echo "===== DNS resolution ====="
+          for h in ghcr.io ghcr.nju.edu.cn ccr.ccs.tencentyun.com docker.1ms.run docker.m.daocloud.io docker.1panel.live; do
+            ip=$(getent hosts "$h" 2>/dev/null | awk '{print $1}' | head -1)
+            echo "$h -> ${ip:-NO_DNS}"
+          done
+          echo
+          echo "===== Docker daemon config ====="
+          cat /etc/docker/daemon.json 2>/dev/null || echo "(no daemon.json)"
+          echo
+          echo "===== TLS/HTTP reachability (http_code|connect_s|total_s) ====="
+          for url in https://ghcr.io/v2/ https://ghcr.nju.edu.cn/v2/ https://ccr.ccs.tencentyun.com/v2/ https://docker.1ms.run/v2/ https://docker.m.daocloud.io/v2/; do
+            if out=$(timeout 15 curl -so /dev/null -w "%{http_code}|%{time_connect}s|%{time_total}s" "$url" 2>&1); then
+              echo "$url -> $out"
+            else
+              echo "$url -> FAIL/TIMEOUT"
+            fi
+          done
+          echo
+          echo "===== Real docker pull speed (alpine:latest, ~3MB) ====="
+          for base in docker.1ms.run docker.m.daocloud.io ghcr.nju.edu.cn; do
+            img="${base}/library/alpine:latest"
+            if [ "${base}" = "ghcr.nju.edu.cn" ]; then
+              img="${base}/stefanprodan/alpine:latest"
+            fi
+            echo "--- pull ${img} ---"
+            if timeout 120 docker pull "${img}" >/tmp/pull.log 2>&1; then
+              grep -E "Downloaded|Pull complete|Status" /tmp/pull.log | tail -4
+            else
+              echo "PULL FAILED:"; tail -3 /tmp/pull.log
+            fi
+            timeout 30 docker rmi "${img}" >/dev/null 2>&1 || true
+          done
+          echo
+          echo "===== ghcr.io direct blob probe (public package manifest) ====="
+          timeout 30 curl -sL -o /dev/null -w "ghcr.io manifest: %{http_code}|%{time_total}s\n" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+            https://ghcr.io/v2/stefanprodan/alpine/manifests/latest 2>&1 || echo "ghcr.io manifest: FAIL"
+          REMOTE
